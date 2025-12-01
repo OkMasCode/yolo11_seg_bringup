@@ -10,49 +10,21 @@ import numpy as np
 from builtin_interfaces.msg import Time
 import os
 from typing import Dict, Tuple, List, Any
-# Simple namedtuple to hold object detection entries in the map.
-# Fields:
-# - frame: the frame id where the original detection was expressed (camera frame)
-# - timestamp: the detection timestamp as builtin_interfaces.msg.Time
-# - pose_cam: the (x, y, z) coordinates of the detection in the camera frame
-# - pose_map: the (x, y, z) coordinates of the detection in the map (fixed) frame
-# - occurrences: how many times this object was observed / merged
-# - name: semantic class name of the detected object (e.g., 'apple', 'lemon')
+
 ObjectEntry = namedtuple('ObjectEntry', ['frame', 'timestamp', 'pose_cam', 'pose_map', 'occurrences', 'name'])
 
-# Small epsilon used by quaternion->matrix conversion to avoid division by zero
-_EPS = np.finfo(float).eps * 4.0
+_EPS = np.finfo(float).eps * 4.0 # Small epsilon value to avoid division by zero in quaternion normalization
 
 def quaternion_matrix(quaternion):
     """
-    Convert a quaternion to a 4x4 homogeneous rotation matrix.
-
-    This implementation was adapted from the 'transformations' package
-    (cgohlke/transformations) and expects the quaternion as a 4-element
-    sequence. Note: different libraries use different quaternion orderings
-    (w,x,y,z) vs (x,y,z,w). This function assumes the input is in the
-    ordering provided by the caller.
-
-    Args:
-        quaternion: iterable of 4 floats (q_x, q_y, q_z, q_w) or equivalent.
-
-    Returns:
-        A 4x4 numpy array representing the rotation as a homogeneous matrix.
+    Convert a quaternion into a 4x4 transformation matrix.
     """
-    # Make a copy of the quaternion as double precision numpy array
     q = np.array(quaternion, dtype=np.float64, copy=True)
-    # Compute squared norm of the quaternion
     n = np.dot(q, q)
-    # If the quaternion is nearly zero, return identity matrix (no rotation)
     if n < _EPS:
         return np.identity(4)
-    # Normalize/scaling factor used by this particular algorithm
     q *= math.sqrt(2.0 / n)
-    # Outer product of q with itself (4x4)
     q = np.outer(q, q)
-    # Build the 4x4 matrix from the outer product using the standard conversion
-    # formulas. The resulting matrix is orthonormal (rotation) in the upper-left 3x3
-    # block and has [0,0,0,1] in the last row/column for homogeneous coordinates.
     return np.array(
         [
             [
@@ -77,45 +49,17 @@ def quaternion_matrix(quaternion):
         ]
     )
 
-
-
-
 class SemanticObjectMap:
     """
-    Stores semantic object detections and provides utilities to:
-      - transform detection coordinates from camera frame to map frame
-      - merge detections that are spatially close
-      - update stored detections using tf transforms
-      - cluster / filter detections and export results to CSV
+    A class to maintain a semantic map of detected objects, merging detections that are close to each other.
+    Next update is to add image encodings of the detected object
     """
     def __init__(self, tf_buffer: Buffer, node: Node):
-        # Dictionary mapping object_id -> ObjectEntry
-        self.objects = {}  # Key: object_frame_id, Value: ObjectEntry
-        # TF buffer used to lookup transforms when converting coordinates
+        self.objects = {}
         self.tf_buffer = tf_buffer
-        # Node used for logging
         self.node = node
 
     def add_detection(self, object_name: str, object_id: str, pose_in_camera, detection_stamp, camera_frame='camera3_color_optical_frame', fixed_frame='map', distance_threshold=0.2):
-        """
-        Add a new detection to the map.
-
-        - Converts a Vector3 'pose_in_camera' (camera frame) into the fixed_frame (map)
-          using the TF buffer, then either merges the detection with an existing object
-          if it is closer than distance_threshold, or creates a new ObjectEntry.
-
-        Args:
-            object_name: semantic label of the detection (e.g., 'apple')
-            object_id: unique id for the detection (often includes timestamp or index)
-            pose_in_camera: geometry_msgs.msg.Vector3 with (x,y,z) in camera frame
-            detection_stamp: builtin_interfaces.msg.Time with detection time
-            camera_frame: name of the camera frame where pose_in_camera is expressed
-            fixed_frame: the absolute frame we want to map detections into (default 'map')
-            distance_threshold: max distance to consider two detections the same object
-
-        Returns:
-            True if a new object was added, False if merged or on failure.
-        """
         try:
             # Request the transform that maps points from camera_frame into fixed_frame.
             # Passing Time(sec=0, nanosec=0) is intended to request the latest transform.
@@ -124,7 +68,7 @@ class SemanticObjectMap:
             transform = self.tf_buffer.lookup_transform(
                 fixed_frame,
                 camera_frame,
-                Time(sec=0, nanosec=0)
+                Time(sec=0, nanosec=0) # rclpy.time.Time.from_msg(detection_stamp) 
             ) # retrieve the transform from fixed frame to camera frame in the instant the detection happened
 
             # Convert the point expressed in camera_frame into coordinates in fixed_frame.
@@ -136,11 +80,6 @@ class SemanticObjectMap:
                 dist = self.euclidean_distance(new_pose_map, entry.pose_map)
                 if dist < distance_threshold:
                     # Compute a simple average of the existing stored pose and the new pose.
-                    # NOTE: entry.pose_map in this implementation is treated as a single pose,
-                    # not the sum of previous poses; the averaging applied here divides the
-                    # sum of the two poses by (occurrences + 1). This is a lightweight
-                    # incremental average but is mathematically incorrect if entry.pose_map
-                    # is already an average over multiple observations (see improvement notes).
                     avg_pose = tuple(
                         (entry.pose_map[i] * entry.occurrences + new_pose_map[i]) / (entry.occurrences + 1)
                         for i in range(3)

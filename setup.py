@@ -24,7 +24,6 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            'yolo11_seg_node = yolo11_seg_bringup.yolo11_seg_node:main',
             '3d_yolo11_seg_node = yolo11_seg_bringup.3d_yolo11_seg_node:main',
             'stereo_to_pc_node = yolo11_seg_bringup.stereo_to_pc:main',
             'pointcloud_mapper_node = yolo11_seg_bringup.mapper_node:main'
