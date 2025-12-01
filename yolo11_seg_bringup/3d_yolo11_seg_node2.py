@@ -17,7 +17,6 @@ import torch
 import clip
 from cv_bridge import CvBridge
 import cv2
-import json
 from PIL import Image as PILImage
 
 class Yolo11SegNode(Node):
@@ -31,6 +30,7 @@ class Yolo11SegNode(Node):
         self.declare_parameter("camera_info_topic", "/camera/camera/color/camera_info")
         self.declare_parameter("pointcloud_topic", "/yolo/pointcloud")
         self.declare_parameter("annotated_topic", "/yolo/annotated")
+        self.declare_parameter("clip_boxes_topic", "/yolo/clip_boxes")
         
         self.declare_parameter("conf", 0.25)
         self.declare_parameter("iou", 0.70)
@@ -40,6 +40,7 @@ class Yolo11SegNode(Node):
         self.declare_parameter("pc_downsample", 2)
         self.declare_parameter("pc_max_range", 8.0)
         self.declare_parameter("mask_threshold", 0.5)
+        self.declare_parameter("clip_square_scale", 1.3)    # >= 1.3 for 30% bigger than bbox
 
         model_path = self.get_parameter("model_path").value
         self.image_topic = self.get_parameter("image_topic").value
@@ -47,6 +48,7 @@ class Yolo11SegNode(Node):
         self.camera_info_topic = self.get_parameter("camera_info_topic").value
         self.pc_topic = self.get_parameter("pointcloud_topic").value
         self.anno_topic = self.get_parameter("annotated_topic").value
+        self.clip_boxes_topic = self.get_parameter("clip_boxes_topic").value
 
         self.conf = float(self.get_parameter("conf").value)
         self.iou = float(self.get_parameter("iou").value)
@@ -56,6 +58,7 @@ class Yolo11SegNode(Node):
         self.pc_downsample = int(self.get_parameter("pc_downsample").value)
         self.pc_max_range = float(self.get_parameter("pc_max_range").value)
         self.mask_threshold = float(self.get_parameter("mask_threshold").value)
+        self.clip_square_scale = float(self.get_parameter("clip_square_scale").value)
 
         # ============= Initialization ============= #
 
@@ -70,6 +73,7 @@ class Yolo11SegNode(Node):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.get_logger().info(f"Loading CLIP model on {self.device}...")
         self.model2, self.preprocess = clip.load("ViT-B/32", device=self.device)
+        self.last_clip_embeddings = []  # list of dicts for the latest frame (not published)
  
         self.latest_depth_msg = None
         self.sync_lock = threading.Lock() # To protect access to latest_depth_msg
@@ -80,6 +84,7 @@ class Yolo11SegNode(Node):
 
         self.pc_pub = self.create_publisher(PointCloud2, self.pc_topic, 10)
         self.anno_pub = self.create_publisher(Image, self.anno_topic, 10)
+        self.clip_boxes_pub = self.create_publisher(Image, self.clip_boxes_topic, 10)
 
         self.fx = self.fy = self.cx = self.cy = None
         self.class_colors = {}
@@ -179,7 +184,7 @@ class Yolo11SegNode(Node):
 
             height, width = depth_img.shape
 
-            # YOLOv11-seg model inference
+            # YOLOv11-seg model inference on ROI only
             results = self.model.track(
                 source=frame_bgr,
                 imgsz=self.imgsz,
@@ -198,10 +203,10 @@ class Yolo11SegNode(Node):
             if not hasattr(res, "boxes") or len(res.boxes) == 0: # No detections
                 return
 
-            xyxy = res.boxes.xyxy.cpu().numpy().astype(int) # Run the downstream code on CPU
+            xyxy = res.boxes.xyxy.cpu().numpy().astype(int) # Run the downstream code on CPU (ROI coords)
             clss = res.boxes.cls.cpu().numpy().astype(int)
             ids  = res.boxes.id.cpu().numpy().astype(int) if res.boxes.id is not None else np.zeros(len(clss))
-            masks = res.masks.data.cpu().numpy() if hasattr(res, "masks") and res.masks is not None else None
+            masks = res.masks.data.cpu().numpy() if hasattr(res, "masks") and res.masks is not None else None  # (N, roi_h, roi_w)
 
             all_points_list = []
 
@@ -210,15 +215,24 @@ class Yolo11SegNode(Node):
             MIN_POINTS = 10
 
             DYNAMIC_CLASSES = {0, 1, 2, 3, 5, 7, 15, 16}
+
+
             
             is_uint16 = (depth_msg.encoding == "16UC1") # If depth is in uint16 format it is in mm
             scale_factor = (1.0 / self.depth_scale) if is_uint16 else 1.0 # Convert from mm to m
 
-            for i in range(len(xyxy)): # Iterate over detections
+            # Reset CLIP embeddings list for this frame
+            self.last_clip_embeddings = []
+            
+            # Create visualization image for CLIP boxes
+            clip_boxes_vis = frame_bgr.copy()
 
+            for i in range(len(xyxy)): # Iterate over detections (ROI coords)
+                
                 class_id = int(clss[i])
 
-                if class_id in DYNAMIC_CLASSES: # Skip dynamic classes  
+                # Skip to next if dynamic class for point cloud generation
+                if class_id in DYNAMIC_CLASSES:
                     continue
 
                 x1, y1, x2, y2 = xyxy[i]
@@ -227,6 +241,57 @@ class Yolo11SegNode(Node):
                 x2 = max(0, min(x2, width))
                 y1 = max(0, min(y1, height - 1))
                 y2 = max(0, min(y2, height))
+
+                if x2 <= x1 or y2 <= y1:
+                    continue # Invalid / empty box
+                
+                # Compute a square crop at least 30% bigger than bbox for CLIP
+                bw = max(1, x2 - x1)
+                bh = max(1, y2 - y1)
+                side = max(bw, bh)
+                side = int(np.ceil(side * max(1.3, float(self.clip_square_scale))))
+                cx = (x1 + x2) / 2.0
+                cy = (y1 + y2) / 2.0
+                half = side / 2.0
+                sx1 = int(np.floor(cx - half))
+                sy1 = int(np.floor(cy - half))
+                sx2 = int(np.ceil(cx + half))
+                sy2 = int(np.ceil(cy + half))
+                sx1 = max(0, min(sx1, width - 1))
+                sy1 = max(0, min(sy1, height - 1))
+                sx2 = max(0, min(sx2, width))
+                sy2 = max(0, min(sy2, height))
+
+                # CLIP embedding for the square crop (if valid)
+                if sx2 > sx1 and sy2 > sy1:
+                    crop_bgr = frame_bgr[sy1:sy2, sx1:sx2]
+                    try:
+                        crop_rgb = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2RGB)
+                        pil_crop = PILImage.fromarray(crop_rgb)
+                        image_in = self.preprocess(pil_crop).unsqueeze(0).to(self.device)
+                        with torch.no_grad():
+                            feat = self.model2.encode_image(image_in)
+                            feat = feat / feat.norm(dim=-1, keepdim=True)
+                        # store on CPU to keep memory stable
+                        self.last_clip_embeddings.append({
+                            "class_id": class_id,
+                            "instance_id": int(ids[i]) if isinstance(ids, np.ndarray) else 0,
+                            "bbox_full": [int(x1), int(y1), int(x2), int(y2)],
+                            "square_crop": [int(sx1), int(sy1), int(sx2), int(sy2)],
+                            "embedding": feat.squeeze(0).detach().float().cpu().numpy(),
+                        })
+                        
+                        # Draw CLIP square box on visualization (green for CLIP box)
+                        cv2.rectangle(clip_boxes_vis, (sx1, sy1), (sx2, sy2), (0, 255, 0), 2)
+                        # Draw original bbox (red)
+                        cv2.rectangle(clip_boxes_vis, (x1, y1), (x2, y2), (0, 0, 255), 1)
+                        # Add label
+                        label = f"ID:{int(ids[i])} cls:{class_id}"
+                        cv2.putText(clip_boxes_vis, label, (sx1, sy1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+                    except Exception as e:
+                        self.get_logger().warn(f"CLIP embedding failed for det {i}: {e}")
+
+
 
                 if x2 <= x1 or y2 <= y1:
                     continue # Invalid / empty box
@@ -305,6 +370,14 @@ class Yolo11SegNode(Node):
                 self.anno_pub.publish(anno_msg)
             except Exception as e:
                 self.get_logger().warn(f"Annotated publish failed: {e}")
+            
+            # Publish CLIP boxes visualization
+            try:
+                clip_boxes_msg = self.bridge.cv2_to_imgmsg(clip_boxes_vis, encoding="bgr8")
+                clip_boxes_msg.header = rgb_msg.header
+                self.clip_boxes_pub.publish(clip_boxes_msg)
+            except Exception as e:
+                self.get_logger().warn(f"CLIP boxes publish failed: {e}")
 
         except Exception as e:
             self.get_logger().error(f"Error in synced_cb_vectorized: {e}")
