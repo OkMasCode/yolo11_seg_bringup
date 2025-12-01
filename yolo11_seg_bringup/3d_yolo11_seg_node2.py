@@ -3,14 +3,17 @@
 import struct
 import numpy as np
 import threading
+from collections import defaultdict
 
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
-
+from builtin_interfaces.msg import Time
 from sensor_msgs.msg import Image, CameraInfo, PointCloud2, PointField
 from std_msgs.msg import String
 from sensor_msgs_py import point_cloud2
+from geometry_msgs.msg import Vector3, Point
+from visualization_msgs.msg import Marker, MarkerArray
 from cv_bridge import CvBridge
 from ultralytics import YOLO
 import torch
@@ -74,6 +77,8 @@ class Yolo11SegNode(Node):
         self.get_logger().info(f"Loading CLIP model on {self.device}...")
         self.model2, self.preprocess = clip.load("ViT-B/32", device=self.device)
         self.last_clip_embeddings = []  # list of dicts for the latest frame (not published)
+        self.last_centroids = []  # list of dicts: {'class_id','instance_id','centroid':(x,y,z)} for latest frame
+        self.last_detection_meta = []  # list of dicts: {'name','instance_id','timestamp'} for latest frame
  
         self.latest_depth_msg = None
         self.sync_lock = threading.Lock() # To protect access to latest_depth_msg
@@ -82,6 +87,7 @@ class Yolo11SegNode(Node):
         self.depth_sub = self.create_subscription(Image, self.depth_topic, self.depth_callback, qos_profile=qos_sensor)
         self.camera_info_sub = self.create_subscription(CameraInfo, self.camera_info_topic, self.camera_info_cb, qos_profile=qos_sensor)
 
+        self.marker_pub = self.create_publisher(MarkerArray, "/yolo/centroids", 10)
         self.pc_pub = self.create_publisher(PointCloud2, self.pc_topic, 10)
         self.anno_pub = self.create_publisher(Image, self.anno_topic, 10)
         self.clip_boxes_pub = self.create_publisher(Image, self.clip_boxes_topic, 10)
@@ -215,14 +221,16 @@ class Yolo11SegNode(Node):
             MIN_POINTS = 10
 
             DYNAMIC_CLASSES = {0, 1, 2, 3, 5, 7, 15, 16}
-
-
             
             is_uint16 = (depth_msg.encoding == "16UC1") # If depth is in uint16 format it is in mm
             scale_factor = (1.0 / self.depth_scale) if is_uint16 else 1.0 # Convert from mm to m
 
             # Reset CLIP embeddings list for this frame
             self.last_clip_embeddings = []
+            # Reset centroids list for this frame
+            self.last_centroids = []
+            # Reset detection meta list for this frame
+            self.last_detection_meta = []
             
             # Create visualization image for CLIP boxes
             clip_boxes_vis = frame_bgr.copy()
@@ -291,8 +299,6 @@ class Yolo11SegNode(Node):
                     except Exception as e:
                         self.get_logger().warn(f"CLIP embedding failed for det {i}: {e}")
 
-
-
                 if x2 <= x1 or y2 <= y1:
                     continue # Invalid / empty box
 
@@ -346,41 +352,145 @@ class Yolo11SegNode(Node):
                 instance_cloud[:, 4] = class_id
                 instance_cloud[:, 5] = instance_id
 
+                class_name = self.names[class_id]
+
+                # Centroid computation (mean of filtered 3D points)
+                centroid_x = float(np.mean(x_clean))
+                centroid_y = float(np.mean(y_clean))
+                centroid_z = float(np.mean(z_clean))
+                self.last_centroids.append({
+                    "class_id": class_id,
+                    "instance_id": instance_id,
+                    "centroid": (centroid_x, centroid_y, centroid_z)
+                })
+
+                timestamp = Time(
+                    sec=rgb_msg.header.stamp.sec,
+                    nanosec=rgb_msg.header.stamp.nanosec
+                )
+
+                # Store per-detection metadata (not used elsewhere for now)
+                self.last_detection_meta.append({
+                    "name": class_name,
+                    "instance_id": instance_id,
+                    "timestamp": timestamp,
+                })
+
+                # (Marker creation moved to publish_centroids for clarity)
+                
                 all_points_list.append(instance_cloud)
 
             if all_points_list:
                 final_points = np.vstack(all_points_list)
-                
-                fields = [
-                    PointField(name="x", offset=0, datatype=PointField.FLOAT32, count=1),
-                    PointField(name="y", offset=4, datatype=PointField.FLOAT32, count=1),
-                    PointField(name="z", offset=8, datatype=PointField.FLOAT32, count=1),
-                    PointField(name="rgb", offset=12, datatype=PointField.FLOAT32, count=1),
-                    PointField(name="class_id", offset=16, datatype=PointField.FLOAT32, count=1),
-                    PointField(name="instance_id", offset=20, datatype=PointField.FLOAT32, count=1),
-                ]
-                
-                cloud_msg = point_cloud2.create_cloud(depth_msg.header, fields, final_points.tolist())
-                self.pc_pub.publish(cloud_msg)
+                self.publish_pointcloud(final_points, depth_msg.header)
 
             try:
                 annotated_bgr = res.plot()
-                anno_msg = self.bridge.cv2_to_imgmsg(annotated_bgr, encoding="bgr8")
-                anno_msg.header = rgb_msg.header
-                self.anno_pub.publish(anno_msg)
+                self.publish_annotated_image(annotated_bgr, rgb_msg.header)
             except Exception as e:
                 self.get_logger().warn(f"Annotated publish failed: {e}")
             
             # Publish CLIP boxes visualization
-            try:
-                clip_boxes_msg = self.bridge.cv2_to_imgmsg(clip_boxes_vis, encoding="bgr8")
-                clip_boxes_msg.header = rgb_msg.header
-                self.clip_boxes_pub.publish(clip_boxes_msg)
-            except Exception as e:
-                self.get_logger().warn(f"CLIP boxes publish failed: {e}")
+            self.publish_clip_boxes_image(clip_boxes_vis, rgb_msg.header)
+
+            # Publish centroids via helper function for this frame
+            self.publish_centroids(rgb_msg.header.stamp, depth_msg.header.frame_id)
 
         except Exception as e:
             self.get_logger().error(f"Error in synced_cb_vectorized: {e}")
+
+    def create_centroid_marker(self, class_name: str, centroid: Vector3, class_id: int, marker_id: int, frame_id: str, stamp: Time):
+        marker = Marker()
+        marker.header.frame_id = frame_id
+        marker.header.stamp = stamp
+        marker.ns = "yolo_centroids"
+        marker.id = marker_id
+        marker.type = Marker.SPHERE
+        marker.action = Marker.ADD
+
+        marker.pose.position.x = float(centroid.x)
+        marker.pose.position.y = float(centroid.y)
+        marker.pose.position.z = float(centroid.z)
+        marker.pose.orientation.w = 1.0
+
+        marker.scale.x = 0.1
+        marker.scale.y = 0.1
+        marker.scale.z = 0.1
+
+        cr, cg, cb = self.get_color_for_class(str(class_id))
+        marker.color.r = float(cr) / 255.0
+        marker.color.g = float(cg) / 255.0
+        marker.color.b = float(cb) / 255.0
+        marker.color.a = 0.9
+
+        return marker
+
+    def publish_centroids(self, stamp: Time, frame_id: str):
+        """
+        Publish visualization markers for the centroids detected in the current frame.
+        Uses self.last_centroids which is populated during synced_cb.
+        """
+        try:
+            if not self.last_centroids:
+                return
+
+            marker_array = MarkerArray()
+
+            for idx, entry in enumerate(self.last_centroids):
+                cx, cy, cz = entry["centroid"]
+                class_id = int(entry["class_id"])
+                class_name = self.names[class_id] if class_id in self.names else str(class_id)
+                centroid_vec = Vector3(x=float(cx), y=float(cy), z=float(cz))
+
+                marker = self.create_centroid_marker(
+                    class_name=class_name,
+                    centroid=centroid_vec,
+                    class_id=class_id,
+                    marker_id=idx,
+                    frame_id=frame_id,
+                    stamp=stamp,
+                )
+                marker_array.markers.append(marker)
+
+            self.marker_pub.publish(marker_array)
+        except Exception as e:
+            self.get_logger().warn(f"Centroid markers publish failed: {e}")
+
+    def publish_pointcloud(self, points: np.ndarray, header):
+        """Publish a PointCloud2 from Nx6 numpy array [x,y,z,rgb,class_id,instance_id]."""
+        try:
+            if points is None or points.size == 0:
+                return
+            fields = [
+                PointField(name="x", offset=0, datatype=PointField.FLOAT32, count=1),
+                PointField(name="y", offset=4, datatype=PointField.FLOAT32, count=1),
+                PointField(name="z", offset=8, datatype=PointField.FLOAT32, count=1),
+                PointField(name="rgb", offset=12, datatype=PointField.FLOAT32, count=1),
+                PointField(name="class_id", offset=16, datatype=PointField.FLOAT32, count=1),
+                PointField(name="instance_id", offset=20, datatype=PointField.FLOAT32, count=1),
+            ]
+            cloud_msg = point_cloud2.create_cloud(header, fields, points.tolist())
+            self.pc_pub.publish(cloud_msg)
+        except Exception as e:
+            self.get_logger().warn(f"PointCloud publish failed: {e}")
+
+    def publish_annotated_image(self, bgr_image: np.ndarray, header):
+        """Publish an annotated image given BGR array and header."""
+        try:
+            anno_msg = self.bridge.cv2_to_imgmsg(bgr_image, encoding="bgr8")
+            anno_msg.header = header
+            self.anno_pub.publish(anno_msg)
+        except Exception as e:
+            self.get_logger().warn(f"Annotated publish failed: {e}")
+
+    def publish_clip_boxes_image(self, bgr_image: np.ndarray, header):
+        """Publish the CLIP boxes visualization image given BGR array and header."""
+        try:
+            clip_msg = self.bridge.cv2_to_imgmsg(bgr_image, encoding="bgr8")
+            clip_msg.header = header
+            self.clip_boxes_pub.publish(clip_msg)
+        except Exception as e:
+            self.get_logger().warn(f"CLIP boxes publish failed: {e}")
 
 def main(args=None):
     rclpy.init(args=args)
