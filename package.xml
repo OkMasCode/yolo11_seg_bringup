@@ -7,10 +7,8 @@
   <maintainer email="sensor@todo.todo">sensor</maintainer>
   <license>Apache-2.0</license>
 
-  <!-- ament_python build type -->
   <buildtool_depend>ament_python</buildtool_depend>
 
-  <!-- runtime deps that your node imports/uses -->
   <exec_depend>rclpy</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>sensor_msgs_py</exec_depend>
@@ -18,6 +16,7 @@
   <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>cv_bridge</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>yolo11_seg_interfaces</exec_depend>
 
   
   <test_depend>ament_copyright</test_depend>

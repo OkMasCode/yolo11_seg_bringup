@@ -15,6 +15,7 @@ from sensor_msgs_py import point_cloud2
 from geometry_msgs.msg import Vector3, Point
 from visualization_msgs.msg import Marker, MarkerArray
 from cv_bridge import CvBridge
+from yolo11_seg_interfaces.msg import DetectedObject
 from ultralytics import YOLO
 import torch
 import clip
@@ -34,6 +35,7 @@ class Yolo11SegNode(Node):
         self.declare_parameter("pointcloud_topic", "/yolo/pointcloud")
         self.declare_parameter("annotated_topic", "/yolo/annotated")
         self.declare_parameter("clip_boxes_topic", "/yolo/clip_boxes")
+        self.declare_parameter("detections_topic", "/yolo/detections")
         
         self.declare_parameter("conf", 0.25)
         self.declare_parameter("iou", 0.70)
@@ -43,7 +45,7 @@ class Yolo11SegNode(Node):
         self.declare_parameter("pc_downsample", 2)
         self.declare_parameter("pc_max_range", 8.0)
         self.declare_parameter("mask_threshold", 0.5)
-        self.declare_parameter("clip_square_scale", 1.3)    # >= 1.3 for 30% bigger than bbox
+        self.declare_parameter("clip_square_scale", 1.4)
 
         model_path = self.get_parameter("model_path").value
         self.image_topic = self.get_parameter("image_topic").value
@@ -52,6 +54,7 @@ class Yolo11SegNode(Node):
         self.pc_topic = self.get_parameter("pointcloud_topic").value
         self.anno_topic = self.get_parameter("annotated_topic").value
         self.clip_boxes_topic = self.get_parameter("clip_boxes_topic").value
+        self.detections_topic = self.get_parameter("detections_topic").value
 
         self.conf = float(self.get_parameter("conf").value)
         self.iou = float(self.get_parameter("iou").value)
@@ -91,6 +94,7 @@ class Yolo11SegNode(Node):
         self.pc_pub = self.create_publisher(PointCloud2, self.pc_topic, 10)
         self.anno_pub = self.create_publisher(Image, self.anno_topic, 10)
         self.clip_boxes_pub = self.create_publisher(Image, self.clip_boxes_topic, 10)
+        self.detections_pub = self.create_publisher(DetectedObject, self.detections_topic, 10)
 
         self.fx = self.fy = self.cx = self.cy = None
         self.class_colors = {}
@@ -396,6 +400,9 @@ class Yolo11SegNode(Node):
             # Publish centroids via helper function for this frame
             self.publish_centroids(rgb_msg.header.stamp, depth_msg.header.frame_id)
 
+            # Publish detected objects
+            self.publish_detections(rgb_msg.header.stamp)
+
         except Exception as e:
             self.get_logger().error(f"Error in synced_cb_vectorized: {e}")
 
@@ -491,6 +498,29 @@ class Yolo11SegNode(Node):
             self.clip_boxes_pub.publish(clip_msg)
         except Exception as e:
             self.get_logger().warn(f"CLIP boxes publish failed: {e}")
+
+    def publish_detections(self, stamp: Time):
+        """Publish detected objects as custom messages."""
+        try:
+            if not self.last_detection_meta:
+                return
+
+            for meta in self.last_detection_meta:
+                msg = DetectedObject()
+                msg.object_name = meta["name"]
+                msg.object_id = meta["instance_id"]
+                
+                # Find matching centroid for this detection
+                for centroid_entry in self.last_centroids:
+                    if centroid_entry["instance_id"] == meta["instance_id"]:
+                        cx, cy, cz = centroid_entry["centroid"]
+                        msg.centroid = Vector3(x=float(cx), y=float(cy), z=float(cz))
+                        break
+                
+                msg.timestamp = meta["timestamp"]
+                self.detections_pub.publish(msg)
+        except Exception as e:
+            self.get_logger().warn(f"Detections publish failed: {e}")
 
 def main(args=None):
     rclpy.init(args=args)
