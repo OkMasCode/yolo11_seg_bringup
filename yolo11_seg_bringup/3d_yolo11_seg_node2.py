@@ -19,7 +19,6 @@ from yolo11_seg_interfaces.msg import DetectedObject
 from ultralytics import YOLO
 import torch
 import clip
-from cv_bridge import CvBridge
 import cv2
 from PIL import Image as PILImage
 
@@ -126,21 +125,33 @@ class Yolo11SegNode(Node):
 
     def depth_callback(self, msg: Image):
         """
-        Store the latest depth message.
+        Store the latest depth message with timestamp.
         """
         with self.sync_lock:
             self.latest_depth_msg = msg
 
     def rgb_callback(self, msg: Image):
         """
-        On RGB arrival, process with latest depth if available.
+        On RGB arrival, process with latest depth if available and timestamp is close.
         """
         with self.sync_lock:
             if self.latest_depth_msg is None:
                 return
-            rgb_msg = msg # Store the RGB only when depth is available
+            
+            # Check timestamp synchronization (within 50ms)
+            rgb_time = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+            depth_time = self.latest_depth_msg.header.stamp.sec + self.latest_depth_msg.header.stamp.nanosec * 1e-9
+            time_diff = abs(rgb_time - depth_time)
+            
+            if time_diff > 0.05:  # 50ms threshold
+                self.get_logger().warn(f"RGB/Depth timestamp mismatch: {time_diff:.3f}s")
+                return
+            
+            # Copy messages to avoid holding lock during processing
+            rgb_msg = msg
             depth_msg = self.latest_depth_msg
         
+        # Process outside of lock to avoid blocking callbacks
         self.synced_cb(rgb_msg, depth_msg)
 
     def get_color_for_class(self, class_id: str):
@@ -401,7 +412,7 @@ class Yolo11SegNode(Node):
             self.publish_centroids(rgb_msg.header.stamp, depth_msg.header.frame_id)
 
             # Publish detected objects
-            self.publish_detections(rgb_msg.header.stamp)
+            self.publish_detections(rgb_msg.header.stamp, depth_msg.header.frame_id)
 
         except Exception as e:
             self.get_logger().error(f"Error in synced_cb_vectorized: {e}")
@@ -499,25 +510,43 @@ class Yolo11SegNode(Node):
         except Exception as e:
             self.get_logger().warn(f"CLIP boxes publish failed: {e}")
 
-    def publish_detections(self, stamp: Time):
+    def publish_detections(self, stamp: Time, frame_id: str):
         """Publish detected objects as custom messages."""
         try:
             if not self.last_detection_meta:
                 return
 
             for meta in self.last_detection_meta:
-                msg = DetectedObject()
-                msg.object_name = meta["name"]
-                msg.object_id = meta["instance_id"]
+                instance_id = meta["instance_id"]
                 
-                # Find matching centroid for this detection
+                # Find matching centroid - skip if not found
+                centroid_found = False
                 for centroid_entry in self.last_centroids:
-                    if centroid_entry["instance_id"] == meta["instance_id"]:
+                    if centroid_entry["instance_id"] == instance_id:
                         cx, cy, cz = centroid_entry["centroid"]
-                        msg.centroid = Vector3(x=float(cx), y=float(cy), z=float(cz))
+                        centroid_vec = Vector3(x=float(cx), y=float(cy), z=float(cz))
+                        centroid_found = True
                         break
                 
+                if not centroid_found:
+                    self.get_logger().warn(f"Centroid not found for instance {instance_id}")
+                    continue
+                
+                # Find matching CLIP embedding - use empty array if not found
+                embedding_array = []
+                for clip_entry in self.last_clip_embeddings:
+                    if clip_entry["instance_id"] == instance_id:
+                        embedding_array = clip_entry["embedding"].tolist()
+                        break
+                
+                # Create and populate message
+                msg = DetectedObject()
+                msg.object_name = meta["name"]
+                msg.object_id = instance_id
+                msg.centroid = centroid_vec
                 msg.timestamp = meta["timestamp"]
+                msg.embedding = embedding_array
+                
                 self.detections_pub.publish(msg)
         except Exception as e:
             self.get_logger().warn(f"Detections publish failed: {e}")

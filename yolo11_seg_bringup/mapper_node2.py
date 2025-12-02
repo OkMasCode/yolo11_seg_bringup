@@ -2,19 +2,15 @@
 
 import numpy as np
 import os
-from collections import defaultdict
 import threading
 
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
-from sensor_msgs.msg import PointCloud2
-from sensor_msgs_py import point_cloud2
-from geometry_msgs.msg import Vector3, Point
+from geometry_msgs.msg import Vector3
 from builtin_interfaces.msg import Time
 from visualization_msgs.msg import Marker, MarkerArray
 import tf2_ros
-from ultralytics import YOLO
 
 from yolo11_seg_bringup.mapper2 import SemanticObjectMap
 from yolo11_seg_interfaces.msg import DetectedObject
@@ -46,8 +42,8 @@ class PointCloudMapperNode(Node):
 
         self.semantic_map = SemanticObjectMap(self.tf_buffer, self)
 
-        self.cm_sub = self.create_subscription(DetectedObject, self.cm_topic, self.custom_callback, qos_profile=qos_sensor) # Added
-
+        self.cm_sub = self.create_subscription(DetectedObject, self.cm_topic, self.custom_callback, qos_profile=qos_sensor)
+        
         self.export_timer = self.create_timer(self.export_interval, self.export_callback)
 
         self.lock = threading.Lock()
