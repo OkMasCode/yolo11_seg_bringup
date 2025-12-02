@@ -48,6 +48,12 @@ class PointCloudMapperNode(Node):
 
         self.lock = threading.Lock()
         
+        # ============= Rate Tracking ============= #
+        self.detection_count = 0
+        self.detection_start_time = self.get_clock().now()
+        self.export_count = 0
+        self.export_start_time = self.get_clock().now()
+        
         self.get_logger().info(f"PointCloud Mapper Node initialized. " f"Subscribing to {self.cm_topic}, output to {self.output_dir}")
 
     def custom_callback(self, msg: DetectedObject):
@@ -61,6 +67,7 @@ class PointCloudMapperNode(Node):
                 instance_id = msg.object_id
                 centroid = msg.centroid
                 timestamp = msg.timestamp
+                embedding = msg.embedding
 
                 # Create unique object ID
                 object_id = (
@@ -76,13 +83,23 @@ class PointCloudMapperNode(Node):
                     detection_stamp=timestamp,
                     camera_frame=self.camera_frame,
                     fixed_frame=self.map_frame,
-                    distance_threshold=0.2
+                    distance_threshold=0.2,
+                    embeddings=embedding
                 )
 
                 self.get_logger().debug(
                     f"Detected {class_name} (inst {instance_id}) at "
                     f"({centroid.x:.3f}, {centroid.y:.3f}, {centroid.z:.3f})"
                 )
+                
+                # Update detection rate tracking
+                self.detection_count += 1
+                elapsed = (self.get_clock().now() - self.detection_start_time).nanoseconds / 1e9
+                if elapsed >= 1.0:  # Log rate every second
+                    rate = self.detection_count / elapsed
+                    self.get_logger().info(f"Detection processing rate: {rate:.2f} Hz")
+                    self.detection_count = 0
+                    self.detection_start_time = self.get_clock().now()
 
         except Exception as e:
             self.get_logger().error(f"Error processing DetectedObject: {e}")
@@ -100,6 +117,14 @@ class PointCloudMapperNode(Node):
                 self.get_logger().info(
                     f"Exported {len(self.semantic_map.objects)} detections to {self.output_dir}/detections.csv"
                 )
+                
+                # Update export rate tracking
+                self.export_count += 1
+                elapsed = (self.get_clock().now() - self.export_start_time).nanoseconds / 1e9
+                if elapsed > 0:
+                    rate = self.export_count / elapsed
+                    self.get_logger().info(f"Export rate: {rate:.2f} Hz (1/{self.export_interval:.1f}s expected)")
+                    
             except Exception as e:
                 self.get_logger().error(f"Export failed: {e}")
 

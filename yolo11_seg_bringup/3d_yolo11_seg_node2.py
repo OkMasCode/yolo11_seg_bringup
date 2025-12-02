@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 import struct
 import numpy as np
@@ -98,6 +97,14 @@ class Yolo11SegNode(Node):
         self.fx = self.fy = self.cx = self.cy = None
         self.class_colors = {}
 
+        # ============= Rate Tracking ============= #
+        self.inference_count = 0
+        self.inference_start_time = self.get_clock().now()
+        self.clip_count = 0
+        self.clip_start_time = self.get_clock().now()
+        self.publish_count = 0
+        self.publish_start_time = self.get_clock().now()
+
         self.get_logger().info(f"Ready. Publishing to {self.pc_topic}")
 
     def camera_info_cb(self, msg: CameraInfo):
@@ -137,7 +144,7 @@ class Yolo11SegNode(Node):
         with self.sync_lock:
             if self.latest_depth_msg is None:
                 return
-            
+            """
             # Check timestamp synchronization (within 50ms)
             rgb_time = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
             depth_time = self.latest_depth_msg.header.stamp.sec + self.latest_depth_msg.header.stamp.nanosec * 1e-9
@@ -146,7 +153,7 @@ class Yolo11SegNode(Node):
             if time_diff > 0.05:  # 50ms threshold
                 self.get_logger().warn(f"RGB/Depth timestamp mismatch: {time_diff:.3f}s")
                 return
-            
+            """
             # Copy messages to avoid holding lock during processing
             rgb_msg = msg
             depth_msg = self.latest_depth_msg
@@ -217,6 +224,15 @@ class Yolo11SegNode(Node):
                 persist=True,
                 tracker="bytetrack.yaml",
             )
+
+            # Update inference rate tracking
+            self.inference_count += 1
+            elapsed = (self.get_clock().now() - self.inference_start_time).nanoseconds / 1e9
+            if elapsed >= 1.0:  # Log rate every second
+                rate = self.inference_count / elapsed
+                self.get_logger().info(f"YOLO inference rate: {rate:.2f} Hz")
+                self.inference_count = 0
+                self.inference_start_time = self.get_clock().now()
 
             # Process the first result
             res = results[0]
@@ -303,6 +319,15 @@ class Yolo11SegNode(Node):
                             "square_crop": [int(sx1), int(sy1), int(sx2), int(sy2)],
                             "embedding": feat.squeeze(0).detach().float().cpu().numpy(),
                         })
+                        
+                        # Update CLIP encoding rate tracking
+                        self.clip_count += 1
+                        elapsed = (self.get_clock().now() - self.clip_start_time).nanoseconds / 1e9
+                        if elapsed >= 1.0:  # Log rate every second
+                            rate = self.clip_count / elapsed
+                            self.get_logger().info(f"CLIP encoding rate: {rate:.2f} Hz")
+                            self.clip_count = 0
+                            self.clip_start_time = self.get_clock().now()
                         
                         # Draw CLIP square box on visualization (green for CLIP box)
                         cv2.rectangle(clip_boxes_vis, (sx1, sy1), (sx2, sy2), (0, 255, 0), 2)
@@ -548,6 +573,19 @@ class Yolo11SegNode(Node):
                 msg.embedding = embedding_array
                 
                 self.detections_pub.publish(msg)
+                
+                # Update detection publishing rate tracking
+                self.publish_count += 1
+            
+            # Log publishing rate after processing all detections in this frame
+            if self.publish_count > 0:
+                elapsed = (self.get_clock().now() - self.publish_start_time).nanoseconds / 1e9
+                if elapsed >= 1.0:  # Log rate every second
+                    rate = self.publish_count / elapsed
+                    self.get_logger().info(f"Detection publishing rate: {rate:.2f} Hz")
+                    self.publish_count = 0
+                    self.publish_start_time = self.get_clock().now()
+                    
         except Exception as e:
             self.get_logger().warn(f"Detections publish failed: {e}")
 

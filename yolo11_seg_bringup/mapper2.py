@@ -9,9 +9,9 @@ import csv
 import numpy as np
 from builtin_interfaces.msg import Time
 import os
-from typing import Dict, Tuple, List, Any
+from typing import Dict, Tuple, List, Any, Optional
 
-ObjectEntry = namedtuple('ObjectEntry', ['frame', 'timestamp', 'pose_cam', 'pose_map', 'occurrences', 'name'])
+ObjectEntry = namedtuple('ObjectEntry', ['frame', 'timestamp', 'pose_cam', 'pose_map', 'occurrences', 'name', 'embeddings'])
 
 _EPS = np.finfo(float).eps * 4.0 # Small epsilon value to avoid division by zero in quaternion normalization
 
@@ -59,7 +59,7 @@ class SemanticObjectMap:
         self.tf_buffer = tf_buffer
         self.node = node
 
-    def add_detection(self, object_name: str, object_id: str, pose_in_camera, detection_stamp, camera_frame='camera3_color_optical_frame', fixed_frame='map', distance_threshold=0.2):
+    def add_detection(self, object_name: str, object_id: str, pose_in_camera, detection_stamp, camera_frame='camera3_color_optical_frame', fixed_frame='map', distance_threshold=0.2, embeddings: Optional[np.ndarray] = None):
         try:
             # Request the transform that maps points from camera_frame into fixed_frame.
             # Passing Time(sec=0, nanosec=0) is intended to request the latest transform.
@@ -84,8 +84,10 @@ class SemanticObjectMap:
                         (entry.pose_map[i] * entry.occurrences + new_pose_map[i]) / (entry.occurrences + 1)
                         for i in range(3)
                     )
-                    # Replace the stored entry winewth a  entry that increments occurrences
-                    self.objects[existing_id] = entry._replace(pose_map=avg_pose, occurrences=entry.occurrences+1)
+                    # Replace the stored entry with a new entry that increments occurrences
+                    # If new embeddings are provided, replace the old ones
+                    new_embeddings = embeddings if embeddings is not None else entry.embeddings
+                    self.objects[existing_id] = entry._replace(pose_map=avg_pose, occurrences=entry.occurrences+1, embeddings=new_embeddings)
                     # Log a message that we merged detections
                     self.node.get_logger().info(f"Merged {object_id} into {existing_id}")
                     return False
@@ -99,7 +101,8 @@ class SemanticObjectMap:
                 # store the computed map-frame pose
                 pose_map=new_pose_map,
                 occurrences=1,
-                name=object_name
+                name=object_name,
+                embeddings=embeddings
             )
             return True
 
@@ -164,7 +167,7 @@ class SemanticObjectMap:
                 # Construct a Vector3 from the stored tuple to pass to transform_point.
                 point = Vector3(x=entry.pose_cam[0], y=entry.pose_cam[1], z=entry.pose_cam[2])
                 new_pose = self.transform_point(point, transform)
-                # Update the stored entry's pose_map with the recomputed pose
+                # Update the stored entry's pose_map with the recomputed pose (preserve embeddings)
                 self.objects[object_id] = entry._replace(pose_map=new_pose)
 
             except TransformException as ex:
