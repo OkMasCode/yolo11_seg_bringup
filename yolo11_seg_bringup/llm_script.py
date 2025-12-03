@@ -3,31 +3,43 @@ import json
 import os
 import time
 import sys
+import difflib
 from pydantic import BaseModel
-from typing import List
+from typing import List, Optional
 
 # --- CONFIGURATION ---
 CHAT_MODEL = "llama3.2:3b"
 MAP_FILE = "map.json"
-# Explicitly point to the container's IP/Port
 OLLAMA_HOST = "http://localhost:11435"
 
-# Create the client instance to communicate with the container
-client = ollama.Client(host=OLLAMA_HOST)
+# --- PERCEPTION CONSTRAINTS ---
+# These are the classes your hard-coded detector (e.g., YOLO) can find.
+VALID_OBJECT_CLASSES = [
+    "bottle",
+    "cup",
+    "screwdriver",
+    "keys",
+    "phone",
+    "wallet",
+    "glasses",
+    "remote",
+    "book",
+    "marker"
+]
 
-# Global map
+client = ollama.Client(host=OLLAMA_HOST)
 house_map = {}
 
-# -------------------- CONNECTIVITY CHECK -------------------- #
+# -------------------- CONNECTIVITY & MAP -------------------- #
 
 def wait_for_server():
-    """Ensures the Ollama container is reachable before starting."""
+    """Ensures the Ollama container is reachable."""
     print(f"Connecting to Ollama brain at {OLLAMA_HOST}...")
     retries = 0
     while True:
         try:
-            client.list() # Simple ping to check connection
-            print("Successfully connected to Robot Brain (Container).")
+            client.list()
+            print("Successfully connected to Robot Brain.")
             return
         except Exception:
             retries += 1
@@ -35,47 +47,25 @@ def wait_for_server():
             time.sleep(2)
             if retries > 5:
                 print("ERROR: Could not connect to Ollama.")
-                print("Ensure you ran: docker run ... --network host ...")
                 sys.exit(1)
 
-# -------------------- MAP LOADING & SUMMARY -------------------- #
-
 def load_house_map(filename):
-    """
-    Load a structured house map from JSON.
-    Expected format (keys are room names, values are lists of objects):
-      {
-        "kitchen": [
-          {"object": "mug", "features": ["red"], "pos": [1.2, 0.5]},
-          {"object": "plate", "features": [], "pos": [0.8, 0.4]}
-        ],
-        "bedroom": [
-          {"object": "jacket", "features": ["black"], "pos": [3.1, -0.8]}
-        ]
-      }
-    Everything is normalized to lowercase.
-    """
     if not os.path.exists(filename):
         raise FileNotFoundError(f"House map file not found: {filename}")
-
     with open(filename, "r", encoding="utf-8") as f:
         data = json.load(f)
-
     normalized = {}
-    for room_name, objects in data.items():
-        room_key = room_name.strip().lower()
-        normalized_objects = []
-        for obj in objects:
-            name = str(obj.get("object", "")).strip().lower()
-            features = [str(x).strip().lower() for x in obj.get("features", [])]
-            pos = obj.get("pos", None)
-            normalized_objects.append({
-                "object": name,
-                "features": features,
-                "pos": pos,
+    for room, objs in data.items():
+        # (Normalization logic same as previous version)
+        r_key = room.strip().lower()
+        n_objs = []
+        for o in objs:
+            n_objs.append({
+                "object": str(o.get("object", "")).strip().lower(),
+                "features": [str(x).strip().lower() for x in o.get("features", [])],
+                "pos": o.get("pos", None)
             })
-        normalized[room_key] = normalized_objects
-
+        normalized[r_key] = n_objs
     return normalized
 
 def summarize_house_map(hmap):
@@ -87,35 +77,11 @@ def summarize_house_map(hmap):
 
 # -------------------- TOOLS -------------------- #
 
-def list_rooms():
-    """
-    Return a list of known rooms in the current house map.
-    """
-    return sorted(house_map.keys())
-
-def objects_in_room(room):
-    """
-    Return all known objects in a given room.
-    Args:
-        room (str): room name (case-insensitive)
-    """
-    key = str(room).strip().lower()
-    return house_map.get(key, [])
-
+def list_rooms(): return sorted(house_map.keys())
+def objects_in_room(room): return house_map.get(str(room).strip().lower(), [])
 def rooms_with_object(object_name):
-    """
-    Return all rooms where an object with the given name appears.
-    Args:
-        object_name (str): e.g. "jacket"
-    """
-    name = str(object_name).strip().lower()
-    found_rooms = []
-    for room, objects in house_map.items():
-        for obj in objects:
-            if obj.get("object", "") == name:
-                found_rooms.append(room)
-                break
-    return sorted(found_rooms)
+    target = str(object_name).strip().lower()
+    return sorted([r for r, objs in house_map.items() if any(o['object'] == target for o in objs)])
 
 # -------------------- MAIN LOGIC -------------------- #
 
@@ -124,161 +90,109 @@ class Rooms(BaseModel):
 
 class Goal(BaseModel):
     Goal: str
-    Features: List[str]
+    Features: List[str] # Will contain the CLIP prompt string(s)
+
+def validate_goal_object(raw_goal: str) -> Optional[str]:
+    """Validates object existence in the closed-set class list."""
+    cleaned = raw_goal.strip().lower()
+    if cleaned in VALID_OBJECT_CLASSES: return cleaned
+    matches = difflib.get_close_matches(cleaned, VALID_OBJECT_CLASSES, n=1, cutoff=0.6)
+    return matches[0] if matches else None
 
 def extract_room(user_prompt, house_map_summary):
-    SYSTEM_PROMPT = f"""You are the language interface of a mobile robot in a house.
-
-    You have TOOLS to query a house map:
-    - list_rooms() -> list of room names
-    - objects_in_room(room) -> objects known in that room
-    - rooms_with_object(object_name) -> rooms where that object was seen
-
-    Use these tools FIRST. Then use real-world knowledge about houses.
-
-    Your tasks:
-
-    1) Rank the rooms from the most likely to contain the target object to the least likely:
-    - Answer EXACTLY following the json format:
-            rooms: <list of room names, from most likely to least likely>
-
-    Rules:
-    - Prefer rooms where the object is in the map (use tools).
-    - If the object is NOT in any room, do NOT give up.
-    - Use list_rooms() + objects_in_room(room) to see which rooms contain
-        RELATED objects, and use common sense.
-    - Examples of related objects:
-        * tshirt ~ jacket, trousers, wardrobe (clothes)
-        * toilet paper ~ toilet, sink, bathroom cabinet
-        * food item ~ fridge, stove, pan, pot, plates
-    - Only use 'unknown' when you really cannot guess a room or goal.
-
-    House map summary:
-    {house_map_summary}
-    """
+    # (Same room extraction logic as previous version)
+    SYSTEM_PROMPT = f"""You are a robot navigation interface.
+    1. Identify the target object.
+    2. Use tools to find which room it is in.
+    3. If unknown, infer the likely room based on common sense.
     
-    available_functions = {
-        "list_rooms": list_rooms,
-        "objects_in_room": objects_in_room,
-        "rooms_with_object": rooms_with_object,
-    }
+    House Summary: {house_map_summary}"""
     
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {
-            "role": "user",
-            "content": (
-                "User instruction (robot goal): " + user_prompt + "\n\n"
-                "Remember: respond with:\n"
-                "rooms: <list of room names, from most likely to least likely>"
-            ),
-        },    
-    ]
-
-    # --- Pass 1: Tool Decision ---
-    t_start = time.time()
-    response = client.chat(
-        model=CHAT_MODEL,
-        messages=messages,
-        tools=[list_rooms, objects_in_room, rooms_with_object],
-    )
+    msgs = [{"role": "system", "content": SYSTEM_PROMPT}, 
+            {"role": "user", "content": f"Instr: {user_prompt}. JSON: rooms: [list]"}]
     
-    tool_calls = response["message"].get("tool_calls", [])
-
-    if tool_calls:
-        messages.append(response["message"]) # Keep conversation history
-        
-        for tool in tool_calls:
-            fn_name = tool["function"]["name"]
-            args = tool["function"]["arguments"]
+    # Tool use pass
+    resp = client.chat(model=CHAT_MODEL, messages=msgs, tools=[list_rooms, objects_in_room, rooms_with_object])
+    if resp["message"].get("tool_calls"):
+        msgs.append(resp["message"])
+        for t in resp["message"]["tool_calls"]:
+            fname = t["function"]["name"]
+            args = t["function"]["arguments"]
+            if fname == "list_rooms": res = list_rooms()
+            elif fname == "objects_in_room": res = objects_in_room(**args)
+            elif fname == "rooms_with_object": res = rooms_with_object(**args)
+            else: res = "unknown tool"
+            msgs.append({"role": "tool", "content": json.dumps(res)})
             
-            # Execute tool
-            if fn_name in available_functions:
-                result = available_functions[fn_name](**args)
-                messages.append({
-                    "role": "tool",
-                    "content": json.dumps(result), 
-                })
-                print(f"[TOOL] {fn_name}({args}) -> {result}")
-
-    # --- Pass 2: Final Reasoning (Enforced JSON) ---
-    final_response = client.chat(
-        model=CHAT_MODEL,
-        messages=messages,
-        format=Rooms.model_json_schema(), # <--- Force JSON structure
-    )
-    t_end = time.time()
-    print(f"[TIMING] Room Logic: {t_end - t_start:.3f}s")
-
-    final_text = final_response["message"].get("content", "") or ""
-    rooms = Rooms.model_validate_json(final_text)
-    # build and return the Pydantic model
-    return rooms
+    final = client.chat(model=CHAT_MODEL, messages=msgs, format=Rooms.model_json_schema())
+    return Rooms.model_validate_json(final["message"]["content"])
 
 def extract_goal(user_prompt):
-    SYSTEM_PROMPT = """You are a semantic parser for a mobile robot.
-        From a user's instruction, extract:
-        - goal: what the robot should bring, find, it is always a phisical object.
-        This is usually:
-            * a physical object (mug, tshirt, phone, book),
-            * or a need that points to a type of object
-            (e.g. "I am hungry" -> food / something to eat,
-            "I am thirsty" -> something to drink).
-        - feature: key attributes (color, owner, location phrase).
-        Note that the Goal might not be explicitly mentioned in the instrunction, in 
-        that case you need to infer it from context.
-
-        Rules:
-        - The goal is the THING the robot should address.
-        - If the user says "bring me the tshirt that is on the table":
-            goal: tshirt
-            feature: on the table
-        - If the user says "a glass of milk on the table":
-            goal: glass of milk   (or just "milk in a glass")
-            feature: on the table
-        - Only choose them as goal if the user explicitly wants that thing as goal,
-        e.g. "go to the toilet", "move the table".
-        - If there is no explicit object (e.g. "I'm hungry"), set goal to a generic
-        concept like "food" or "something to eat".
-        - Add feature ONLY if they are specified in the instruction.
-        - Do NOT infer the features.
-        Output format (lowercase, exactly 2 lines):
-
-        goal: <goal-string>
-        feature: <comma-separated-features-or-none>
-
-        No extra text."""
+    """
+    Extracts Goal and formats Features for CLIP.
+    """
+    valid_list_str = ", ".join(VALID_OBJECT_CLASSES)
+    
+    SYSTEM_PROMPT = f"""You are a semantic parser for a robot vision system.
+    
+    Tasks:
+    1. Extract the 'goal' object. It MUST strictly map to one of these: [{valid_list_str}].
+    
+    2. Extract 'features' formatted specifically for a CLIP Vision Model.
+       - The feature MUST be a descriptive phrase including the object and its context/attributes.
+       - DO NOT output isolated words like ["red", "small"].
+       - DO output phrases like ["red bottle on the table"].
+       - If no attributes/context are provided, just repeat the goal name.
+    
+    Examples:
+    - User: "Bring me the screwdriver" -> goal: "screwdriver", features: ["screwdriver"]
+    - User: "Get the keys on the counter" -> goal: "keys", features: ["keys on the counter"]
+    - User: "Find the red cup" -> goal: "cup", features: ["red cup"]
+    
+    Output JSON.
+    """
 
     t_start = time.time()
     response = client.chat(
         model=CHAT_MODEL,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": "User instruction: " + user_prompt,
-            },
+            {"role": "user", "content": user_prompt},
         ],
         format=Goal.model_json_schema(),
     )
     t_end = time.time()
-    print(f"[TIMING] Goal Logic: {t_end - t_start:.3f}s")
     
-    final_text = response["message"].get("content", "") or ""
-    goal = Goal.model_validate_json(final_text)
-    # build and return the Pydantic model
-    return goal
+    try:
+        final_text = response["message"].get("content", "")
+        goal_model = Goal.model_validate_json(final_text)
+        
+        # 1. Validate Object Class (Hard Restriction)
+        validated_name = validate_goal_object(goal_model.Goal)
+        if validated_name:
+            goal_model.Goal = validated_name
+        else:
+            goal_model.Goal = "unknown"
+
+        # 2. Validate/Fix CLIP Prompt (Feature Restriction)
+        # We ensure the feature list is not empty. If the LLM returned [], fill it with goal.
+        if not goal_model.Features or goal_model.Features == [""]:
+            goal_model.Features = [goal_model.Goal]
+            
+        print(f"[TIMING] Goal Logic: {t_end - t_start:.3f}s")
+        return goal_model
+        
+    except Exception as e:
+        print(f"Goal Parsing Error: {e}")
+        return Goal(Goal="unknown", Features=["unknown"])
 
 def main():
     global house_map
-    
-    # 1. Health Check
     wait_for_server()
-
-    # 2. Load Data
     house_map = load_house_map(MAP_FILE)
     house_map_summary = summarize_house_map(house_map)
     print("Map loaded.")
+    print(f"Valid Classes: {VALID_OBJECT_CLASSES}")
 
     while True:
         try:
@@ -286,17 +200,20 @@ def main():
             if not user_prompt: continue
             if user_prompt.lower() in ["q", "quit", "exit"]: break
 
-            # Run Logic
             rooms = extract_room(user_prompt, house_map_summary)
-            print(rooms)
-
-            best_room = rooms.Rooms[0]
             goal = extract_goal(user_prompt)
-            goal_str = goal.Goal
-            print(goal)
+
+            print("-" * 30)
+            if goal.Goal == "unknown":
+                print("Cannot physically detect this object class.")
+            else:
+                print(f"arget Room Priority: {rooms.Rooms}")
+                print(f"Detection Class:      '{goal.Goal}'")
+                print(f"CLIP Search Prompt:   '{goal.Features[0]}'")
+            print("-" * 30)
 
         except Exception as e:
-            print(f"Error processing request: {e}")
+            print(f"Error: {e}")
 
 if __name__ == "__main__":
     main()
