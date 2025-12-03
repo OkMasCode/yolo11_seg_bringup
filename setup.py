@@ -26,6 +26,7 @@ setup(
         'console_scripts': [
             '3d_yolo11_seg_node = yolo11_seg_bringup.3d_yolo11_seg_node:main',
             '3d_yolo11_seg_node2 = yolo11_seg_bringup.3d_yolo11_seg_node2:main',
+            '3d_yolo11_seg_node_main = yolo11_seg_bringup.yolo11_seg_node_main:main',
             '3d_yolo11_seg_node3 = yolo11_seg_bringup.3d_yolo11_seg_node3:main',
             '3d_yolo11_seg_node4 = yolo11_seg_bringup.3d_yolo11_seg_node4:main',
             'stereo_to_pc_node = yolo11_seg_bringup.stereo_to_pc:main',

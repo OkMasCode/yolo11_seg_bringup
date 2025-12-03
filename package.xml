@@ -3,7 +3,7 @@
 <package format="3">
   <name>yolo11_seg_bringup</name>
   <version>0.0.0</version>
-  <description>TODO: Package description</description>
+  <description>ROS2 package for YOLO segmentation with CLIP embeddings and 3D pointcloud generation</description>
   <maintainer email="sensor@todo.todo">sensor</maintainer>
   <license>Apache-2.0</license>
 
@@ -17,7 +17,7 @@
   <exec_depend>cv_bridge</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
   <exec_depend>yolo11_seg_interfaces</exec_depend>
-
+  <exec_depend>visualization_msgs</exec_depend>
   
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
