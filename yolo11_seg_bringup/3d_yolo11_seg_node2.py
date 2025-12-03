@@ -26,7 +26,7 @@ class Yolo11SegNode(Node):
         super().__init__("yolo11_seg_node")
 
         # ============= Parameters ============= #
-        self.declare_parameter("model_path", "/home/sensor/yolo11n-seg.engine")
+        self.declare_parameter("model_path", "/home/sensor/yolov8n-seg.engine")
         self.declare_parameter("image_topic", "/camera/camera/color/image_raw")
         self.declare_parameter("depth_topic", "/camera/camera/aligned_depth_to_color/image_raw")
         self.declare_parameter("camera_info_topic", "/camera/camera/color/camera_info")
@@ -46,6 +46,7 @@ class Yolo11SegNode(Node):
         self.declare_parameter("pc_max_range", 8.0)
         self.declare_parameter("mask_threshold", 0.5)
         self.declare_parameter("clip_square_scale", 1.4)
+        self.declare_parameter("debug_clip_boxes", False)
 
         model_path = self.get_parameter("model_path").value
         self.image_topic = self.get_parameter("image_topic").value
@@ -67,6 +68,7 @@ class Yolo11SegNode(Node):
         self.pc_max_range = float(self.get_parameter("pc_max_range").value)
         self.mask_threshold = float(self.get_parameter("mask_threshold").value)
         self.clip_square_scale = float(self.get_parameter("clip_square_scale").value)
+        self.debug_clip_boxes = bool(self.get_parameter("debug_clip_boxes").value)
 
         # ============= Initialization ============= #
 
@@ -251,7 +253,7 @@ class Yolo11SegNode(Node):
             DEPTH_TOLERANCE = 0.5
             MIN_POINTS = 10
 
-            DYNAMIC_CLASSES = {0, 1, 2, 3, 5, 7, 15, 16}
+            # DYNAMIC_CLASSES = {0, 1, 2, 3, 5, 7, 15, 16}
             
             is_uint16 = (depth_msg.encoding == "16UC1") # If depth is in uint16 format it is in mm
             scale_factor = (1.0 / self.depth_scale) if is_uint16 else 1.0 # Convert from mm to m
@@ -282,23 +284,23 @@ class Yolo11SegNode(Node):
             # Reset detection meta list for this frame
             self.last_detection_meta = []
             
-            # Create visualization image for CLIP boxes
-            clip_boxes_vis = frame_bgr.copy()
+            # Create visualization image for CLIP boxes (lazy copy - only if needed)
+            clip_boxes_vis = None
 
             for i in range(len(xyxy)): # Iterate over detections (ROI coords)
                 
                 class_id = int(clss[i])
 
                 # Skip to next if dynamic class for point cloud generation
-                if class_id in DYNAMIC_CLASSES:
-                    continue
+                # if class_id in DYNAMIC_CLASSES:
+                #     continue
 
                 x1, y1, x2, y2 = xyxy[i]
                 
                 x1 = max(0, min(x1, width - 1))
-                x2 = max(0, min(x2, width))
+                x2 = max(0, min(x2, width - 1))
                 y1 = max(0, min(y1, height - 1))
-                y2 = max(0, min(y2, height))
+                y2 = max(0, min(y2, height - 1))
 
                 if x2 <= x1 or y2 <= y1:
                     continue # Invalid / empty box
@@ -317,37 +319,18 @@ class Yolo11SegNode(Node):
                 sy2 = int(np.ceil(cy + half))
                 sx1 = max(0, min(sx1, width - 1))
                 sy1 = max(0, min(sy1, height - 1))
-                sx2 = max(0, min(sx2, width))
-                sy2 = max(0, min(sy2, height))
+                sx2 = max(0, min(sx2, width - 1))
+                sy2 = max(0, min(sy2, height - 1))
 
-                # CLIP embedding for the square crop (if valid)
+                # Store crop info for later CLIP processing (deferred to avoid blocking)
+                clip_crop_info = None
                 if sx2 > sx1 and sy2 > sy1:
-                    crop_bgr = frame_bgr[sy1:sy2, sx1:sx2]
-                    try:
-                        crop_rgb = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2RGB)
-                        pil_crop = PILImage.fromarray(crop_rgb)
-                        image_in = self.preprocess(pil_crop).unsqueeze(0).to(self.device)
-                        with torch.no_grad():
-                            feat = self.model2.encode_image(image_in)
-                            feat = feat / feat.norm(dim=-1, keepdim=True)
-                        # store on CPU to keep memory stable
-                        self.last_clip_embeddings.append({
-                            "class_id": class_id,
-                            "instance_id": int(ids[i]) if isinstance(ids, np.ndarray) else 0,
-                            "bbox_full": [int(x1), int(y1), int(x2), int(y2)],
-                            "square_crop": [int(sx1), int(sy1), int(sx2), int(sy2)],
-                            "embedding": feat.squeeze(0).detach().float().cpu().numpy(),
-                        })
-
-                        # Draw CLIP square box on visualization (green for CLIP box)
-                        cv2.rectangle(clip_boxes_vis, (sx1, sy1), (sx2, sy2), (0, 255, 0), 2)
-                        # Draw original bbox (red)
-                        cv2.rectangle(clip_boxes_vis, (x1, y1), (x2, y2), (0, 0, 255), 1)
-                        # Add label
-                        label = f"ID:{int(ids[i])} cls:{class_id}"
-                        cv2.putText(clip_boxes_vis, label, (sx1, sy1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-                    except Exception as e:
-                        self.get_logger().warn(f"CLIP embedding failed for det {i}: {e}")
+                    clip_crop_info = {
+                        "sx1": sx1, "sy1": sy1, "sx2": sx2, "sy2": sy2,
+                        "x1": x1, "y1": y1, "x2": x2, "y2": y2,
+                        "class_id": class_id,
+                        "instance_id": int(ids[i]) if isinstance(ids, np.ndarray) else 0
+                    }
 
                 if x2 <= x1 or y2 <= y1:
                     continue # Invalid / empty box
@@ -388,34 +371,39 @@ class Yolo11SegNode(Node):
                 x_clean_t = (u_clean_t - self.cx_t) * z_clean_t / self.fx_t
                 y_clean_t = (v_clean_t - self.cy_t) * z_clean_t / self.fy_t
 
-                # Convert back to numpy for centroid computation and pointcloud building
-                x_clean = x_clean_t.cpu().numpy()
-                y_clean = y_clean_t.cpu().numpy()
-                z_clean = z_clean_t.cpu().numpy()
-                u_clean = u_clean_t.cpu().numpy()
-                v_clean = v_clean_t.cpu().numpy()
-
                 class_id = int(clss[i])
                 instance_id = int(ids[i])
 
                 r, g, b = self.get_color_for_class(str(class_id))
                 rgb_packed = self.pack_rgb(r, g, b)
 
-                N = x_clean.size
-                instance_cloud = np.zeros((N, 6), dtype=np.float32)
-                instance_cloud[:, 0] = x_clean
-                instance_cloud[:, 1] = y_clean
-                instance_cloud[:, 2] = z_clean
-                instance_cloud[:, 3] = rgb_packed
-                instance_cloud[:, 4] = class_id
-                instance_cloud[:, 5] = instance_id
+                # Build pointcloud using GPU tensors for speed
+                N = x_clean_t.shape[0]
+                if N == 0:
+                    continue
+
+                rgb_packed_t = torch.full((N,), float(rgb_packed), dtype=torch.float32, device=device)
+                class_id_t = torch.full((N,), float(class_id), dtype=torch.float32, device=device)
+                instance_id_t = torch.full((N,), float(instance_id), dtype=torch.float32, device=device)
+
+                instance_cloud_t = torch.stack(
+                    [
+                        x_clean_t.to(torch.float32),
+                        y_clean_t.to(torch.float32),
+                        z_clean_t.to(torch.float32),
+                        rgb_packed_t,
+                        class_id_t,
+                        instance_id_t,
+                    ],
+                    dim=1,
+                )
 
                 class_name = self.names[class_id]
 
-                # Centroid computation (mean of filtered 3D points)
-                centroid_x = float(np.mean(x_clean))
-                centroid_y = float(np.mean(y_clean))
-                centroid_z = float(np.mean(z_clean))
+                # Centroid computation on GPU (faster than numpy)
+                centroid_x = float(torch.mean(x_clean_t).item())
+                centroid_y = float(torch.mean(y_clean_t).item())
+                centroid_z = float(torch.mean(z_clean_t).item())
                 self.last_centroids.append({
                     "class_id": class_id,
                     "instance_id": instance_id,
@@ -427,19 +415,49 @@ class Yolo11SegNode(Node):
                     nanosec=rgb_msg.header.stamp.nanosec
                 )
 
-                # Store per-detection metadata (not used elsewhere for now)
+                # Store per-detection metadata
                 self.last_detection_meta.append({
                     "name": class_name,
                     "instance_id": instance_id,
                     "timestamp": timestamp,
                 })
 
-                # (Marker creation moved to publish_centroids for clarity)
-                
-                all_points_list.append(instance_cloud)
+                # Process CLIP embeddings for this detection
+                if clip_crop_info is not None:
+                    sx1, sy1, sx2, sy2 = clip_crop_info["sx1"], clip_crop_info["sy1"], clip_crop_info["sx2"], clip_crop_info["sy2"]
+                    x1, y1, x2, y2 = clip_crop_info["x1"], clip_crop_info["y1"], clip_crop_info["x2"], clip_crop_info["y2"]
+                    crop_bgr = frame_bgr[sy1:sy2, sx1:sx2]
+                    try:
+                        crop_rgb = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2RGB)
+                        pil_crop = PILImage.fromarray(crop_rgb)
+                        image_in = self.preprocess(pil_crop).unsqueeze(0).to(self.device)
+                        with torch.no_grad():
+                            feat = self.model2.encode_image(image_in)
+                            feat = feat / feat.norm(dim=-1, keepdim=True)
+                        self.last_clip_embeddings.append({
+                            "class_id": clip_crop_info["class_id"],
+                            "instance_id": clip_crop_info["instance_id"],
+                            "bbox_full": [int(x1), int(y1), int(x2), int(y2)],
+                            "square_crop": [int(sx1), int(sy1), int(sx2), int(sy2)],
+                            "embedding": feat.squeeze(0).detach().float().cpu().numpy(),
+                        })
+                        
+                        # Only create visualization if debug mode is enabled
+                        if self.debug_clip_boxes:
+                            if clip_boxes_vis is None:
+                                clip_boxes_vis = frame_bgr.copy()
+                            cv2.rectangle(clip_boxes_vis, (sx1, sy1), (sx2, sy2), (0, 255, 0), 2)
+                            cv2.rectangle(clip_boxes_vis, (x1, y1), (x2, y2), (0, 0, 255), 1)
+                            label = f"ID:{instance_id} cls:{class_id}"
+                            cv2.putText(clip_boxes_vis, label, (sx1, sy1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+                    except Exception as e:
+                        self.get_logger().warn(f"CLIP embedding failed for det {i}: {e}")
+
+                all_points_list.append(instance_cloud_t)
 
             if all_points_list:
-                final_points = np.vstack(all_points_list)
+                final_points_t = torch.cat(all_points_list, dim=0)
+                final_points = final_points_t.detach().cpu().numpy().astype(np.float32)
                 
                 # Pointcloud computation timing (before publish)
                 pc_end = self.get_clock().now()
@@ -454,8 +472,9 @@ class Yolo11SegNode(Node):
             except Exception as e:
                 self.get_logger().warn(f"Annotated publish failed: {e}")
             
-            # Publish CLIP boxes visualization
-            self.publish_clip_boxes_image(clip_boxes_vis, rgb_msg.header)
+            # Publish CLIP boxes visualization (only if we had detections with crops)
+            if clip_boxes_vis is not None:
+                self.publish_clip_boxes_image(clip_boxes_vis, rgb_msg.header)
 
             # Publish centroids via helper function for this frame
             self.publish_centroids(rgb_msg.header.stamp, depth_msg.header.frame_id)
