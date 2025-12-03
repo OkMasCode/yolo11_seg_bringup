@@ -26,13 +26,11 @@ class Yolo11SegNode(Node):
         super().__init__("yolo11_seg_node")
 
         # ============= Parameters ============= #
-        self.declare_parameter("model_path", "/home/sensor/yolo11n-seg.engine")
+        self.declare_parameter("model_path", "/home/sensor/yolov8n-seg.engine")
         self.declare_parameter("image_topic", "/camera/camera/color/image_raw")
         self.declare_parameter("depth_topic", "/camera/camera/aligned_depth_to_color/image_raw")
         self.declare_parameter("camera_info_topic", "/camera/camera/color/camera_info")
         self.declare_parameter("pointcloud_topic", "/yolo/pointcloud")
-        self.declare_parameter("annotated_topic", "/yolo/annotated")
-        self.declare_parameter("clip_boxes_topic", "/yolo/clip_boxes")
         self.declare_parameter("detections_topic", "/yolo/detections")
         
         self.declare_parameter("conf", 0.25)
@@ -50,8 +48,6 @@ class Yolo11SegNode(Node):
         self.depth_topic = self.get_parameter("depth_topic").value
         self.camera_info_topic = self.get_parameter("camera_info_topic").value
         self.pc_topic = self.get_parameter("pointcloud_topic").value
-        self.anno_topic = self.get_parameter("annotated_topic").value
-        self.clip_boxes_topic = self.get_parameter("clip_boxes_topic").value
         self.detections_topic = self.get_parameter("detections_topic").value
 
         self.conf = float(self.get_parameter("conf").value)
@@ -90,8 +86,6 @@ class Yolo11SegNode(Node):
 
         self.marker_pub = self.create_publisher(MarkerArray, "/yolo/centroids", 10)
         self.pc_pub = self.create_publisher(PointCloud2, self.pc_topic, 10)
-        self.anno_pub = self.create_publisher(Image, self.anno_topic, 10)
-        self.clip_boxes_pub = self.create_publisher(Image, self.clip_boxes_topic, 10)
         self.detections_pub = self.create_publisher(DetectedObject, self.detections_topic, 10)
 
         self.fx = self.fy = self.cx = self.cy = None
@@ -261,9 +255,6 @@ class Yolo11SegNode(Node):
             self.last_centroids = []
             # Reset detection meta list for this frame
             self.last_detection_meta = []
-            
-            # Create visualization image for CLIP boxes
-            clip_boxes_vis = frame_bgr.copy()
 
             for i in range(len(xyxy)): # Iterate over detections (ROI coords)
                 
@@ -318,14 +309,6 @@ class Yolo11SegNode(Node):
                             "square_crop": [int(sx1), int(sy1), int(sx2), int(sy2)],
                             "embedding": feat.squeeze(0).detach().float().cpu().numpy(),
                         })
-
-                        # Draw CLIP square box on visualization (green for CLIP box)
-                        cv2.rectangle(clip_boxes_vis, (sx1, sy1), (sx2, sy2), (0, 255, 0), 2)
-                        # Draw original bbox (red)
-                        cv2.rectangle(clip_boxes_vis, (x1, y1), (x2, y2), (0, 0, 255), 1)
-                        # Add label
-                        label = f"ID:{int(ids[i])} cls:{class_id}"
-                        cv2.putText(clip_boxes_vis, label, (sx1, sy1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
                     except Exception as e:
                         self.get_logger().warn(f"CLIP embedding failed for det {i}: {e}")
 
@@ -428,15 +411,6 @@ class Yolo11SegNode(Node):
                 
                 self.publish_pointcloud(final_points, depth_msg.header)
 
-            try:
-                annotated_bgr = res.plot()
-                self.publish_annotated_image(annotated_bgr, rgb_msg.header)
-            except Exception as e:
-                self.get_logger().warn(f"Annotated publish failed: {e}")
-            
-            # Publish CLIP boxes visualization
-            self.publish_clip_boxes_image(clip_boxes_vis, rgb_msg.header)
-
             # Publish centroids via helper function for this frame
             self.publish_centroids(rgb_msg.header.stamp, depth_msg.header.frame_id)
 
@@ -525,24 +499,6 @@ class Yolo11SegNode(Node):
             self.pc_pub.publish(cloud_msg)
         except Exception as e:
             self.get_logger().warn(f"PointCloud publish failed: {e}")
-
-    def publish_annotated_image(self, bgr_image: np.ndarray, header):
-        """Publish an annotated image given BGR array and header."""
-        try:
-            anno_msg = self.bridge.cv2_to_imgmsg(bgr_image, encoding="bgr8")
-            anno_msg.header = header
-            self.anno_pub.publish(anno_msg)
-        except Exception as e:
-            self.get_logger().warn(f"Annotated publish failed: {e}")
-
-    def publish_clip_boxes_image(self, bgr_image: np.ndarray, header):
-        """Publish the CLIP boxes visualization image given BGR array and header."""
-        try:
-            clip_msg = self.bridge.cv2_to_imgmsg(bgr_image, encoding="bgr8")
-            clip_msg.header = header
-            self.clip_boxes_pub.publish(clip_msg)
-        except Exception as e:
-            self.get_logger().warn(f"CLIP boxes publish failed: {e}")
 
     def publish_detections(self, stamp: Time, frame_id: str):
         """Publish detected objects as custom messages."""

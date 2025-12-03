@@ -11,43 +11,27 @@ from sensor_msgs_py import point_cloud2
 from cv_bridge import CvBridge
 from ultralytics import YOLO
 import cv2
+import torch
+from message_filters import Subscriber, ApproximateTimeSynchronizer
 
 class Yolo11SegNode(Node):
     def __init__(self):
         super().__init__("yolo11_seg_node")
 
-        # ============= Parameters ============= #
-        self.declare_parameter("model_path", "/home/sensor/yolo11n-seg.engine")
-        self.declare_parameter("image_topic", "/camera/camera/color/image_raw")
-        self.declare_parameter("depth_topic", "/camera/camera/aligned_depth_to_color/image_raw")
-        self.declare_parameter("camera_info_topic", "/camera/camera/color/camera_info")
-        self.declare_parameter("pointcloud_topic", "/yolo/pointcloud")
-        
-        self.declare_parameter("conf", 0.25)
-        self.declare_parameter("iou", 0.70)
-        self.declare_parameter("imgsz", 640)
-        self.declare_parameter("retina_masks", True)
-        self.declare_parameter("depth_scale", 1000.0)
-        self.declare_parameter("pc_downsample", 2)
-        self.declare_parameter("pc_max_range", 8.0)
-        self.declare_parameter("mask_threshold", 0.5)
+        model_path = "/home/sensor/yolo11n-seg.engine"
+        self.image_topic = "/camera/camera/color/image_raw"
+        self.depth_topic = "/camera/camera/aligned_depth_to_color/image_raw"
+        self.camera_info_topic = "/camera/camera/color/camera_info"
+        self.pc_topic = "/yolo/pointcloud"
 
-        model_path = self.get_parameter("model_path").value
-        self.image_topic = self.get_parameter("image_topic").value
-        self.depth_topic = self.get_parameter("depth_topic").value
-        self.camera_info_topic = self.get_parameter("camera_info_topic").value
-        self.pc_topic = self.get_parameter("pointcloud_topic").value
-
-        self.conf = float(self.get_parameter("conf").value)
-        self.iou = float(self.get_parameter("iou").value)
-        self.imgsz = int(self.get_parameter("imgsz").value)
-        self.retina_masks = bool(self.get_parameter("retina_masks").value)
-        self.depth_scale = float(self.get_parameter("depth_scale").value)
-        self.pc_downsample = int(self.get_parameter("pc_downsample").value)
-        self.pc_max_range = float(self.get_parameter("pc_max_range").value)
-        self.mask_threshold = float(self.get_parameter("mask_threshold").value)
-
-        # ============= Initialization ============= #
+        self.conf = 0.25
+        self.iou = 0.70
+        self.imgsz = 640
+        self.retina_masks = True
+        self.depth_scale = 1000.0
+        self.pc_downsample = 2
+        self.pc_max_range = 8.0
+        self.mask_threshold = 0.5
 
         self.get_logger().info(f"Loading model: {model_path}")
         self.model = YOLO(model_path, task="segment")
@@ -56,9 +40,9 @@ class Yolo11SegNode(Node):
         qos_sensor = QoSProfile(depth=1, history=HistoryPolicy.KEEP_LAST, reliability=ReliabilityPolicy.BEST_EFFORT, durability=DurabilityPolicy.VOLATILE)
 
         self.bridge = CvBridge()
- 
+
         self.latest_depth_msg = None
-        self.sync_lock = threading.Lock()
+        self.sync_lock = threading.Lock() # To protect access to latest_depth_msg
 
         self.rgb_sub = self.create_subscription(Image, self.image_topic, self.rgb_callback, qos_profile=qos_sensor)
         self.depth_sub = self.create_subscription(Image, self.depth_topic, self.depth_callback, qos_profile=qos_sensor)
@@ -67,15 +51,8 @@ class Yolo11SegNode(Node):
         self.pc_pub = self.create_publisher(PointCloud2, self.pc_topic, 10)
 
         self.fx = self.fy = self.cx = self.cy = None
+        self.fx_t = self.fy_t = self.cx_t = self.cy_t = None  # Cached tensors
         self.class_colors = {}
-
-        # ============= Rate Tracking ============= #
-        self.inference_count = 0
-        self.inference_start_time = self.get_clock().now()
-        self.publish_count = 0
-        self.publish_start_time = self.get_clock().now()
-
-        self.get_logger().info(f"Ready. Publishing to {self.pc_topic}")
 
     def camera_info_cb(self, msg: CameraInfo):
         """Read camera intrinsic parameters."""
@@ -84,10 +61,6 @@ class Yolo11SegNode(Node):
             self.cx = msg.k[2]
             self.fy = msg.k[4]
             self.cy = msg.k[5]
-            self.get_logger().info(
-                f"Camera intrinsics set: fx={self.fx:.2f}, fy={self.fy:.2f}, "
-                f"cx={self.cx:.2f}, cy={self.cy:.2f}"
-            )
 
     def depth_callback(self, msg: Image):
         """Store the latest depth message."""
@@ -101,7 +74,7 @@ class Yolo11SegNode(Node):
                 return
             rgb_msg = msg
             depth_msg = self.latest_depth_msg
-        
+
         self.synced_cb(rgb_msg, depth_msg)
 
     def get_color_for_class(self, class_id: str):
@@ -128,6 +101,9 @@ class Yolo11SegNode(Node):
         Perform YOLOv11-seg inference and generate colored 3D point cloud.
         """
         try:
+            # Start end-to-end timing
+            cb_start = self.get_clock().now()
+            
             # Convert ROS images to OpenCV
             frame_bgr = self.bridge.imgmsg_to_cv2(rgb_msg, desired_encoding="bgr8")
             depth_img = self.bridge.imgmsg_to_cv2(depth_msg, desired_encoding="passthrough")
@@ -138,6 +114,7 @@ class Yolo11SegNode(Node):
             height, width = depth_img.shape
 
             # YOLO inference
+            yolo_start = self.get_clock().now()
             results = self.model.track(
                 source=frame_bgr,
                 imgsz=self.imgsz,
@@ -147,116 +124,152 @@ class Yolo11SegNode(Node):
                 stream=False,
                 verbose=False,
                 persist=True,
-                tracker="bytetrack.yaml",
+                tracker="botsort.yaml",
             )
-
-            # Update inference rate tracking
-            self.inference_count += 1
-            elapsed = (self.get_clock().now() - self.inference_start_time).nanoseconds / 1e9
-            if elapsed >= 1.0:  # Log rate every second
-                rate = self.inference_count / elapsed
-                self.get_logger().info(f"YOLO inference rate: {rate:.2f} Hz")
-                self.inference_count = 0
-                self.inference_start_time = self.get_clock().now()
+            yolo_end = self.get_clock().now()
+            yolo_time = (yolo_end - yolo_start).nanoseconds / 1e9
+            self.get_logger().info(f"YOLO inference time: {yolo_time:.3f} seconds, {1.0/yolo_time:.2f} FPS")
 
             res = results[0]
 
             if not hasattr(res, "boxes") or len(res.boxes) == 0:
+                self.get_logger().info("No objects detected, skipping pointcloud", throttle_duration_sec=2.0)
                 return
 
+            # Start pointcloud computation timing
+            pc_start = self.get_clock().now()
+            
             xyxy = res.boxes.xyxy.cpu().numpy().astype(int)
             clss = res.boxes.cls.cpu().numpy().astype(int)
             ids  = res.boxes.id.cpu().numpy().astype(int) if res.boxes.id is not None else np.zeros(len(clss))
-            masks = res.masks.data.cpu().numpy() if hasattr(res, "masks") and res.masks is not None else None
+            masks_t = res.masks.data if hasattr(res, "masks") and res.masks is not None else None
 
             all_points_list = []
 
             DEPTH_TOLERANCE = 0.5
             MIN_POINTS = 10
-            DYNAMIC_CLASSES = {0, 1, 2, 3, 5, 7, 15, 16}
+            # DYNAMIC_CLASSES = {0, 1, 2, 3, 5, 7, 15, 16}
             
             is_uint16 = (depth_msg.encoding == "16UC1")
             scale_factor = (1.0 / self.depth_scale) if is_uint16 else 1.0
+
+            # Choose device based on YOLO masks if available, else prefer CUDA
+            device = (
+                masks_t.device
+                if masks_t is not None and isinstance(masks_t, torch.Tensor)
+                else (torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"))
+            )
+
+            # Cache intrinsic tensors on first use
+            if self.fx_t is None or self.fx_t.device != device:
+                self.fx_t = torch.tensor(self.fx, dtype=torch.float32, device=device)
+                self.fy_t = torch.tensor(self.fy, dtype=torch.float32, device=device)
+                self.cx_t = torch.tensor(self.cx, dtype=torch.float32, device=device)
+                self.cy_t = torch.tensor(self.cy, dtype=torch.float32, device=device)
+
+            depth_t = torch.from_numpy(depth_img.astype(np.float32)).to(device)
+            valid_mask_t = (depth_t > 0) & (~torch.isnan(depth_t))
+            if self.pc_max_range > 0.0:
+                valid_mask_t = valid_mask_t & (depth_t * scale_factor <= self.pc_max_range)
 
             for i in range(len(xyxy)):
                 class_id = int(clss[i])
 
                 # Skip dynamic classes
-                if class_id in DYNAMIC_CLASSES:
-                    continue
+                # if class_id in DYNAMIC_CLASSES:
+                #     continue
 
                 x1, y1, x2, y2 = xyxy[i]
                 
                 x1 = max(0, min(x1, width - 1))
-                x2 = max(0, min(x2, width))
+                x2 = max(0, min(x2, width - 1))
                 y1 = max(0, min(y1, height - 1))
-                y2 = max(0, min(y2, height))
+                y2 = max(0, min(y2, height - 1))
 
                 if x2 <= x1 or y2 <= y1:
                     continue
 
-                valid_mask = (depth_img > 0) & (~np.isnan(depth_img))
- 
-                if self.pc_max_range > 0.0:
-                    valid_mask &= (depth_img * scale_factor <= self.pc_max_range)
-
                 # Use segmentation mask if available
-                if masks is not None and i < len(masks):
-                    obj_mask = masks[i] >= self.mask_threshold
-                else:
+                if masks_t is None or i >= masks_t.shape[0]:
                     continue
 
-                valid = valid_mask & obj_mask
-                v_coords, u_coords = np.where(valid)
+                obj_mask_t = (masks_t[i] >= self.mask_threshold).to(device)
+                valid_t = valid_mask_t & obj_mask_t
 
-                if v_coords.size < MIN_POINTS:
+                v_coords_t, u_coords_t = valid_t.nonzero(as_tuple=True)
+                if v_coords_t.numel() < MIN_POINTS:
                     continue
 
-                z_vals = depth_img[v_coords, u_coords].astype(np.float32) * scale_factor
+                z_vals_t = (depth_t[v_coords_t, u_coords_t] * scale_factor).to(torch.float32)
 
-                # Filter around median depth
-                median_z = np.median(z_vals)
-                keep_mask = np.abs(z_vals - median_z) < DEPTH_TOLERANCE
-                
-                if not np.any(keep_mask):
+                # Fast outlier rejection using percentiles (faster than median)
+                z_min = torch.quantile(z_vals_t, 0.1)
+                z_max = torch.quantile(z_vals_t, 0.9)
+                keep_mask_t = (z_vals_t >= z_min) & (z_vals_t <= z_max)
+                if not torch.any(keep_mask_t):
                     continue
 
-                z_clean = z_vals[keep_mask]
-                u_clean = u_coords[keep_mask]
-                v_clean = v_coords[keep_mask]
+                z_clean_t = z_vals_t[keep_mask_t]
+                u_clean_t = u_coords_t[keep_mask_t].to(torch.float32)
+                v_clean_t = v_coords_t[keep_mask_t].to(torch.float32)
 
-                # Convert to 3D coordinates
-                x_clean = (u_clean - self.cx) * z_clean / self.fx
-                y_clean = (v_clean - self.cy) * z_clean / self.fy
+                # Optional downsampling for speed
+                if self.pc_downsample and self.pc_downsample > 1:
+                    step = int(self.pc_downsample)
+                    idx = torch.arange(0, z_clean_t.shape[0], step, device=device)
+                    z_clean_t = z_clean_t[idx]
+                    u_clean_t = u_clean_t[idx]
+                    v_clean_t = v_clean_t[idx]
+
+                # Convert to 3D coordinates (using cached tensors)
+                x_clean_t = (u_clean_t - self.cx_t) * z_clean_t / self.fx_t
+                y_clean_t = (v_clean_t - self.cy_t) * z_clean_t / self.fy_t
 
                 instance_id = int(ids[i])
 
                 r, g, b = self.get_color_for_class(str(class_id))
                 rgb_packed = self.pack_rgb(r, g, b)
 
-                N = x_clean.size
-                instance_cloud = np.zeros((N, 6), dtype=np.float32)
-                instance_cloud[:, 0] = x_clean
-                instance_cloud[:, 1] = y_clean
-                instance_cloud[:, 2] = z_clean
-                instance_cloud[:, 3] = rgb_packed
-                instance_cloud[:, 4] = class_id
-                instance_cloud[:, 5] = instance_id
+                N = x_clean_t.shape[0]
+                if N == 0:
+                    continue
 
-                all_points_list.append(instance_cloud)
+                rgb_packed_t = torch.full((N,), float(rgb_packed), dtype=torch.float32, device=device)
+                class_id_t = torch.full((N,), float(class_id), dtype=torch.float32, device=device)
+                instance_id_t = torch.full((N,), float(instance_id), dtype=torch.float32, device=device)
+
+                instance_cloud_t = torch.stack(
+                    [
+                        x_clean_t.to(torch.float32),
+                        y_clean_t.to(torch.float32),
+                        z_clean_t.to(torch.float32),
+                        rgb_packed_t,
+                        class_id_t,
+                        instance_id_t,
+                    ],
+                    dim=1,
+                )
+
+                all_points_list.append(instance_cloud_t)
 
             if all_points_list:
-                final_points = np.vstack(all_points_list)
-                self.publish_pointcloud(final_points, depth_msg.header)
+                final_points_t = torch.cat(all_points_list, dim=0)
+                final_points = final_points_t.detach().cpu().numpy().astype(np.float32)
                 
-                # Update pointcloud publishing rate tracking
-                self.publish_count += 1
-                elapsed = (self.get_clock().now() - self.publish_start_time).nanoseconds / 1e9
-                if elapsed >= 1.0:  # Log rate every second
-                    rate = self.publish_count / elapsed
-                    self.get_logger().info(f"PointCloud publishing rate: {rate:.2f} Hz")
-                    self.publish_count = 0
-                    self.publish_start_time = self.get_clock().now()
+                # Pointcloud computation timing (before publish)
+                pc_end = self.get_clock().now()
+                pc_time = (pc_end - pc_start).nanoseconds / 1e9
+                self.get_logger().info(f"Pointcloud computation time: {pc_time:.3f} seconds, {1.0/pc_time:.2f} FPS")
+                
+                self.publish_pointcloud(final_points, depth_msg.header)
+                self.get_logger().info(f"Published pointcloud with {final_points.shape[0]} points", throttle_duration_sec=2.0)
+                
+                # End-to-end timing
+                cb_end = self.get_clock().now()
+                total_time = (cb_end - cb_start).nanoseconds / 1e9
+                self.get_logger().info(f"End-to-end processing time: {total_time:.3f} seconds, {1.0/total_time:.2f} FPS")
+            else:
+                self.get_logger().info("No valid points to publish", throttle_duration_sec=2.0)
 
         except Exception as e:
             self.get_logger().error(f"Error in synced_cb: {e}")
