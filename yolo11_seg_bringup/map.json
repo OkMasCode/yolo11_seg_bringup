@@ -1,0 +1,80 @@
+{
+  "kitchen": [
+    {
+      "object": "sink",
+      "features": [],
+      "pos": [1.2, 0.5]
+    },
+    {
+      "object": "screwdriver",
+      "features": [],
+      "pos": [1.1, 0.1]
+    },
+    {
+      "object": "table",
+      "features": [],
+      "pos": [0.8, 0.4]
+    },
+    {
+      "object": "chair",
+      "features": [],
+      "pos": [0.85, 0.5]
+    },
+    {
+      "object": "chair",
+      "features": [],
+      "pos": [0.95, 0.5]
+    },
+    {
+      "object": "chair",
+      "features": [],
+      "pos": [0.85, 0.3]
+    }
+  ],
+  "bedroom": [
+    {
+      "object": "bed",
+      "features": ["green"],
+      "pos": [3.1, -0.8]
+    },
+    {
+      "object": "cabinet",
+      "features": [],
+      "pos": [3.7, -0.1]
+    },
+    {
+      "object": "chair",
+      "features": [],
+      "pos": [2.2, 0.3]
+    },
+    {
+      "object": "closet",
+      "features": [],
+      "pos": [4.2, -0.5]
+    }
+  ],
+  "living room": [
+    {
+      "object": "sofa",
+      "features": ["grey"],
+      "pos": [0.0, 0.0]
+    },
+    {
+      "object": "tv",
+      "features": [],
+      "pos": [0.5, 1.5]
+    }
+  ],
+  "bathroom": [
+    {
+      "object": "sink",
+      "features": [],
+      "pos": [0.4, -4.2]
+    },
+    {
+      "object": "toilet",
+      "features": [],
+      "pos": [0.5, -1.5]
+    }
+  ]
+}
