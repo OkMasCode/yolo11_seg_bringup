@@ -34,7 +34,9 @@ class Yolo11SegNode(Node):
         self.declare_parameter("annotated_topic", "/yolo/annotated")
         self.declare_parameter("clip_boxes_topic", "/yolo/clip_boxes")
         self.declare_parameter("detections_topic", "/yolo/detections")
-        
+        self.declare_parameter("text_prompt", "a photo of a person}")
+
+        self.declare_parameter("similarity_threshold", 0.3)
         self.declare_parameter("conf", 0.25)
         self.declare_parameter("iou", 0.70)
         self.declare_parameter("imgsz", 640)
@@ -53,7 +55,9 @@ class Yolo11SegNode(Node):
         self.anno_topic = self.get_parameter("annotated_topic").value
         self.clip_boxes_topic = self.get_parameter("clip_boxes_topic").value
         self.detections_topic = self.get_parameter("detections_topic").value
+        self.text_prompt = self.get_parameter("text_prompt").value
 
+        self.similarity_threshold = float(self.get_parameter("similarity_threshold").value)
         self.conf = float(self.get_parameter("conf").value)
         self.iou = float(self.get_parameter("iou").value)
         self.imgsz = int(self.get_parameter("imgsz").value)
@@ -77,6 +81,11 @@ class Yolo11SegNode(Node):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.get_logger().info(f"Loading CLIP model on {self.device}...")
         self.model2, self.preprocess = clip.load("ViT-B/32", device=self.device)
+
+        self.text_features = self.encode_text_prompt(self.text_prompt)
+        self.text_embedding_list = self.text_features.cpu().numpy().flatten().tolist()
+        self.get_logger().info(f"Searching for: '{self.text_prompt}'")
+
         self.last_clip_embeddings = []  # list of dicts for the latest frame (not published)
         self.last_centroids = []  # list of dicts: {'class_id','instance_id','centroid':(x,y,z)} for latest frame
         self.last_detection_meta = []  # list of dicts: {'name','instance_id','timestamp'} for latest frame
@@ -99,6 +108,17 @@ class Yolo11SegNode(Node):
         self.class_colors = {}
 
         self.get_logger().info(f"Ready. Publishing to {self.pc_topic}")
+
+    def encode_text_prompt(self, text):
+        with torch.no_grad():
+            text_token = clip.tokenize([text]).to(self.device)
+            
+            # FIX: Use self.model2 (CLIP), not self.model (YOLO)
+            text_features = self.model2.encode_text(text_token)
+            
+            text_features /= text_features.norm(dim=-1, keepdim=True)
+            
+        return text_features
 
     def camera_info_cb(self, msg: CameraInfo):
         """
@@ -580,6 +600,7 @@ class Yolo11SegNode(Node):
                 msg.centroid = centroid_vec
                 msg.timestamp = meta["timestamp"]
                 msg.embedding = embedding_array
+                msg.text_embedding = self.text_embedding_list
                 
                 self.detections_pub.publish(msg)
                     
