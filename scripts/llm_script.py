@@ -9,11 +9,12 @@ from typing import List, Optional
 
 # --- CONFIGURATION ---
 CHAT_MODEL = "llama3.2:3b"
-MAP_FILE = "map.json"
+MAP_FILE = "/home/sensor/ros2_ws/src/yolo11_seg_bringup/config/map.json"
+OUTPUT_FILE = "robot_command.json"  # <--- File to store the result
 OLLAMA_HOST = "http://localhost:11435"
 
 # --- PERCEPTION CONSTRAINTS ---
-# These are the classes your hard-coded detector (e.g., YOLO) can find.
+# The classes your robot's vision system can physically detect.
 VALID_OBJECT_CLASSES = [
     "bottle",
     "cup",
@@ -56,7 +57,6 @@ def load_house_map(filename):
         data = json.load(f)
     normalized = {}
     for room, objs in data.items():
-        # (Normalization logic same as previous version)
         r_key = room.strip().lower()
         n_objs = []
         for o in objs:
@@ -90,7 +90,7 @@ class Rooms(BaseModel):
 
 class Goal(BaseModel):
     Goal: str
-    Features: List[str] # Will contain the CLIP prompt string(s)
+    Features: List[str]
 
 def validate_goal_object(raw_goal: str) -> Optional[str]:
     """Validates object existence in the closed-set class list."""
@@ -100,7 +100,6 @@ def validate_goal_object(raw_goal: str) -> Optional[str]:
     return matches[0] if matches else None
 
 def extract_room(user_prompt, house_map_summary):
-    # (Same room extraction logic as previous version)
     SYSTEM_PROMPT = f"""You are a robot navigation interface.
     1. Identify the target object.
     2. Use tools to find which room it is in.
@@ -111,7 +110,6 @@ def extract_room(user_prompt, house_map_summary):
     msgs = [{"role": "system", "content": SYSTEM_PROMPT}, 
             {"role": "user", "content": f"Instr: {user_prompt}. JSON: rooms: [list]"}]
     
-    # Tool use pass
     resp = client.chat(model=CHAT_MODEL, messages=msgs, tools=[list_rooms, objects_in_room, rooms_with_object])
     if resp["message"].get("tool_calls"):
         msgs.append(resp["message"])
@@ -128,9 +126,7 @@ def extract_room(user_prompt, house_map_summary):
     return Rooms.model_validate_json(final["message"]["content"])
 
 def extract_goal(user_prompt):
-    """
-    Extracts Goal and formats Features for CLIP.
-    """
+    """Extracts Goal and formats Features for CLIP."""
     valid_list_str = ", ".join(VALID_OBJECT_CLASSES)
     
     SYSTEM_PROMPT = f"""You are a semantic parser for a robot vision system.
@@ -152,7 +148,6 @@ def extract_goal(user_prompt):
     Output JSON.
     """
 
-    t_start = time.time()
     response = client.chat(
         model=CHAT_MODEL,
         messages=[
@@ -161,7 +156,6 @@ def extract_goal(user_prompt):
         ],
         format=Goal.model_json_schema(),
     )
-    t_end = time.time()
     
     try:
         final_text = response["message"].get("content", "")
@@ -174,17 +168,45 @@ def extract_goal(user_prompt):
         else:
             goal_model.Goal = "unknown"
 
-        # 2. Validate/Fix CLIP Prompt (Feature Restriction)
-        # We ensure the feature list is not empty. If the LLM returned [], fill it with goal.
+        # 2. Validate/Fix CLIP Prompt
         if not goal_model.Features or goal_model.Features == [""]:
             goal_model.Features = [goal_model.Goal]
             
-        print(f"[TIMING] Goal Logic: {t_end - t_start:.3f}s")
         return goal_model
         
     except Exception as e:
         print(f"Goal Parsing Error: {e}")
         return Goal(Goal="unknown", Features=["unknown"])
+
+# -------------------- FILE OUTPUT -------------------- #
+
+def save_result(rooms: Rooms, goal: Goal, original_prompt: str):
+    """
+    Saves the final navigation command to a JSON file.
+    This file can be watched by a ROS2 node or C++ application.
+    """
+    data = {
+        "timestamp": time.time(),
+        "prompt": original_prompt,
+        "valid": goal.Goal != "unknown",
+        "navigation": {
+            "target_rooms": rooms.Rooms,
+            "priority_room": rooms.Rooms[0] if rooms.Rooms else None
+        },
+        "perception": {
+            "target_class": goal.Goal,
+            "clip_search_prompt": goal.Features[0]
+        }
+    }
+    
+    try:
+        with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=4)
+        print(f"💾 Command written to: {os.path.abspath(OUTPUT_FILE)}")
+    except IOError as e:
+        print(f"Error writing output file: {e}")
+
+# -------------------- MAIN -------------------- #
 
 def main():
     global house_map
@@ -203,13 +225,16 @@ def main():
             rooms = extract_room(user_prompt, house_map_summary)
             goal = extract_goal(user_prompt)
 
+            # Save result to JSON file
+            save_result(rooms, goal, user_prompt)
+
             print("-" * 30)
             if goal.Goal == "unknown":
-                print("Cannot physically detect this object class.")
+                print("❌ Cannot physically detect this object class.")
             else:
-                print(f"arget Room Priority: {rooms.Rooms}")
-                print(f"Detection Class:      '{goal.Goal}'")
-                print(f"CLIP Search Prompt:   '{goal.Features[0]}'")
+                print(f"📍 Target Rooms:     {rooms.Rooms}")
+                print(f"🎯 Detection Class:  '{goal.Goal}'")
+                print(f"👁️ CLIP Prompt:      '{goal.Features[0]}'")
             print("-" * 30)
 
         except Exception as e:
