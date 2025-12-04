@@ -11,7 +11,7 @@ from builtin_interfaces.msg import Time
 import os
 from typing import Dict, Tuple, List, Any, Optional
 
-ObjectEntry = namedtuple('ObjectEntry', ['frame', 'timestamp', 'pose_cam', 'pose_map', 'occurrences', 'name', 'embeddings'])
+ObjectEntry = namedtuple('ObjectEntry', ['frame', 'timestamp', 'pose_cam', 'pose_map', 'occurrences', 'name', 'similarity'])
 
 _EPS = np.finfo(float).eps * 4.0 # Small epsilon value to avoid division by zero in quaternion normalization
 
@@ -59,7 +59,7 @@ class SemanticObjectMap:
         self.tf_buffer = tf_buffer
         self.node = node
 
-    def add_detection(self, object_name: str, object_id: str, pose_in_camera, detection_stamp, camera_frame='camera3_color_optical_frame', fixed_frame='map', distance_threshold=0.2, embeddings: Optional[np.ndarray] = None):
+    def add_detection(self, object_name: str, object_id: str, pose_in_camera, detection_stamp, camera_frame='camera3_color_optical_frame', fixed_frame='map', distance_threshold=0.2, embeddings: Optional[np.ndarray] = None, goal_embedding: Optional[np.ndarray] = None):
         try:
             # Request the transform that maps points from camera_frame into fixed_frame.
             # Passing Time(sec=0, nanosec=0) is intended to request the latest transform.
@@ -70,6 +70,14 @@ class SemanticObjectMap:
                 camera_frame,
                 Time(sec=0, nanosec=0) # rclpy.time.Time.from_msg(detection_stamp) 
             ) # retrieve the transform from fixed frame to camera frame in the instant the detection happened
+
+
+            img_vec = np.array(embeddings, dtype=np.float32)
+            txt_vec = np.array(goal_embedding, dtype=np.float32)
+
+            # 2. Compute Similarity
+            # Since Node 1 already normalized them, we just dot product.
+            similarity = np.dot(img_vec, txt_vec)
 
             # Convert the point expressed in camera_frame into coordinates in fixed_frame.
             new_pose_map = self.transform_point(pose_in_camera, transform) # get the coordinates of the object in the absolute frame
@@ -85,9 +93,9 @@ class SemanticObjectMap:
                         for i in range(3)
                     )
                     # Replace the stored entry with a new entry that increments occurrences
-                    # If new embeddings are provided, replace the old ones
-                    new_embeddings = embeddings if embeddings is not None else entry.embeddings
-                    self.objects[existing_id] = entry._replace(pose_map=avg_pose, occurrences=entry.occurrences+1, embeddings=new_embeddings)
+                    # If new embeddings are provided, replace the old similarity with the new one
+                    new_similarity = similarity if similarity is not None else entry.similarity
+                    self.objects[existing_id] = entry._replace(pose_map=avg_pose, occurrences=entry.occurrences+1, similarity=new_similarity)
                     # Log a message that we merged detections
                     self.node.get_logger().info(f"Merged {object_id} into {existing_id}")
                     return False
@@ -102,7 +110,7 @@ class SemanticObjectMap:
                 pose_map=new_pose_map,
                 occurrences=1,
                 name=object_name,
-                embeddings=embeddings
+                similarity=similarity
             )
             return True
 

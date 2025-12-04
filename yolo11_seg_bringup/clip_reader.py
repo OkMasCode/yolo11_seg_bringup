@@ -25,6 +25,7 @@ class SimilarityNode(Node):
         # 3. Output
         print(f"Object {msg.object_id} Similarity: {similarity * 100:.2f}%")
 
+
 def main(args=None):
     rclpy.init(args=args)
     node = SimilarityNode()

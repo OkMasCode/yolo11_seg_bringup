@@ -68,6 +68,7 @@ class PointCloudMapperNode(Node):
                 centroid = msg.centroid
                 timestamp = msg.timestamp
                 embedding = msg.embedding
+                goal_embedding = msg.text_embedding
 
                 # Create unique object ID
                 object_id = (
@@ -84,7 +85,8 @@ class PointCloudMapperNode(Node):
                     camera_frame=self.camera_frame,
                     fixed_frame=self.map_frame,
                     distance_threshold=0.2,
-                    embeddings=embedding
+                    embeddings=embedding,
+                    goal_embedding=goal_embedding
                 )
 
                 self.get_logger().debug(
@@ -148,6 +150,7 @@ class PointCloudMapperNode(Node):
                 )
             except Exception as e:
                 self.get_logger().error(f"Final export failed: {e}")
+
 
 def main(args=None):
     rclpy.init(args=args)
