@@ -117,7 +117,10 @@ class PointCloudMapperNode(Node):
                 self.get_logger().info(
                     f"Exported {len(self.semantic_map.objects)} detections to {self.output_dir}/detections.csv"
                 )
-                
+                self.semantic_map.export_to_json(
+                    directory_path="/home/sensor/ros2_ws/src/yolo11_seg_bringup/config/",
+                    file="map.json"
+                )
                 # Update export rate tracking
                 self.export_count += 1
                 elapsed = (self.get_clock().now() - self.export_start_time).nanoseconds / 1e9

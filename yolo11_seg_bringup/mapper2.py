@@ -196,3 +196,48 @@ class SemanticObjectMap:
                 x, y, z = entry.pose_map
                 writer.writerow([entry.name, x, y, z])
         return
+
+    def export_to_json(self, directory_path, file='map.json'):
+        """
+        Export the current object map to a JSON file.
+
+        Format:
+        [
+            {
+                "class": "sink",
+                "coords": {"x": 1.23, "y": 2.34, "z": 3.45}
+            },
+            ...
+        ]
+        """
+        import json
+        import os
+
+        # Refresh stored poses before exporting
+        self.update_all_to_latest_map()
+        
+        os.makedirs(directory_path, exist_ok=True)
+        path = os.path.join(directory_path, file)
+
+        # Build the data structure in memory first
+        export_data = []
+        
+        for _, entry in list(self.objects.items()):
+            x, y, z = entry.pose_map
+            
+            # Create the dictionary object structure
+            obj_record = {
+                "class": entry.name,
+                "coords": {
+                    "x": x,
+                    "y": y,
+                    "z": z
+                }
+            }
+            export_data.append(obj_record)
+
+        # Write the list to a JSON file with indentation for readability
+        with open(path, 'w') as json_file:
+            json.dump(export_data, json_file, indent=4)
+            
+        return
