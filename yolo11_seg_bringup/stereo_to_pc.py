@@ -10,15 +10,8 @@ class DepthToPointCloud(Node):
     def __init__(self):
         super().__init__('depth_to_pointcloud_node')
 
-        # --- CONFIGURATION ---
-        # Run "ros2 bag info" to check if your topic is named correctly!
-        # For RealSense, it is usually:
-        # /camera/camera/aligned_depth_to_color/image_raw  (Best)
-        # /camera/camera/depth/image_rect_raw              (Okay, but uncolored)
         self.depth_topic = '/camera/camera/aligned_depth_to_color/image_raw'
         self.info_topic = '/camera/camera/color/camera_info' 
-        # Note: If using aligned depth, use '/camera/color/camera_info'
-        # If using raw depth, use '/camera/depth/camera_info'
 
         self.depth_scale = 0.001  # RealSense uint16 mm -> meters
         self.decimation = 2       # 1 = Full Res, 2 = Half Res (Faster)
@@ -65,7 +58,8 @@ class DepthToPointCloud(Node):
         # 1. Downsample (Optional optimization)
         step = self.decimation
         if step > 1:
-            depth_img = depth_img[::step, ::step]
+            depth_img = depth_img[::step, ::step] # Downsample by skipping rows/cols
+            # Adjust intrinsics
             fx = self.fx / step
             fy = self.fy / step
             cx = self.cx / step

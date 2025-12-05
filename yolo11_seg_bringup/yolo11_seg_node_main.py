@@ -22,6 +22,7 @@ from .utils.pointcloud import PointCloudProcessor
 from .utils.clip_processor import CLIPProcessor
 from .utils.visualization import Visualizer
 
+# Define COCO class names
 CLASS_NAMES = [
     "person",         # 0
     "bicycle",        # 1
@@ -151,17 +152,15 @@ class Yolo11SegNode(Node):
         self.declare_parameter("text_prompt", "a photo of a person")
         
         # Algorithm parameters
-        self.declare_parameter("similarity_threshold", 0.3)
         self.declare_parameter("conf", 0.25)
         self.declare_parameter("iou", 0.70)
         self.declare_parameter("imgsz", 640)
-        self.declare_parameter("retina_masks", True)
+        self.declare_parameter("retina_masks", True) # use retina masks for higher resolution
         self.declare_parameter("depth_scale", 1000.0)
-        self.declare_parameter("pc_downsample", 2)
-        self.declare_parameter("pc_max_range", 8.0)
+        self.declare_parameter("pc_downsample", 2) # factor for downsampling pointcloud
+        self.declare_parameter("pc_max_range", 8.0) # meters
         self.declare_parameter("mask_threshold", 0.5)
-        self.declare_parameter("clip_square_scale", 1.4)
-        self.declare_parameter("debug_clip_boxes", False)
+        self.declare_parameter("clip_square_scale", 1.4) # scale factor for enlarging clip box around detection
         self.declare_parameter("publish_annotated", False)
         self.declare_parameter("publish_clip_boxes_vis", False)
     
@@ -179,7 +178,6 @@ class Yolo11SegNode(Node):
         self.text_prompt = self.get_parameter("text_prompt").value
         
         # Algorithm settings
-        self.similarity_threshold = float(self.get_parameter("similarity_threshold").value)
         self.conf = float(self.get_parameter("conf").value)
         self.iou = float(self.get_parameter("iou").value)
         self.imgsz = int(self.get_parameter("imgsz").value)
@@ -189,7 +187,6 @@ class Yolo11SegNode(Node):
         self.pc_max_range = float(self.get_parameter("pc_max_range").value)
         self.mask_threshold = float(self.get_parameter("mask_threshold").value)
         self.clip_square_scale = float(self.get_parameter("clip_square_scale").value)
-        self.debug_clip_boxes = bool(self.get_parameter("debug_clip_boxes").value)
         self.publish_annotated = bool(self.get_parameter("publish_annotated").value)
         self.publish_clip_boxes_vis = bool(self.get_parameter("publish_clip_boxes_vis").value)
     
@@ -197,7 +194,6 @@ class Yolo11SegNode(Node):
         """Initialize YOLO and CLIP models."""
         self.get_logger().info(f"Loading YOLO model: {self.model_path}")
         self.model = YOLO(self.model_path, task="segment")
-        self.names = getattr(self.model, "names", {})
 
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.get_logger().info(f"Loading CLIP model on {self.device}...")

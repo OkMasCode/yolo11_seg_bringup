@@ -22,7 +22,7 @@ class PointCloudMapperNode(Node):
         # ============= Parameters ============= #
 
         self.declare_parameter("detection_message", "/yolo/detections")
-        self.declare_parameter("output_dir", "/home/sensor/ros2_ws/src/yolo11_seg_bringup")
+        self.declare_parameter("output_dir", "/home/sensor/ros2_ws/src/yolo11_seg_bringup/config/")
         self.declare_parameter("export_interval", 5.0)
         self.declare_parameter("map_frame", "camera_color_optical_frame")
         self.declare_parameter("camera_frame", "camera_color_optical_frame")
@@ -50,12 +50,6 @@ class PointCloudMapperNode(Node):
         self.export_timer = self.create_timer(self.export_interval, self.export_callback)
 
         self.lock = threading.Lock()
-        
-        # ============= Rate Tracking ============= #
-        self.detection_count = 0
-        self.detection_start_time = self.get_clock().now()
-        self.export_count = 0
-        self.export_start_time = self.get_clock().now()
         
         self.get_logger().info(f"PointCloud Mapper Node initialized. " f"Subscribing to {self.cm_topic}, output to {self.output_dir}")
 
@@ -98,15 +92,6 @@ class PointCloudMapperNode(Node):
                     f"Detected {class_name} (inst {instance_id}) at "
                     f"({centroid.x:.3f}, {centroid.y:.3f}, {centroid.z:.3f})"
                 )
-                
-                # Update detection rate tracking
-                self.detection_count += 1
-                elapsed = (self.get_clock().now() - self.detection_start_time).nanoseconds / 1e9
-                if elapsed >= 1.0:  # Log rate every second
-                    rate = self.detection_count / elapsed
-                    self.get_logger().info(f"Detection processing rate: {rate:.2f} Hz")
-                    self.detection_count = 0
-                    self.detection_start_time = self.get_clock().now()
 
         except Exception as e:
             self.get_logger().error(f"Error processing DetectedObject: {e}")
@@ -157,15 +142,9 @@ class PointCloudMapperNode(Node):
                     f"Exported {len(self.semantic_map.objects)} detections to {self.output_dir}/detections.csv"
                 )
                 self.semantic_map.export_to_json(
-                    directory_path="/home/sensor/ros2_ws/src/yolo11_seg_bringup/config/",
+                    directory_path=self.output_dir,
                     file="map.json"
                 )
-                # Update export rate tracking
-                self.export_count += 1
-                elapsed = (self.get_clock().now() - self.export_start_time).nanoseconds / 1e9
-                if elapsed > 0:
-                    rate = self.export_count / elapsed
-                    self.get_logger().info(f"Export rate: {rate:.2f} Hz (1/{self.export_interval:.1f}s expected)")
                     
             except Exception as e:
                 self.get_logger().error(f"Export failed: {e}")
