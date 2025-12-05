@@ -110,6 +110,7 @@ class DepthToPointCloud(Node):
         pc2 = point_cloud2.create_cloud(msg.header, fields, points)
         self.pub_pc.publish(pc2)
 
+
 def main(args=None):
     rclpy.init(args=args)
     node = DepthToPointCloud()
