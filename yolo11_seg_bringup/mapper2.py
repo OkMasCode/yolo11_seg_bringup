@@ -97,7 +97,7 @@ class SemanticObjectMap:
                     new_similarity = similarity if similarity is not None else entry.similarity
                     self.objects[existing_id] = entry._replace(pose_map=avg_pose, occurrences=entry.occurrences+1, similarity=new_similarity)
                     # Log a message that we merged detections
-                    self.node.get_logger().info(f"Merged {object_id} into {existing_id}")
+                    # self.node.get_logger().info(f"Merged {object_id} into {existing_id}")
                     return False
 
             # If we didn't merge, create a new ObjectEntry and store it

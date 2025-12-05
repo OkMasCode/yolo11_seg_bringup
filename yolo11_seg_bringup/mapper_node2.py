@@ -21,13 +21,13 @@ class PointCloudMapperNode(Node):
 
         # ============= Parameters ============= #
 
-        self.declare_parameter("custom_message", "/yolo/custom_message") # Added
+        self.declare_parameter("detection_message", "/yolo/detections")
         self.declare_parameter("output_dir", "/home/sensor/ros2_ws/src/yolo11_seg_bringup")
         self.declare_parameter("export_interval", 5.0)
         self.declare_parameter("map_frame", "camera_color_optical_frame")
         self.declare_parameter("camera_frame", "camera_color_optical_frame")
         
-        self.cm_topic = self.get_parameter("custom_message").value # Added
+        self.cm_topic = self.get_parameter("detection_message").value
         self.output_dir = self.get_parameter("output_dir").value
         self.export_interval = float(self.get_parameter("export_interval").value)
         self.map_frame = self.get_parameter("map_frame").value
@@ -89,7 +89,7 @@ class PointCloudMapperNode(Node):
                     goal_embedding=goal_embedding
                 )
 
-                self.get_logger().debug(
+                self.get_logger().info(
                     f"Detected {class_name} (inst {instance_id}) at "
                     f"({centroid.x:.3f}, {centroid.y:.3f}, {centroid.z:.3f})"
                 )
@@ -132,8 +132,6 @@ class PointCloudMapperNode(Node):
                     
             except Exception as e:
                 self.get_logger().error(f"Export failed: {e}")
-
-        self.publish_centroids()
 
     def shutdown_callback(self):
         """

@@ -21,6 +21,89 @@ import clip
 import cv2
 from PIL import Image as PILImage
 
+CLASS_NAMES = [
+    "person",         # 0
+    "bicycle",        # 1
+    "car",            # 2
+    "motorcycle",     # 3
+    "airplane",       # 4
+    "bus",            # 5
+    "train",          # 6
+    "truck",          # 7
+    "boat",           # 8
+    "traffic light",  # 9
+    "fire hydrant",   # 10
+    "stop sign",      # 11
+    "parking meter",  # 12
+    "bench",          # 13
+    "bird",           # 14
+    "cat",            # 15
+    "dog",            # 16
+    "horse",          # 17
+    "sheep",          # 18
+    "cow",            # 19
+    "elephant",       # 20
+    "bear",           # 21
+    "zebra",          # 22
+    "giraffe",        # 23
+    "backpack",       # 24
+    "umbrella",       # 25
+    "handbag",        # 26
+    "tie",            # 27
+    "suitcase",       # 28
+    "frisbee",        # 29
+    "skis",           # 30
+    "snowboard",      # 31
+    "sports ball",    # 32
+    "kite",           # 33
+    "baseball bat",   # 34
+    "baseball glove", # 35
+    "skateboard",     # 36
+    "surfboard",      # 37
+    "tennis racket",  # 38
+    "bottle",         # 39
+    "wine glass",     # 40
+    "cup",            # 41
+    "fork",           # 42
+    "knife",          # 43
+    "spoon",          # 44
+    "bowl",           # 45
+    "banana",         # 46
+    "apple",          # 47
+    "sandwich",       # 48
+    "orange",         # 49
+    "broccoli",       # 50
+    "carrot",         # 51
+    "hot dog",        # 52
+    "pizza",          # 53
+    "donut",          # 54
+    "cake",           # 55
+    "chair",          # 56
+    "couch",          # 57
+    "potted plant",   # 58
+    "bed",            # 59
+    "dining table",   # 60
+    "toilet",         # 61
+    "tv",             # 62
+    "laptop",         # 63
+    "mouse",          # 64
+    "remote",         # 65
+    "keyboard",       # 66
+    "cell phone",     # 67
+    "microwave",      # 68
+    "oven",           # 69
+    "toaster",        # 70
+    "sink",           # 71
+    "refrigerator",   # 72
+    "book",           # 73
+    "clock",          # 74
+    "vase",           # 75
+    "scissors",       # 76
+    "teddy bear",     # 77
+    "hair drier",     # 78
+    "toothbrush",     # 79
+]
+
 class Yolo11SegNode(Node):
     def __init__(self):
         super().__init__("yolo11_seg_node")
@@ -74,7 +157,6 @@ class Yolo11SegNode(Node):
 
         self.get_logger().info(f"Loading model: {model_path}")
         self.model = YOLO(model_path, task="segment")
-        self.names = getattr(self.model, "names", {})
 
         qos_sensor = QoSProfile(depth=1, history=HistoryPolicy.KEEP_LAST, reliability=ReliabilityPolicy.BEST_EFFORT, durability=DurabilityPolicy.VOLATILE)
 
@@ -177,6 +259,16 @@ class Yolo11SegNode(Node):
                 g = (g + 64) & 0xFF
             self.class_colors[class_id] = (r, g, b)
         return self.class_colors[class_id]
+
+    @staticmethod
+    def class_id_to_name(class_id: int) -> str:
+        """
+        Convert a class ID to its corresponding class name.
+        If the class ID is out of range, return a generic name.
+        """
+        if 0 <= class_id < len(CLASS_NAMES):
+            return CLASS_NAMES[class_id]
+        return f"class_{class_id}"
 
     @staticmethod
     def pack_rgb(r: int, g: int, b: int) -> float:
@@ -398,7 +490,7 @@ class Yolo11SegNode(Node):
                     dim=1,
                 )
 
-                class_name = self.names[class_id]
+                class_name = self.class_id_to_name(class_id)
 
                 # Centroid computation on GPU (faster than numpy)
                 centroid_x = float(torch.mean(x_clean_t).item())
@@ -421,6 +513,7 @@ class Yolo11SegNode(Node):
                     "instance_id": instance_id,
                     "timestamp": timestamp,
                 })
+                print(f"Detected {class_name} (inst {instance_id}) at ({centroid_x:.3f}, {centroid_y:.3f}, {centroid_z:.3f})")
 
                 # Process CLIP embeddings for this detection
                 if clip_crop_info is not None:
@@ -530,7 +623,7 @@ class Yolo11SegNode(Node):
             for idx, entry in enumerate(self.last_centroids):
                 cx, cy, cz = entry["centroid"]
                 class_id = int(entry["class_id"])
-                class_name = self.names[class_id] if class_id in self.names else str(class_id)
+                class_name = self.class_id_to_name(class_id)
                 centroid_vec = Vector3(x=float(cx), y=float(cy), z=float(cz))
 
                 marker = self.create_centroid_marker(
