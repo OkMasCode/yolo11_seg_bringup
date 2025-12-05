@@ -1,0 +1,320 @@
+# YOLO11 Segmentation Bringup Package
+
+ROS2 package for real-time object detection and semantic mapping using YOLOv11 segmentation with CLIP embeddings and 3D pointcloud generation.
+
+## Overview
+
+This package provides a complete pipeline for detecting objects in RGB-D camera streams, computing semantic embeddings with CLIP, generating 3D pointclouds, and building a semantic map of the environment.
+
+## Package Structure
+
+```
+yolo11_seg_bringup/
+├── yolo11_seg_bringup/           # Python package source
+│   ├── __init__.py
+│   ├── 3d_yolo11_seg_node2.py    # Legacy YOLO node (monolithic)
+│   ├── yolo11_seg_node_main.py   # Main YOLO detection node (modular)
+│   ├── mapper_node2.py           # Semantic mapping node
+│   ├── mapper2.py                # Semantic map data structure
+│   ├── clip_reader.py            # Semantic map visualization node
+│   ├── stereo_to_pc.py           # Stereo to pointcloud converter
+│   └── utils/                    # Utility modules
+│       ├── clip_processor.py     # CLIP embedding processing
+│       ├── pointcloud.py         # Pointcloud generation utilities
+│       └── visualization.py      # Visualization helpers
+├── launch/
+│   └── yolo_mapper_reader.launch.py  # Main launch file
+├── config/
+│   └── map.json                  # Exported semantic map (JSON)
+├── test/                         # Unit tests
+├── package.xml                   # ROS2 package manifest
+├── setup.py                      # Python package setup
+└── README.md                     # This file
+```
+
+## Nodes
+
+### 1. YOLO Segmentation Node (`yolo11_seg_node_main.py`)
+
+**Purpose:** Performs real-time object detection and instance segmentation on RGB-D camera streams using YOLOv11, computes CLIP embeddings for each detection, and generates colored 3D pointclouds.
+
+**Subscribed Topics:**
+- `/camera/camera/color/image_raw` (sensor_msgs/Image) - RGB image stream
+- `/camera/camera/aligned_depth_to_color/image_raw` (sensor_msgs/Image) - Aligned depth image
+- `/camera/camera/color/camera_info` (sensor_msgs/CameraInfo) - Camera intrinsic parameters
+
+**Published Topics:**
+- `/yolo/detections` (yolo11_seg_interfaces/DetectedObject) - Per-detection messages with centroid, embeddings, and metadata
+- `/yolo/pointcloud` (sensor_msgs/PointCloud2) - Colored 3D pointcloud with class and instance IDs
+- `/yolo/centroids` (visualization_msgs/MarkerArray) - Centroid markers for visualization
+- `/yolo/annotated` (sensor_msgs/Image) - Annotated RGB image (optional)
+- `/yolo/clip_boxes` (sensor_msgs/Image) - CLIP crop visualization (optional)
+
+**Key Features:**
+- YOLOv11 instance segmentation with tracking
+- CLIP embedding generation for semantic similarity
+- GPU-accelerated pointcloud generation
+- Configurable detection parameters (confidence, IOU, image size)
+- Optional visualization outputs
+
+---
+
+### 2. Semantic Mapper Node (`mapper_node2.py`)
+
+**Purpose:** Builds and maintains a semantic map by aggregating detections over time, merging nearby detections into single objects, and transforming coordinates to a fixed reference frame.
+
+**Subscribed Topics:**
+- `/yolo/detections` (yolo11_seg_interfaces/DetectedObject) - Incoming detections from YOLO node
+
+**Published Topics:**
+- `/yolo/semantic_map` (yolo11_seg_interfaces/SemanticObjectArray) - Complete semantic map snapshot (all stored objects)
+
+**Exported Files:**
+- `detections.csv` - Periodic export of semantic map (every 5 seconds)
+- `detections_final.csv` - Final export on node shutdown
+- `config/map.json` - JSON format semantic map
+
+**Key Features:**
+- Spatial deduplication (merges detections within 20cm threshold)
+- TF2-based coordinate transformation to fixed frame
+- Occurrence counting for detection confidence
+- CLIP similarity scoring
+- Automatic periodic export
+
+---
+
+### 3. Semantic Map Reader (`clip_reader.py`)
+
+**Purpose:** Subscribes to the semantic map topic and prints all detected objects with their names, 3D coordinates, and similarity scores for debugging and monitoring.
+
+**Subscribed Topics:**
+- `/yolo/semantic_map` (yolo11_seg_interfaces/SemanticObjectArray) - Semantic map updates
+
+**Output:**
+Logs each object in the format:
+```
+name=<class_name>, coords=(<x>, <y>, <z>), similarity=<score>
+```
+
+**Key Features:**
+- Real-time semantic map monitoring
+- Human-readable output format
+- Useful for debugging and verification
+
+---
+
+## Installation
+
+### Prerequisites
+- ROS2 (Humble or later)
+- Python 3.8+
+- CUDA-capable GPU (recommended)
+- YOLOv11 model file (`.engine` or `.pt`)
+
+### Dependencies
+```bash
+# Install Python dependencies
+pip install ultralytics torch torchvision clip opencv-python pillow numpy
+
+# Build the workspace
+cd ~/ros2_ws
+colcon build --packages-select yolo11_seg_interfaces yolo11_seg_bringup
+source install/setup.bash
+```
+
+## Usage
+
+### Option 1: Launch All Nodes Together (Recommended)
+
+```bash
+# Source your workspace
+source ~/ros2_ws/install/setup.bash
+
+# Launch with default parameters
+ros2 launch yolo11_seg_bringup yolo_mapper_reader.launch.py
+
+# Launch with custom parameters
+ros2 launch yolo11_seg_bringup yolo_mapper_reader.launch.py \
+    model_path:=/path/to/your/model.engine \
+    text_prompt:="a photo of a bottle" \
+    map_frame:=map \
+    camera_frame:=camera_link
+```
+
+**Available Launch Arguments:**
+- `model_path` - Path to YOLO model file (default: `/home/sensor/yolov8n-seg.engine`)
+- `image_topic` - RGB image topic (default: `/camera/camera/color/image_raw`)
+- `depth_topic` - Depth image topic (default: `/camera/camera/aligned_depth_to_color/image_raw`)
+- `camera_info_topic` - Camera info topic (default: `/camera/camera/color/camera_info`)
+- `text_prompt` - CLIP text prompt for similarity (default: `"a photo of a person"`)
+- `map_frame` - Fixed frame for semantic map (default: `camera_color_optical_frame`)
+- `camera_frame` - Camera frame for detections (default: `camera_color_optical_frame`)
+
+---
+
+### Option 2: Run Nodes in Separate Terminals
+
+**Terminal 1: YOLO Segmentation Node**
+```bash
+source ~/ros2_ws/install/setup.bash
+ros2 run yolo11_seg_bringup 3d_yolo11_seg_node_main \
+    --ros-args \
+    -p model_path:=/home/sensor/yolov8n-seg.engine \
+    -p image_topic:=/camera/camera/color/image_raw \
+    -p depth_topic:=/camera/camera/aligned_depth_to_color/image_raw \
+    -p camera_info_topic:=/camera/camera/color/camera_info \
+    -p text_prompt:="a photo of a person" \
+    -p conf:=0.25 \
+    -p iou:=0.70 \
+    -p imgsz:=640 \
+    -p depth_scale:=1000.0 \
+    -p pc_downsample:=2 \
+    -p pc_max_range:=8.0
+```
+
+**Terminal 2: Semantic Mapper Node**
+```bash
+source ~/ros2_ws/install/setup.bash
+ros2 run yolo11_seg_bringup mapper_node2 \
+    --ros-args \
+    -p detection_message:=/yolo/detections \
+    -p output_dir:=/home/sensor/ros2_ws/src/yolo11_seg_bringup \
+    -p export_interval:=5.0 \
+    -p map_frame:=camera_color_optical_frame \
+    -p camera_frame:=camera_color_optical_frame \
+    -p semantic_map_topic:=/yolo/semantic_map
+```
+
+**Terminal 3: Semantic Map Reader**
+```bash
+source ~/ros2_ws/install/setup.bash
+ros2 run yolo11_seg_bringup clip_reader
+```
+
+---
+
+## Visualization
+
+### RViz Configuration
+
+To visualize the outputs in RViz:
+
+1. Add display for `/yolo/pointcloud` (PointCloud2)
+   - Set Color Transformer to "RGB8"
+   - Adjust point size for better visibility
+
+2. Add display for `/yolo/centroids` (MarkerArray)
+   - Shows object centroids as colored spheres
+
+3. (Optional) Add displays for `/yolo/annotated` and `/yolo/clip_boxes` (Image)
+   - Enable by setting `publish_annotated:=true` and `publish_clip_boxes_vis:=true`
+
+### Topic Monitoring
+
+```bash
+# Monitor detection rate
+ros2 topic hz /yolo/detections
+
+# Echo semantic map updates
+ros2 topic echo /yolo/semantic_map
+
+# Check pointcloud output
+ros2 topic echo /yolo/pointcloud --no-arr
+```
+
+---
+
+## Configuration
+
+### Key Parameters
+
+**YOLO Detection:**
+- `conf` (0.0-1.0): Confidence threshold for detections (default: 0.25)
+- `iou` (0.0-1.0): IOU threshold for NMS (default: 0.70)
+- `imgsz` (int): Input image size for model (default: 640)
+- `mask_threshold` (0.0-1.0): Segmentation mask threshold (default: 0.5)
+
+**Pointcloud Generation:**
+- `depth_scale` (float): Depth units to meters conversion (default: 1000.0 for mm)
+- `pc_downsample` (int): Pointcloud downsampling factor (default: 2)
+- `pc_max_range` (float): Maximum depth range in meters (default: 8.0)
+
+**Semantic Mapping:**
+- `distance_threshold` (float): Spatial merge threshold in meters (default: 0.2)
+- `export_interval` (float): CSV export interval in seconds (default: 5.0)
+
+---
+
+## Output Files
+
+### CSV Format (`detections.csv`, `detections_final.csv`)
+```csv
+class_name,x,y,z
+person,1.234,2.345,0.678
+chair,0.567,1.890,0.234
+```
+
+### JSON Format (`config/map.json`)
+```json
+[
+    {
+        "class": "person",
+        "coords": {
+            "x": 1.234,
+            "y": 2.345,
+            "z": 0.678
+        }
+    }
+]
+```
+
+---
+
+## Troubleshooting
+
+**No detections appearing:**
+- Check camera topics are publishing: `ros2 topic list`
+- Verify model path is correct
+- Lower confidence threshold: `-p conf:=0.15`
+- Check camera_info is being received
+
+**TF transform errors:**
+- Ensure `map_frame` and `camera_frame` parameters match your TF tree
+- Use `ros2 run tf2_ros tf2_echo <map_frame> <camera_frame>` to verify transforms
+
+**Low FPS / Performance issues:**
+- Increase `pc_downsample` parameter (2, 4, or 8)
+- Reduce `imgsz` to 416 or 320
+- Disable optional visualizations: `-p publish_annotated:=false`
+- Ensure CUDA is available: Check logs for "Loading CLIP model on cuda"
+
+**Memory issues on Jetson:**
+- Reduce model size (use YOLOv8n-seg instead of larger variants)
+- Increase `pc_downsample` to reduce pointcloud memory
+- Lower `pc_max_range` to limit pointcloud extent
+
+---
+
+## Development
+
+### Running Tests
+```bash
+cd ~/ros2_ws
+colcon test --packages-select yolo11_seg_bringup
+```
+
+### Code Style
+This package follows ROS2 Python style guidelines and includes linting tests for:
+- `ament_copyright`
+- `ament_flake8`
+- `ament_pep257`
+
+---
+
+## License
+
+Apache-2.0
+
+## Maintainer
+
+sensor@todo.todo
