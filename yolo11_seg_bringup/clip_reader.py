@@ -1,34 +1,31 @@
 import rclpy
 from rclpy.node import Node
-import numpy as np
-from yolo11_seg_interfaces.msg import DetectedObject
+from yolo11_seg_interfaces.msg import SemanticObjectArray
 
-class SimilarityNode(Node):
+
+class SemanticMapPrinter(Node):
     def __init__(self):
-        super().__init__('similarity_calculator')
+        super().__init__('semantic_map_printer')
+        # Subscribe to the semantic map topic and print all detections in each message.
         self.subscription = self.create_subscription(
-            DetectedObject,
-            '/yolo/detections',
+            SemanticObjectArray,
+            '/yolo/semantic_map',
             self.listener_callback,
-            10
+            10,
         )
 
-    def listener_callback(self, msg):
-        # 1. Extract Vectors (Msg arrays -> Numpy arrays)
-        img_vec = np.array(msg.embedding, dtype=np.float32)
-        txt_vec = np.array(msg.text_embedding, dtype=np.float32)
-
-        # 2. Compute Similarity
-        # Since Node 1 already normalized them, we just dot product.
-        similarity = np.dot(img_vec, txt_vec)
-        
-        # 3. Output
-        print(f"Object {msg.object_id} Similarity: {similarity * 100:.2f}%")
+    def listener_callback(self, msg: SemanticObjectArray):
+        for obj in msg.objects:
+            x, y, z = obj.pose_map.x, obj.pose_map.y, obj.pose_map.z
+            similarity = obj.similarity
+            self.get_logger().info(
+                f"name={obj.name}, coords=({x:.3f}, {y:.3f}, {z:.3f}), similarity={similarity:.3f}"
+            )
 
 
 def main(args=None):
     rclpy.init(args=args)
-    node = SimilarityNode()
+    node = SemanticMapPrinter()
     rclpy.spin(node)
     node.destroy_node()
     rclpy.shutdown()

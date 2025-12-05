@@ -13,7 +13,7 @@ from visualization_msgs.msg import Marker, MarkerArray
 import tf2_ros
 
 from yolo11_seg_bringup.mapper2 import SemanticObjectMap
-from yolo11_seg_interfaces.msg import DetectedObject
+from yolo11_seg_interfaces.msg import DetectedObject, SemanticObject, SemanticObjectArray
 
 class PointCloudMapperNode(Node):
     def __init__(self):
@@ -26,12 +26,14 @@ class PointCloudMapperNode(Node):
         self.declare_parameter("export_interval", 5.0)
         self.declare_parameter("map_frame", "camera_color_optical_frame")
         self.declare_parameter("camera_frame", "camera_color_optical_frame")
+        self.declare_parameter("semantic_map_topic", "/yolo/semantic_map")
         
         self.cm_topic = self.get_parameter("detection_message").value
         self.output_dir = self.get_parameter("output_dir").value
         self.export_interval = float(self.get_parameter("export_interval").value)
         self.map_frame = self.get_parameter("map_frame").value
         self.camera_frame = self.get_parameter("camera_frame").value
+        self.semantic_map_topic = self.get_parameter("semantic_map_topic").value
 
         # ============= Initialization ============= #
 
@@ -43,6 +45,7 @@ class PointCloudMapperNode(Node):
         self.semantic_map = SemanticObjectMap(self.tf_buffer, self)
 
         self.cm_sub = self.create_subscription(DetectedObject, self.cm_topic, self.custom_callback, qos_profile=qos_sensor)
+        self.map_pub = self.create_publisher(SemanticObjectArray, self.semantic_map_topic, 10)
         
         self.export_timer = self.create_timer(self.export_interval, self.export_callback)
 
@@ -89,6 +92,8 @@ class PointCloudMapperNode(Node):
                     goal_embedding=goal_embedding
                 )
 
+                self.publish_semantic_map_locked()
+
                 self.get_logger().info(
                     f"Detected {class_name} (inst {instance_id}) at "
                     f"({centroid.x:.3f}, {centroid.y:.3f}, {centroid.z:.3f})"
@@ -105,6 +110,38 @@ class PointCloudMapperNode(Node):
 
         except Exception as e:
             self.get_logger().error(f"Error processing DetectedObject: {e}")
+
+    def publish_semantic_map_locked(self):
+        """Publish all stored objects as SemanticObjectArray. Caller must hold self.lock."""
+        if not self.semantic_map.objects:
+            return
+
+        msg = SemanticObjectArray()
+        # Preallocate list for speed
+        msg.objects = []
+        append_obj = msg.objects.append
+
+        for object_id, entry in self.semantic_map.objects.items():
+            obj = SemanticObject()
+            obj.object_id = object_id
+            obj.name = entry.name
+            obj.frame = entry.frame
+            obj.timestamp = entry.timestamp
+            obj.pose_cam = Vector3(
+                x=float(entry.pose_cam[0]),
+                y=float(entry.pose_cam[1]),
+                z=float(entry.pose_cam[2]),
+            )
+            obj.pose_map = Vector3(
+                x=float(entry.pose_map[0]),
+                y=float(entry.pose_map[1]),
+                z=float(entry.pose_map[2]),
+            )
+            obj.occurrences = int(entry.occurrences)
+            obj.similarity = float(entry.similarity) if entry.similarity is not None else 0.0
+            append_obj(obj)
+
+        self.map_pub.publish(msg)
 
     def export_callback(self):
         """

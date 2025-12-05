@@ -59,7 +59,7 @@ class SemanticObjectMap:
         self.tf_buffer = tf_buffer
         self.node = node
 
-    def add_detection(self, object_name: str, object_id: str, pose_in_camera, detection_stamp, camera_frame='camera3_color_optical_frame', fixed_frame='map', distance_threshold=0.2, embeddings: Optional[np.ndarray] = None, goal_embedding: Optional[np.ndarray] = None):
+    def add_detection(self, object_name: str, object_id: str, pose_in_camera, detection_stamp, camera_frame='camera3_color_optical_frame', fixed_frame='camera3_color_optical_frame', distance_threshold=0.2, embeddings: Optional[np.ndarray] = None, goal_embedding: Optional[np.ndarray] = None):
         try:
             # Request the transform that maps points from camera_frame into fixed_frame.
             # Passing Time(sec=0, nanosec=0) is intended to request the latest transform.
