@@ -10,27 +10,97 @@ This package provides a complete pipeline for detecting objects in RGB-D camera 
 
 ```
 yolo11_seg_bringup/
-├── yolo11_seg_bringup/           # Python package source
+├── yolo11_seg_bringup/               # Python package source
 │   ├── __init__.py
-│   ├── 3d_yolo11_seg_node2.py    # Legacy YOLO node (monolithic)
-│   ├── yolo11_seg_node_main.py   # Main YOLO detection node (modular)
-│   ├── mapper_node2.py           # Semantic mapping node
-│   ├── mapper2.py                # Semantic map data structure
-│   ├── clip_reader.py            # Semantic map visualization node
-│   ├── stereo_to_pc.py           # Stereo to pointcloud converter
-│   └── utils/                    # Utility modules
-│       ├── clip_processor.py     # CLIP embedding processing
-│       ├── pointcloud.py         # Pointcloud generation utilities
-│       └── visualization.py      # Visualization helpers
+│   ├── 3d_yolo11_seg_node2.py        # Legacy YOLO node (monolithic)
+│   ├── yolo11_seg_node_main.py       # Main YOLO detection node (modular)
+│   ├── mapper_node2.py               # Semantic mapping node
+│   ├── mapper2.py                    # Semantic map data structure
+│   ├── clip_reader.py                # Semantic map visualization node
+│   ├── stereo_to_pc.py               # Stereo to pointcloud converter
+│   └── utils/                        # Utility modules
+│       ├── clip_processor.py         # CLIP embedding processing
+│       ├── pointcloud.py             # Pointcloud generation utilities
+│       └── visualization.py          # Visualization helpers
+├── scripts/
+│   └── llm_script.py                 # LLM helper (non-ROS) that reads map.json and writes robot_command.json
 ├── launch/
 │   └── yolo_mapper_reader.launch.py  # Main launch file
 ├── config/
-│   └── map.json                  # Exported semantic map (JSON)
-├── test/                         # Unit tests
-├── package.xml                   # ROS2 package manifest
-├── setup.py                      # Python package setup
-└── README.md                     # This file
+│   └── map.json                      # Exported semantic map (JSON)
+├── test/                             # Unit tests
+├── package.xml                       # ROS2 package manifest
+├── setup.py                          # Python package setup
+└── README.md                         # This file
 ```
+## LLM Helper (Non-ROS Script)
+
+### What it does
+- `scripts/llm_script.py` is a standalone Python script (not a ROS2 node).
+- It connects to a local Ollama server (container) on port `11435`, reads the semantic map (`config/map.json`), and emits a formatted JSON command (`config/robot_command.json`) with navigation hints (target rooms, target class, CLIP prompt).
+
+### How to run it (summary)
+1) Start the Ollama container (see setup below): `docker start robot_brain` (wait ~5s)
+2) Run the script: `python scripts/llm_script.py`
+3) Stop the container when done: `docker stop robot_brain`
+
+### Container setup (Ollama on Jetson)
+This configuration emphasizes stability (uses `-t`), isolation (dedicated port `11435`), and on-demand usage (no auto-restart to save RAM).
+
+**Phase 1: One-time install**
+```bash
+# Clean any old container
+docker rm -f robot_brain
+
+# Persistent storage
+mkdir -p ~/my_robot_models
+chmod 777 ~/my_robot_models
+
+# Create the container (does not auto-start on boot)
+docker run --runtime nvidia -d -t \
+    --network host \
+    --name robot_brain \
+    --restart no \
+    -e OLLAMA_HOST=0.0.0.0:11435 \
+    -v ~/my_robot_models:/data \
+    dustynv/ollama:0.6.8-r36.4-cu126-22.04
+
+# Pull the model (targeting port 11435)
+docker exec -it -e OLLAMA_HOST=0.0.0.0:11435 robot_brain ollama pull llama3.2:3b
+```
+
+**Phase 2: Python configuration**
+Ensure your script points to the custom port:
+```python
+OLLAMA_HOST = "http://localhost:11435"
+client = ollama.Client(host=OLLAMA_HOST)
+```
+
+**Phase 3: Daily usage**
+```bash
+# 1) Start the brain
+docker start robot_brain
+# wait ~5s
+
+# 2) Run the script
+cd ~/robot_project
+source venv/bin/activate
+python main.py
+
+# 3) Stop to free RAM
+docker stop robot_brain
+```
+
+### Running the helper script in this package
+```bash
+cd ~/ros2_ws/src/yolo11_seg_bringup
+python scripts/llm_script.py
+```
+The script expects `config/map.json` to exist (exported by `mapper_node2`) and writes `config/robot_command.json` with navigation guidance.
+- Configurable detection parameters (confidence, IOU, image size)
+- Optional visualization outputs
+
+---
 
 ## Nodes
 
@@ -54,10 +124,10 @@ yolo11_seg_bringup/
 - YOLOv11 instance segmentation with tracking
 - CLIP embedding generation for semantic similarity
 - GPU-accelerated pointcloud generation
-- Configurable detection parameters (confidence, IOU, image size)
-- Optional visualization outputs
 
 ---
+
+
 
 ### 2. Semantic Mapper Node (`mapper_node2.py`)
 
