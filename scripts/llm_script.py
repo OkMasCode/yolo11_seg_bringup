@@ -15,7 +15,6 @@ OLLAMA_HOST = "http://localhost:11435"
 # List of valid object classes commonly found in a house
 # These represent static objects in a typical household environment
 VALID_OBJECT_CLASSES = [
-    # Kitchen
     "sink",
     "refrigerator",
     "oven",
@@ -26,7 +25,6 @@ VALID_OBJECT_CLASSES = [
     "kitchen counter",
     "stove",
     "cabinet",
-    # Living Room
     "sofa",
     "couch",
     "tv",
@@ -37,20 +35,17 @@ VALID_OBJECT_CLASSES = [
     "lamp",
     "window",
     "door",
-    # Bedroom
     "bed",
     "nightstand",
     "dresser",
     "closet",
     "mirror",
-    # Bathroom
     "toilet",
     "bathtub",
     "shower",
     "sink",
     "bathroom mirror",
     "towel rack",
-    # General
     "chair",
     "table",
     "desk",
@@ -203,18 +198,12 @@ VALID HOUSEHOLD OBJECTS (check synonyms carefully):
 {valid_list_str}
 
 Your task:
-1. Extract the target object from the user's request
-2. Map it to the EXACT matching object from the valid list (handle synonyms)
-   Examples:
-   - "tv" → "television" (if "television" is in list, not "tv")
-   - "sofa" → "couch" (if "couch" is in list)
-   - "icebox" → "refrigerator"
-   
-3. Generate a CLIP prompt that includes the object with all descriptive features that are included in the prompt
-   Examples:
-   - Input: "Go to the black tv" → clip_prompt: "black television"
-   - Input: "Find the mug on the chair" → clip_prompt: "mug on the chair"
-   - Input: "Navigate to sofa" → clip_prompt: "couch"
+1. Extract the target object from the user's request, It MUST strictly map to one of these: [{valid_list_str}] (handle synonyms).
+2. Extract 'features' formatted specifically for a CLIP Vision Model.
+    - The feature MUST be a descriptive phrase including the object and its context/attributes.
+    - DO NOT output isolated words like ["red", "small"].
+    - DO output phrases like ["red bottle on the table"].
+    - If no attributes/context are provided, just repeat the goal name.
 
 Important: 
 - Goal MUST be exactly one of the valid objects (or empty if no match)
@@ -268,13 +257,12 @@ Your task:
 3. If goal is NOT in the map:
    - Use get_map_objects tool to see all available objects
    - Select the MOST semantically related object based on:
-     * Same room type (bathroom, kitchen, bedroom, etc.)
+     * Same room type
      * Similar function or purpose
      * Physical proximity in typical house layout
    
    Examples of semantic relationships:
    - toilet → shower (both bathroom fixtures)
-   - refrigerator → oven (both kitchen appliances)  
    - bed → nightstand (both bedroom furniture)
    - tv → sofa (both living room items)
    - sink → stove (both kitchen items)
@@ -282,7 +270,9 @@ Your task:
    - Set goal_in_map=false
    - Set closest_object to the semantically related object you found
 
-Output JSON with: goal (same as input), goal_in_map (boolean), closest_object (string or null)"""
+Rules:
+- Output ONLY objects that are in the map (do not guess the object, just compare the goal with the list of objects that are in the map)
+- Output JSON with: goal (same as input), goal_in_map (boolean), closest_object (string or null)"""
 
     msgs = [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -422,23 +412,6 @@ def save_result(result: NavigationResult, original_prompt: str):
         print(f"Command written to: {os.path.abspath(OUTPUT_FILE)}")
     except IOError as e:
         print(f"Error writing output file: {e}")
-
-def wait_for_server():
-    """Ensures the Ollama container is reachable."""
-    print(f"Connecting to Ollama brain at {OLLAMA_HOST}...")
-    retries = 0
-    while True:
-        try:
-            client.list()
-            print("Successfully connected to Robot Brain.")
-            return
-        except Exception:
-            retries += 1
-            print(f"Waiting for container... (Attempt {retries})")
-            time.sleep(2)
-            if retries > 5:
-                print("ERROR: Could not connect to Ollama.")
-                sys.exit(1)
 
 # -------------------- MAIN -------------------- #
 
