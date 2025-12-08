@@ -1,9 +1,29 @@
 {
-    "timestamp": 1765204938.4488783,
-    "prompt": "go to the oven",
-    "goal": "oven",
-    "closest_object": "oven",
-    "closest_object_coords": null,
-    "clip_prompt": "oven",
+    "timestamp": 1765209057.3423781,
+    "prompt": "go to the bathtub",
+    "goal": "bathtub",
+    "closest_objects": [
+        "sink",
+        "shower"
+    ],
+    "closest_objects_with_coords": [
+        {
+            "class": "sink",
+            "coords": {
+                "x": 2.5,
+                "y": 1.2,
+                "z": 0.85
+            }
+        },
+        {
+            "class": "shower",
+            "coords": {
+                "x": 7.8,
+                "y": 8.5,
+                "z": 0.0
+            }
+        }
+    ],
+    "clip_prompt": "bathtub",
     "valid": true
 }

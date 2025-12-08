@@ -115,6 +115,8 @@ def get_map_objects():
         list: All unique object classes from the map
     """
     unique_classes = sorted(list(set(obj.get("class", "") for obj in house_map_objects if obj.get("class"))))
+    print(f"[DEBUG] Tool 'get_map_objects' called")
+    print(f"[DEBUG] Tool output: {unique_classes}")
     return unique_classes
 
 def check_object_in_map(object_name: str):
@@ -127,19 +129,24 @@ def check_object_in_map(object_name: str):
     Returns:
         dict: Contains 'found' (bool) and 'object' (dict if found)
     """
+    print(f"[DEBUG] Tool 'check_object_in_map' called with object_name='{object_name}'")
     object_name_lower = object_name.strip().lower()
     
     for obj in house_map_objects:
         if obj.get("class", "").lower() == object_name_lower:
-            return {
+            result = {
                 "found": True,
                 "object": obj
             }
+            print(f"[DEBUG] Tool output: {result}")
+            return result
     
-    return {
+    result = {
         "found": False,
         "object": None
     }
+    print(f"[DEBUG] Tool output: {result}")
+    return result
 
 def find_semantically_related_object(goal_object: str):
     """
@@ -154,10 +161,13 @@ def find_semantically_related_object(goal_object: str):
     Returns:
         dict: Contains 'goal' and 'available_objects' list
     """
-    return {
+    print(f"[DEBUG] Tool 'find_semantically_related_object' called with goal_object='{goal_object}'")
+    result = {
         "goal": goal_object,
         "available_objects": get_map_objects()
     }
+    print(f"[DEBUG] Tool output: {result}")
+    return result
 
 # -------------------- MAIN LOGIC -------------------- #
 
@@ -170,7 +180,7 @@ class MapCheck(BaseModel):
     """Output from second LLM call: map verification."""
     goal: str
     goal_in_map: bool
-    closest_object: Optional[str]
+    closest_objects: List[str]
 
 def extract_and_validate_goal(user_prompt: str):
     """
@@ -235,6 +245,10 @@ Output: {{"goal": "", "clip_prompt": ""}}
 
 Output JSON with: goal (exact string from list or empty), clip_prompt (always includes goal if valid)"""
 
+    print("[DEBUG] === FIRST LLM CALL: Goal Extraction ===")
+    print(f"[DEBUG] User prompt: {user_prompt}")
+    
+    start_time = time.time()
     response = client.chat(
         model=CHAT_MODEL,
         messages=[
@@ -243,17 +257,17 @@ Output JSON with: goal (exact string from list or empty), clip_prompt (always in
         ],
         format=GoalExtraction.model_json_schema()
     )
+    end_time = time.time()
     
-    print("\n[DEBUG] First LLM Response:")
-    print(f"  Raw content: {response['message']['content']}")
+    print(f"[DEBUG] Raw LLM response: {response['message']['content']}")
+    print(f"[TIMER] First LLM call took: {end_time - start_time:.3f}s")
     
     try:
         result = GoalExtraction.model_validate_json(response["message"]["content"])
-        print(f"  Parsed goal: {result.goal}")
-        print(f"  Parsed clip_prompt: {result.clip_prompt}")
+        print(f"[DEBUG] Parsed result: goal='{result.goal}', clip_prompt='{result.clip_prompt}'")
         return result
     except Exception as e:
-        print(f"[ERROR] Error parsing first LLM call: {e}")
+        print(f"[DEBUG] Error parsing first LLM call: {e}")
         return GoalExtraction(goal="", clip_prompt="")
 
 def check_map_and_find_alternative(goal: str):
@@ -285,15 +299,16 @@ STEP 2: DECIDE OUTPUT BASED ON RESULT
 
 If goal IS FOUND in map (found=true):
    - Set goal_in_map=true
-   - Set closest_object=null
+   - Set closest_objects to a list containing ONLY the goal: [goal]
    - Stop here, do not call get_map_objects
 
 If goal is NOT FOUND in map (found=false):
    - Use get_map_objects tool to retrieve ALL available objects in the map
    - The tool returns a list of object class names that exist in the map
-   - Select the MOST semantically related object from this list ONLY
+   - Select the 2 MOST semantically related objects from this list
+   - Rank them by semantic similarity (most similar first)
    - Set goal_in_map=false
-   - Set closest_object to your selected object
+   - Set closest_objects to a list of exactly 2 objects: [most_similar, second_similar]
 
 SEMANTIC MATCHING GUIDELINES:
 Choose based on:
@@ -301,97 +316,116 @@ Choose based on:
 - Similar function (seating → seating, cooking → cooking)
 - Typical proximity in house layouts
 
-Examples:
-- Goal "toilet" not in map, map has ["shower", "sink", "sofa"] → closest_object="shower"
-- Goal "bed" not in map, map has ["nightstand", "dresser", "oven"] → closest_object="nightstand"
-- Goal "tv" not in map, map has ["sofa", "dining table"] → closest_object="sofa"
 
 ABSOLUTE REQUIREMENTS:
-- closest_object MUST be a string that appears in the get_map_objects result
+- If goal_in_map is true: closest_objects MUST be a list with one element: [goal]
+- If goal_in_map is false: closest_objects MUST be a list of EXACTLY 2 strings from get_map_objects result
 - NEVER invent object names not in the map
-- NEVER return closest_object unless goal_in_map is false
-- If no semantic match exists in map, choose the first object from the list
+- If map has fewer than 2 objects, repeat objects to reach exactly 2 elements
+- ALWAYS provide exactly 2 objects when goal is not in map
 
 Output JSON with:
 - goal: (exact same string as input)
 - goal_in_map: (boolean)
-- closest_object: (exact string from map objects list, or null if goal found)"""
+- closest_objects: (list with [goal] if found in map, otherwise list of exactly 2 strings from map objects)"""
 
+    print("[DEBUG] === SECOND LLM CALL: Map Check ===")
+    print(f"[DEBUG] Goal to check: {goal}")
+    
+    # ALWAYS check if goal is in map first
+    print("[DEBUG] Force-calling check_object_in_map tool")
+    tool_start = time.time()
+    map_check_result = check_object_in_map(goal)
+    tool_end = time.time()
+    print(f"[TIMER] check_object_in_map took: {tool_end - tool_start:.3f}s")
+    
     msgs = [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": f"Goal to check: {goal}"}
+        {"role": "user", "content": f"Goal to check: {goal}"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{
+                "function": {
+                    "name": "check_object_in_map",
+                    "arguments": {"object_name": goal}
+                }
+            }]
+        },
+        {
+            "role": "tool",
+            "content": json.dumps(map_check_result)
+        }
     ]
     
-    print("\n[DEBUG] Second LLM Call - Initial request")
-    print(f"  Goal to check: {goal}")
-    
-    # Call with tools
-    response = client.chat(
-        model=CHAT_MODEL,
-        messages=msgs,
-        tools=[check_object_in_map, get_map_objects]
-    )
-    
-    print("\n[DEBUG] Second LLM - Initial response")
-    print(f"  Has tool_calls: {bool(response['message'].get('tool_calls'))}")
-    
-    # Process tool calls if any
-    if response["message"].get("tool_calls"):
-        print(f"  Number of tool calls: {len(response['message']['tool_calls'])}")
-        msgs.append(response["message"])
+    # If not found in map, let LLM call get_map_objects
+    if not map_check_result["found"]:
+        print("[DEBUG] Goal not in map, allowing LLM to call get_map_objects")
+        llm_start = time.time()
+        response = client.chat(
+            model=CHAT_MODEL,
+            messages=msgs,
+            tools=[get_map_objects]
+        )
+        llm_end = time.time()
         
-        for idx, tool_call in enumerate(response["message"]["tool_calls"]):
-            func_name = tool_call["function"]["name"]
-            args = tool_call["function"]["arguments"]
+        print(f"[DEBUG] Raw LLM response (after map check): {response['message']}")
+        print(f"[TIMER] LLM tool decision took: {llm_end - llm_start:.3f}s")
+        
+        # Process additional tool calls if any
+        if response["message"].get("tool_calls"):
+            print(f"[DEBUG] LLM requested {len(response['message']['tool_calls'])} additional tool call(s)")
+            msgs.append(response["message"])
             
-            print(f"\n[DEBUG] Tool Call #{idx + 1}:")
-            print(f"  Function: {func_name}")
-            print(f"  Arguments: {args}")
-            
-            # Execute the tool
-            if func_name == "check_object_in_map":
-                result = check_object_in_map(**args)
-            elif func_name == "get_map_objects":
-                result = get_map_objects()
-            else:
-                result = {"error": "unknown tool"}
-            
-            print(f"  Result: {result}")
-            
-            # Add tool result to messages
-            msgs.append({
-                "role": "tool",
-                "content": json.dumps(result)
-            })
+            for i, tool_call in enumerate(response["message"]["tool_calls"], 1):
+                func_name = tool_call["function"]["name"]
+                args = tool_call["function"]["arguments"]
+                print(f"[DEBUG] Tool call {i}: {func_name} with args: {args}")
+                
+                # Execute the tool
+                if func_name == "get_map_objects":
+                    result = get_map_objects()
+                else:
+                    result = {"error": "unknown tool"}
+                    print(f"[DEBUG] Unknown tool requested: {func_name}")
+                
+                # Add tool result to messages
+                msgs.append({
+                    "role": "tool",
+                    "content": json.dumps(result)
+                })
+                print(f"[DEBUG] Tool result added to conversation")
+        else:
+            print("[DEBUG] No additional tool calls requested by LLM")
     else:
-        print("  [WARNING] LLM did not call any tools!")
+        print("[DEBUG] Goal found in map, skipping get_map_objects call")
     
     # Final response with structured output
-    print("\n[DEBUG] Second LLM - Requesting final structured response")
+    print("[DEBUG] Requesting final structured output from LLM")
+    final_start = time.time()
     final_response = client.chat(
         model=CHAT_MODEL,
         messages=msgs,
         format=MapCheck.model_json_schema()
     )
+    final_end = time.time()
     
-    print("[DEBUG] Second LLM - Final response:")
-    print(f"  Raw content: {final_response['message']['content']}")
+    print(f"[DEBUG] Raw LLM final response: {final_response['message']['content']}")
+    print(f"[TIMER] Final structured output took: {final_end - final_start:.3f}s")
     
     try:
         result = MapCheck.model_validate_json(final_response["message"]["content"])
-        print(f"  Parsed goal: {result.goal}")
-        print(f"  Parsed goal_in_map: {result.goal_in_map}")
-        print(f"  Parsed closest_object: {result.closest_object}")
+        print(f"[DEBUG] Parsed result: goal='{result.goal}', goal_in_map={result.goal_in_map}, closest_objects={result.closest_objects}")
         return result
     except Exception as e:
-        print(f"[ERROR] Error parsing second LLM call: {e}")
-        return MapCheck(goal=goal, goal_in_map=False, closest_object=None)
+        print(f"[DEBUG] Error parsing second LLM call: {e}")
+        return MapCheck(goal=goal, goal_in_map=False, closest_objects=[goal, goal, goal])
 
 class NavigationResult(BaseModel):
     """Combined output format."""
     goal: str
     goal_in_map: bool
-    closest_object: Optional[str]
+    closest_objects: List[str]
     clip_prompt: str
 
 def process_navigation_request(user_prompt: str):
@@ -406,35 +440,47 @@ def process_navigation_request(user_prompt: str):
     """
     
     # FIRST LLM CALL: Extract goal and create CLIP prompt
+    print("\n" + "="*60)
     print("Stage 1: Extracting goal from prompt")
+    print("="*60)
+    stage1_start = time.time()
     goal_extraction = extract_and_validate_goal(user_prompt)
+    stage1_end = time.time()
     
     if not goal_extraction.goal:
-        print("Could not extract valid goal from prompt")
+        print("[DEBUG] Could not extract valid goal from prompt")
         return NavigationResult(
             goal="",
             goal_in_map=False,
-            closest_object=None,
+            closest_objects=[],
             clip_prompt=""
         )
     
-    print(f"   Goal extracted: {goal_extraction.goal}")
-    print(f"   CLIP prompt: {goal_extraction.clip_prompt}")
+    print(f"\n✓ Goal extracted: {goal_extraction.goal}")
+    print(f"✓ CLIP prompt: {goal_extraction.clip_prompt}")
+    print(f"[TIMER] ⏱️  Stage 1 total time: {stage1_end - stage1_start:.3f}s")
     
     # SECOND LLM CALL: Check map and find alternatives
-    print("\nStage 2: Checking map for goal...")
-    print(f"[DEBUG] Objects in house map: {get_map_objects()}")
+    print("\n" + "="*60)
+    print("Stage 2: Checking map for goal")
+    print("="*60)
+    stage2_start = time.time()
     map_check = check_map_and_find_alternative(goal_extraction.goal)
+    stage2_end = time.time()
     
-    print(f"   Goal in map: {map_check.goal_in_map}")
-    if map_check.closest_object:
-        print(f"   Closest alternative: {map_check.closest_object}")
+    print(f"\n✓ Goal in map: {map_check.goal_in_map}")
+    if map_check.closest_objects:
+        print(f"✓ Closest alternatives: {map_check.closest_objects}")
+    print(f"[TIMER] ⏱️  Stage 2 total time: {stage2_end - stage2_start:.3f}s")
+    
+    total_time = stage1_end - stage1_start + stage2_end - stage2_start
+    print(f"\n[TIMER] 🎯 TOTAL PROCESSING TIME: {total_time:.3f}s")
     
     # Combine results
     return NavigationResult(
         goal=goal_extraction.goal,
         goal_in_map=map_check.goal_in_map,
-        closest_object=map_check.closest_object,
+        closest_objects=map_check.closest_objects,
         clip_prompt=goal_extraction.clip_prompt
     )
 
@@ -455,19 +501,27 @@ def save_result(result: NavigationResult, original_prompt: str):
     }
     """
     
-    # Get coordinates if closest_object is specified
-    closest_coords = None
-    if result.closest_object:
-        obj_data = check_object_in_map(result.closest_object)
-        if obj_data["found"]:
-            closest_coords = obj_data["object"].get("coords")
+    # Get coordinates for all closest objects (only include objects that exist in map)
+    closest_objects_with_coords = []
+    verified_closest_objects = []
+    if result.closest_objects:
+        for obj_name in result.closest_objects:
+            obj_data = check_object_in_map(obj_name)
+            if obj_data["found"]:
+                verified_closest_objects.append(obj_name)
+                closest_objects_with_coords.append({
+                    "class": obj_name,
+                    "coords": obj_data["object"].get("coords")
+                })
+            else:
+                print(f"[DEBUG] Warning: LLM returned object '{obj_name}' not in map, skipping")
     
     data = {
         "timestamp": time.time(),
         "prompt": original_prompt,
         "goal": result.goal if result.goal else None,
-        "closest_object": result.closest_object,
-        "closest_object_coords": closest_coords,
+        "closest_objects": verified_closest_objects,
+        "closest_objects_with_coords": closest_objects_with_coords,
         "clip_prompt": result.clip_prompt,
         "valid": result.goal != ""
     }
@@ -504,19 +558,26 @@ def main():
             result = process_navigation_request(user_prompt)
             
             # Save result to JSON file
+            save_start = time.time()
             save_result(result, user_prompt)
+            save_end = time.time()
+            print(f"[TIMER] File save took: {save_end - save_start:.3f}s")
 
             # Display output in the required format
             print("-" * 60)
             if result.goal:
                 print(f"Goal: {result.goal}")
-                if result.closest_object:
-                    print(f"Closest Object: {result.closest_object}")
+                if result.goal_in_map:
+                    print(f"Closest Objects: {result.closest_objects[0]}")
+                    print(f"  (goal found directly in map)")
                 else:
-                    print(f"Closest Object: (goal is directly in map)")
+                    print(f"Closest Objects (Top 2 Alternatives):")
+                    for i, obj in enumerate(result.closest_objects, 1):
+                        print(f"  {i}. {obj}")
+                    print(f"  (semantic alternatives - goal not in map)")
             else:
                 print(f"Goal: (could not determine)")
-                print(f"Closest Object: N/A")
+                print(f"Closest Objects: N/A")
             
             print(f"CLIP Prompt: {result.clip_prompt if result.clip_prompt else 'N/A'}")
             print("-" * 60)

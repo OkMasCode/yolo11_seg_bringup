@@ -96,14 +96,6 @@
         }
     },
     {
-        "class": "nightstand",
-        "coords": {
-            "x": 2.2,
-            "y": 6.0,
-            "z": 0.0
-        }
-    },
-    {
         "class": "dresser",
         "coords": {
             "x": 0.8,
