@@ -1,29 +1,35 @@
 {
-    "timestamp": 1765209057.3423781,
-    "prompt": "go to the bathtub",
-    "goal": "bathtub",
-    "closest_objects": [
-        "sink",
-        "shower"
-    ],
-    "closest_objects_with_coords": [
+    "timestamp": 1765212636.7456007,
+    "prompt": "bring me the mug that is on the bed",
+    "goal": "mug",
+    "goal_objects": [],
+    "alternatives": [
         {
-            "class": "sink",
+            "class": "coffee table",
             "coords": {
-                "x": 2.5,
-                "y": 1.2,
-                "z": 0.85
+                "x": 5.5,
+                "y": 5.0,
+                "z": 0.0
             }
         },
         {
-            "class": "shower",
+            "class": "kitchen counter",
             "coords": {
-                "x": 7.8,
-                "y": 8.5,
+                "x": 2.5,
+                "y": 2.0,
+                "z": 0.0
+            }
+        },
+        {
+            "class": "desk",
+            "coords": {
+                "x": 3.5,
+                "y": 7.0,
                 "z": 0.0
             }
         }
     ],
-    "clip_prompt": "bathtub",
+    "clip_prompt": "on the bed",
+    "action": "bring_back_object",
     "valid": true
 }
