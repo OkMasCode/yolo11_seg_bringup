@@ -244,11 +244,16 @@ Output JSON with: goal (exact string from list or empty), clip_prompt (always in
         format=GoalExtraction.model_json_schema()
     )
     
+    print("\n[DEBUG] First LLM Response:")
+    print(f"  Raw content: {response['message']['content']}")
+    
     try:
         result = GoalExtraction.model_validate_json(response["message"]["content"])
+        print(f"  Parsed goal: {result.goal}")
+        print(f"  Parsed clip_prompt: {result.clip_prompt}")
         return result
     except Exception as e:
-        print(f"Error parsing first LLM call: {e}")
+        print(f"[ERROR] Error parsing first LLM call: {e}")
         return GoalExtraction(goal="", clip_prompt="")
 
 def check_map_and_find_alternative(goal: str):
@@ -317,6 +322,9 @@ Output JSON with:
         {"role": "user", "content": f"Goal to check: {goal}"}
     ]
     
+    print("\n[DEBUG] Second LLM Call - Initial request")
+    print(f"  Goal to check: {goal}")
+    
     # Call with tools
     response = client.chat(
         model=CHAT_MODEL,
@@ -324,13 +332,21 @@ Output JSON with:
         tools=[check_object_in_map, get_map_objects]
     )
     
+    print("\n[DEBUG] Second LLM - Initial response")
+    print(f"  Has tool_calls: {bool(response['message'].get('tool_calls'))}")
+    
     # Process tool calls if any
     if response["message"].get("tool_calls"):
+        print(f"  Number of tool calls: {len(response['message']['tool_calls'])}")
         msgs.append(response["message"])
         
-        for tool_call in response["message"]["tool_calls"]:
+        for idx, tool_call in enumerate(response["message"]["tool_calls"]):
             func_name = tool_call["function"]["name"]
             args = tool_call["function"]["arguments"]
+            
+            print(f"\n[DEBUG] Tool Call #{idx + 1}:")
+            print(f"  Function: {func_name}")
+            print(f"  Arguments: {args}")
             
             # Execute the tool
             if func_name == "check_object_in_map":
@@ -340,24 +356,35 @@ Output JSON with:
             else:
                 result = {"error": "unknown tool"}
             
+            print(f"  Result: {result}")
+            
             # Add tool result to messages
             msgs.append({
                 "role": "tool",
                 "content": json.dumps(result)
             })
+    else:
+        print("  [WARNING] LLM did not call any tools!")
     
     # Final response with structured output
+    print("\n[DEBUG] Second LLM - Requesting final structured response")
     final_response = client.chat(
         model=CHAT_MODEL,
         messages=msgs,
         format=MapCheck.model_json_schema()
     )
     
+    print("[DEBUG] Second LLM - Final response:")
+    print(f"  Raw content: {final_response['message']['content']}")
+    
     try:
         result = MapCheck.model_validate_json(final_response["message"]["content"])
+        print(f"  Parsed goal: {result.goal}")
+        print(f"  Parsed goal_in_map: {result.goal_in_map}")
+        print(f"  Parsed closest_object: {result.closest_object}")
         return result
     except Exception as e:
-        print(f"Error parsing second LLM call: {e}")
+        print(f"[ERROR] Error parsing second LLM call: {e}")
         return MapCheck(goal=goal, goal_in_map=False, closest_object=None)
 
 class NavigationResult(BaseModel):
@@ -395,7 +422,8 @@ def process_navigation_request(user_prompt: str):
     print(f"   CLIP prompt: {goal_extraction.clip_prompt}")
     
     # SECOND LLM CALL: Check map and find alternatives
-    print("🗺️  Stage 2: Checking map for goal...")
+    print("\nStage 2: Checking map for goal...")
+    print(f"[DEBUG] Objects in house map: {get_map_objects()}")
     map_check = check_map_and_find_alternative(goal_extraction.goal)
     
     print(f"   Goal in map: {map_check.goal_in_map}")

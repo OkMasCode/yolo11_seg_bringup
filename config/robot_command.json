@@ -1,9 +1,9 @@
 {
-    "timestamp": 1765201509.6746328,
-    "prompt": "bring me the carpet with blue stripes",
-    "goal": "carpet",
-    "closest_object": null,
+    "timestamp": 1765204938.4488783,
+    "prompt": "go to the oven",
+    "goal": "oven",
+    "closest_object": "oven",
     "closest_object_coords": null,
-    "clip_prompt": "blue striped carpet",
+    "clip_prompt": "oven",
     "valid": true
 }
