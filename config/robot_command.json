@@ -1,14 +1,22 @@
 {
-    "timestamp": 1765212636.7456007,
-    "prompt": "bring me the mug that is on the bed",
-    "goal": "mug",
+    "timestamp": 1765213055.1462836,
+    "prompt": "go to the blue tv",
+    "goal": "television",
     "goal_objects": [],
     "alternatives": [
         {
-            "class": "coffee table",
+            "class": "armchair",
             "coords": {
-                "x": 5.5,
-                "y": 5.0,
+                "x": 4.5,
+                "y": 2.5,
+                "z": 0.0
+            }
+        },
+        {
+            "class": "sofa",
+            "coords": {
+                "x": 5.0,
+                "y": 4.0,
                 "z": 0.0
             }
         },
@@ -19,17 +27,9 @@
                 "y": 2.0,
                 "z": 0.0
             }
-        },
-        {
-            "class": "desk",
-            "coords": {
-                "x": 3.5,
-                "y": 7.0,
-                "z": 0.0
-            }
         }
     ],
-    "clip_prompt": "on the bed",
-    "action": "bring_back_object",
+    "clip_prompt": "blue television",
+    "action": "go_to_object",
     "valid": true
 }
