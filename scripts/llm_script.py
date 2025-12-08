@@ -194,23 +194,46 @@ def extract_and_validate_goal(user_prompt: str):
     
     SYSTEM_PROMPT = f"""You are a goal extraction system for a robot.
 
-VALID HOUSEHOLD OBJECTS (check synonyms carefully):
+VALID HOUSEHOLD OBJECTS LIST:
 {valid_list_str}
 
-Your task:
-1. Extract the target object from the user's request, It MUST strictly map to one of these: [{valid_list_str}] (handle synonyms).
-2. Extract 'features' formatted specifically for a CLIP Vision Model.
-    - The feature MUST be a descriptive phrase including the object and its context/attributes.
-    - DO NOT output isolated words like ["red", "small"].
-    - DO output phrases like ["red bottle on the table"].
-    - If no attributes/context are provided, just repeat the goal name.
+CRITICAL RULES - YOU MUST FOLLOW EXACTLY:
 
-Important: 
-- Goal MUST be exactly one of the valid objects (or empty if no match)
-- CLIP prompt should preserve colors, sizes, positions from original request, if no features are included do not add any
-- If object not in valid list, return empty goal
+1. GOAL EXTRACTION:
+   - The 'goal' field MUST be EXACTLY one string from the valid objects list above
+   - Match the EXACT string format from the list (case-sensitive)
+   - Handle synonyms by mapping to the exact list entry:
+     * "tv" → "television" (if "television" is in list)
+     * "couch" → "sofa" (if "sofa" is in list)
+   - If NO valid match exists, return goal as empty string ""
+   - NEVER invent new object names
+   - NEVER return objects not in the valid list
 
-Output JSON with: goal, clip_prompt"""
+2. CLIP PROMPT CONSTRUCTION:
+   - Format: "<features> <goal>" where goal is the exact object name
+   - ALWAYS include the goal object name in the clip_prompt
+   - If user provides features (color, size, position, etc.), include them BEFORE the goal
+     * Example: "Go to red sofa" → clip_prompt: "red sofa"
+     * Example: "Navigate to the small tv" → clip_prompt: "small television"
+   - If NO features provided, clip_prompt should be ONLY the goal name
+     * Example: "Go to sofa" → clip_prompt: "sofa"
+   - DO NOT add features that were not mentioned by the user
+   - DO NOT use isolated words, always include the object
+
+EXAMPLES:
+Input: "Go to the black tv"
+Output: {{"goal": "television", "clip_prompt": "black television"}}
+
+Input: "Navigate to sofa"
+Output: {{"goal": "sofa", "clip_prompt": "sofa"}}
+
+Input: "Go to the red and large refrigerator"
+Output: {{"goal": "refrigerator", "clip_prompt": "red large refrigerator"}}
+
+Input: "Go to the car"
+Output: {{"goal": "", "clip_prompt": ""}}
+
+Output JSON with: goal (exact string from list or empty), clip_prompt (always includes goal if valid)"""
 
     response = client.chat(
         model=CHAT_MODEL,
@@ -247,32 +270,47 @@ def check_map_and_find_alternative(goal: str):
     
     SYSTEM_PROMPT = f"""You are a semantic reasoning system for robot navigation.
 
-Your task:
-1. Use check_object_in_map tool to verify if the goal exists in the house map
+CRITICAL RULES - YOU MUST FOLLOW EXACTLY:
 
-2. If goal IS in the map:
+STEP 1: CHECK IF GOAL EXISTS IN MAP
+- Use check_object_in_map tool with the exact goal string
+- This returns {{"found": true/false, "object": ...}}
+
+STEP 2: DECIDE OUTPUT BASED ON RESULT
+
+If goal IS FOUND in map (found=true):
    - Set goal_in_map=true
-   - Set closest_object=null (not needed)
+   - Set closest_object=null
+   - Stop here, do not call get_map_objects
 
-3. If goal is NOT in the map:
-   - Use get_map_objects tool to see all available objects
-   - Select the MOST semantically related object based on:
-     * Same room type
-     * Similar function or purpose
-     * Physical proximity in typical house layout
-   
-   Examples of semantic relationships:
-   - toilet → shower (both bathroom fixtures)
-   - bed → nightstand (both bedroom furniture)
-   - tv → sofa (both living room items)
-   - sink → stove (both kitchen items)
-   
+If goal is NOT FOUND in map (found=false):
+   - Use get_map_objects tool to retrieve ALL available objects in the map
+   - The tool returns a list of object class names that exist in the map
+   - Select the MOST semantically related object from this list ONLY
    - Set goal_in_map=false
-   - Set closest_object to the semantically related object you found
+   - Set closest_object to your selected object
 
-Rules:
-- Output ONLY objects that are in the map (do not guess the object, just compare the goal with the list of objects that are in the map)
-- Output JSON with: goal (same as input), goal_in_map (boolean), closest_object (string or null)"""
+SEMANTIC MATCHING GUIDELINES:
+Choose based on:
+- Same room type (bathroom items together, kitchen items together)
+- Similar function (seating → seating, cooking → cooking)
+- Typical proximity in house layouts
+
+Examples:
+- Goal "toilet" not in map, map has ["shower", "sink", "sofa"] → closest_object="shower"
+- Goal "bed" not in map, map has ["nightstand", "dresser", "oven"] → closest_object="nightstand"
+- Goal "tv" not in map, map has ["sofa", "dining table"] → closest_object="sofa"
+
+ABSOLUTE REQUIREMENTS:
+- closest_object MUST be a string that appears in the get_map_objects result
+- NEVER invent object names not in the map
+- NEVER return closest_object unless goal_in_map is false
+- If no semantic match exists in map, choose the first object from the list
+
+Output JSON with:
+- goal: (exact same string as input)
+- goal_in_map: (boolean)
+- closest_object: (exact string from map objects list, or null if goal found)"""
 
     msgs = [
         {"role": "system", "content": SYSTEM_PROMPT},

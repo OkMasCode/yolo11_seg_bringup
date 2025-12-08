@@ -1,9 +1,9 @@
 {
-    "timestamp": 1765193569.5507994,
-    "prompt": "go to the mug",
-    "goal": "mug",
+    "timestamp": 1765201509.6746328,
+    "prompt": "bring me the carpet with blue stripes",
+    "goal": "carpet",
     "closest_object": null,
     "closest_object_coords": null,
-    "clip_prompt": "go to a mug sitting on a table or counter",
+    "clip_prompt": "blue striped carpet",
     "valid": true
 }
