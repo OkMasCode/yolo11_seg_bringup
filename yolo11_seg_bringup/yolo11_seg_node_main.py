@@ -115,34 +115,7 @@ class Yolo11SegNode(Node):
     def __init__(self):
         super().__init__("yolo11_seg_node")
         
-        # Declare and get parameters
-        self._declare_parameters()
-        self._get_parameters()
-        
-        # Initialize models and processors
-        self._initialize_models()
-        self._initialize_processors()
-        
-        # Setup ROS communications
-        self._setup_subscriptions()
-        self._setup_publishers()
-        
-        # State variables
-        self.fx = self.fy = self.cx = self.cy = None
-        self.latest_depth_msg = None
-        self.sync_lock = threading.Lock()
-        self.class_colors = {}
-        
-        # Detection results storage
-        self.last_clip_embeddings = []
-        self.last_centroids = []
-        self.last_detection_meta = []
-        
-        self.get_logger().info(f"Ready. Publishing to {self.pc_topic}")
-    
-    def _declare_parameters(self):
-        """Declare all ROS parameters."""
-        # Topic parameters
+        # Declare parameters - Topic parameters
         self.declare_parameter("model_path", "/home/sensor/yolo11n-seg.engine")
         self.declare_parameter("image_topic", "/camera/camera/color/image_raw")
         self.declare_parameter("depth_topic", "/camera/camera/aligned_depth_to_color/image_raw")
@@ -157,18 +130,16 @@ class Yolo11SegNode(Node):
         self.declare_parameter("conf", 0.25)
         self.declare_parameter("iou", 0.70)
         self.declare_parameter("imgsz", 640)
-        self.declare_parameter("retina_masks", True) # use retina masks for higher resolution
+        self.declare_parameter("retina_masks", True)
         self.declare_parameter("depth_scale", 1000.0)
-        self.declare_parameter("pc_downsample", 2) # factor for downsampling pointcloud
-        self.declare_parameter("pc_max_range", 8.0) # meters
+        self.declare_parameter("pc_downsample", 2)
+        self.declare_parameter("pc_max_range", 8.0)
         self.declare_parameter("mask_threshold", 0.5)
-        self.declare_parameter("clip_square_scale", 1.4) # scale factor for enlarging clip box around detection
+        self.declare_parameter("clip_square_scale", 1.4)
         self.declare_parameter("publish_annotated", False)
         self.declare_parameter("publish_clip_boxes_vis", False)
-    
-    def _get_parameters(self):
-        """Get all parameter values."""
-        # Topics
+        
+        # Get parameter values - Topics
         self.model_path = self.get_parameter("model_path").value
         self.image_topic = self.get_parameter("image_topic").value
         self.depth_topic = self.get_parameter("depth_topic").value
@@ -191,59 +162,78 @@ class Yolo11SegNode(Node):
         self.clip_square_scale = float(self.get_parameter("clip_square_scale").value)
         self.publish_annotated = bool(self.get_parameter("publish_annotated").value)
         self.publish_clip_boxes_vis = bool(self.get_parameter("publish_clip_boxes_vis").value)
-    
-    def _load_clip_prompt_from_command(self):
-        """
-        Attempt to load the clip_prompt from robot_command.json.
-        Falls back to the text_prompt parameter if file doesn't exist or is invalid.
         
-        Returns:
-            str: The clip_prompt from robot_command.json, or self.text_prompt as fallback
-        """
+        # Initialize YOLO model
+        self.get_logger().info(f"Loading YOLO model: {self.model_path}")
+        self.model = YOLO(self.model_path, task="segment")
+        
+        # Initialize CLIP model
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.get_logger().info(f"Loading CLIP model on {self.device}...")
+        self.clip_processor = CLIPProcessor(device=self.device)
+        
+        # Load clip_prompt from robot_command.json if available
         command_file = os.path.join(
             os.path.dirname(__file__), 
             "..", "..", "config", "robot_command.json"
         )
         
-        try:
-            if os.path.exists(command_file):
+        if os.path.exists(command_file):
+            try:
                 with open(command_file, 'r') as f:
                     command_data = json.load(f)
-                    if 'clip_prompt' in command_data and command_data['clip_prompt']:
-                        prompt = command_data['clip_prompt']
-                        self.get_logger().info(f"Loaded clip_prompt from robot_command.json: '{prompt}'")
-                        return prompt
-            else:
-                self.get_logger().warn(f"robot_command.json not found at {command_file}")
-        except Exception as e:
-            self.get_logger().warn(f"Failed to load robot_command.json: {e}")
-        
-        # Fallback to parameter
-        self.get_logger().info(f"Using text_prompt parameter: '{self.text_prompt}'")
-        return self.text_prompt
-    
-    def _initialize_models(self):
-        """Initialize YOLO and CLIP models."""
-        self.get_logger().info(f"Loading YOLO model: {self.model_path}")
-        self.model = YOLO(self.model_path, task="segment")
-
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.get_logger().info(f"Loading CLIP model on {self.device}...")
-        self.clip_processor = CLIPProcessor(device=self.device)
-        
-        # Load clip_prompt from robot_command.json if available, otherwise use text_prompt parameter
-        self.text_prompt = self._load_clip_prompt_from_command()
+                    if command_data.get('clip_prompt'):
+                        self.text_prompt = command_data['clip_prompt']
+                        self.get_logger().info(f"Using clip_prompt from robot_command.json: '{self.text_prompt}'")
+            except Exception as e:
+                self.get_logger().warn(f"Failed to load robot_command.json: {e}")
         
         # Encode text prompt
         self.text_features = self.clip_processor.encode_text_prompt(self.text_prompt)
         self.text_embedding_list = self.text_features.cpu().numpy().flatten().tolist()
         self.get_logger().info(f"Searching for: '{self.text_prompt}'")
-    
-    def _initialize_processors(self):
-        """Initialize processing utilities."""
+        
+        # Initialize processing utilities
         self.bridge = CvBridge()
         self.visualizer = Visualizer()
         self.pc_processor = None  # Will be initialized after camera info received
+        
+        # Setup ROS subscriptions
+        qos_sensor = QoSProfile(
+            depth=1,
+            history=HistoryPolicy.KEEP_LAST,
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            durability=DurabilityPolicy.VOLATILE
+        )
+        self.rgb_sub = self.create_subscription(
+            Image, self.image_topic, self.rgb_callback, qos_profile=qos_sensor
+        )
+        self.depth_sub = self.create_subscription(
+            Image, self.depth_topic, self.depth_callback, qos_profile=qos_sensor
+        )
+        self.camera_info_sub = self.create_subscription(
+            CameraInfo, self.camera_info_topic, self.camera_info_cb, qos_profile=qos_sensor
+        )
+        
+        # Setup ROS publishers
+        self.marker_pub = self.create_publisher(MarkerArray, "/yolo/centroids", 10)
+        self.pc_pub = self.create_publisher(PointCloud2, self.pc_topic, 10)
+        self.anno_pub = self.create_publisher(Image, self.anno_topic, 10)
+        self.clip_boxes_pub = self.create_publisher(Image, self.clip_boxes_topic, 10)
+        self.detections_pub = self.create_publisher(DetectedObject, self.detections_topic, 10)
+        
+        # State variables
+        self.fx = self.fy = self.cx = self.cy = None
+        self.latest_depth_msg = None
+        self.sync_lock = threading.Lock()
+        self.class_colors = {}
+        
+        # Detection results storage
+        self.last_clip_embeddings = []
+        self.last_centroids = []
+        self.last_detection_meta = []
+        
+        self.get_logger().info(f"Ready. Publishing to {self.pc_topic}")
     
     @staticmethod
     def class_id_to_name(class_id: int) -> str:
@@ -254,33 +244,6 @@ class Yolo11SegNode(Node):
         if 0 <= class_id < len(CLASS_NAMES):
             return CLASS_NAMES[class_id]
         return f"class_{class_id}"
-    
-    def _setup_subscriptions(self):
-        """Setup ROS subscriptions."""
-        qos_sensor = QoSProfile(
-            depth=1,
-            history=HistoryPolicy.KEEP_LAST,
-            reliability=ReliabilityPolicy.BEST_EFFORT,
-            durability=DurabilityPolicy.VOLATILE
-        )
-        
-        self.rgb_sub = self.create_subscription(
-            Image, self.image_topic, self.rgb_callback, qos_profile=qos_sensor
-        )
-        self.depth_sub = self.create_subscription(
-            Image, self.depth_topic, self.depth_callback, qos_profile=qos_sensor
-        )
-        self.camera_info_sub = self.create_subscription(
-            CameraInfo, self.camera_info_topic, self.camera_info_cb, qos_profile=qos_sensor
-        )
-    
-    def _setup_publishers(self):
-        """Setup ROS publishers."""
-        self.marker_pub = self.create_publisher(MarkerArray, "/yolo/centroids", 10)
-        self.pc_pub = self.create_publisher(PointCloud2, self.pc_topic, 10)
-        self.anno_pub = self.create_publisher(Image, self.anno_topic, 10)
-        self.clip_boxes_pub = self.create_publisher(Image, self.clip_boxes_topic, 10)
-        self.detections_pub = self.create_publisher(DetectedObject, self.detections_topic, 10)
     
     def camera_info_cb(self, msg: CameraInfo):
         """Process camera intrinsic parameters."""
@@ -373,7 +336,7 @@ class Yolo11SegNode(Node):
             self._publish_results(rgb_msg.header.stamp, depth_msg.header.frame_id, depth_msg.header)
             
             total_time = (self.get_clock().now() - cb_start).nanoseconds / 1e9
-            self.get_logger().info(f"End-to-end processing time: {total_time:.3f} seconds, {1.0/total_time:.2f} FPS")
+            self.get_logger().info(f"End-to-end processing time: {total_time:.3f} seconds, {1.0/total_time:.2f} FPS\n")
             
         except Exception as e:
             self.get_logger().error(f"Error in process_frame: {e}")
