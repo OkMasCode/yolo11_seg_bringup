@@ -5,6 +5,8 @@ Main node class that orchestrates YOLO inference, CLIP embeddings, and pointclou
 """
 import numpy as np
 import threading
+import json
+import os
 
 import rclpy
 from rclpy.node import Node
@@ -190,6 +192,36 @@ class Yolo11SegNode(Node):
         self.publish_annotated = bool(self.get_parameter("publish_annotated").value)
         self.publish_clip_boxes_vis = bool(self.get_parameter("publish_clip_boxes_vis").value)
     
+    def _load_clip_prompt_from_command(self):
+        """
+        Attempt to load the clip_prompt from robot_command.json.
+        Falls back to the text_prompt parameter if file doesn't exist or is invalid.
+        
+        Returns:
+            str: The clip_prompt from robot_command.json, or self.text_prompt as fallback
+        """
+        command_file = os.path.join(
+            os.path.dirname(__file__), 
+            "..", "..", "config", "robot_command.json"
+        )
+        
+        try:
+            if os.path.exists(command_file):
+                with open(command_file, 'r') as f:
+                    command_data = json.load(f)
+                    if 'clip_prompt' in command_data and command_data['clip_prompt']:
+                        prompt = command_data['clip_prompt']
+                        self.get_logger().info(f"Loaded clip_prompt from robot_command.json: '{prompt}'")
+                        return prompt
+            else:
+                self.get_logger().warn(f"robot_command.json not found at {command_file}")
+        except Exception as e:
+            self.get_logger().warn(f"Failed to load robot_command.json: {e}")
+        
+        # Fallback to parameter
+        self.get_logger().info(f"Using text_prompt parameter: '{self.text_prompt}'")
+        return self.text_prompt
+    
     def _initialize_models(self):
         """Initialize YOLO and CLIP models."""
         self.get_logger().info(f"Loading YOLO model: {self.model_path}")
@@ -198,6 +230,9 @@ class Yolo11SegNode(Node):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.get_logger().info(f"Loading CLIP model on {self.device}...")
         self.clip_processor = CLIPProcessor(device=self.device)
+        
+        # Load clip_prompt from robot_command.json if available, otherwise use text_prompt parameter
+        self.text_prompt = self._load_clip_prompt_from_command()
         
         # Encode text prompt
         self.text_features = self.clip_processor.encode_text_prompt(self.text_prompt)

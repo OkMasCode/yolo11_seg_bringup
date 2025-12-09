@@ -23,8 +23,8 @@ yolo11_seg_bringup/
 │       ├── pointcloud.py             # Pointcloud generation utilities
 │       └── visualization.py          # Visualization helpers
 ├── scripts/
-|   ├── llm_interpreter.py            # LLM interpreter
-│   └── llm_script.py                 # Legacy LLM script
+│   ├── llm_script.py                 # Legacy LLM script
+│   └── llm_interpreter.py            # Interactive LLM navigation instruction interpreter (non-ROS)
 ├── launch/
 │   └── yolo_mapper_reader.launch.py  # Main launch file
 ├── config/
@@ -34,41 +34,54 @@ yolo11_seg_bringup/
 ├── setup.py                          # Python package setup
 └── README.md                         # This file
 ```
-## LLM Helper Scripts (Non-ROS Scripts)
+## LLM Helper Script (Non-ROS Script)
 
-These standalone Python scripts connect to a local Ollama server for semantic reasoning about the environment. They are **not ROS2 nodes** but complementary tools for high-level planning.
+This standalone Python script connects to a local Ollama server for semantic reasoning about the environment. It is **not a ROS2 node** but a complementary tool for interactive navigation planning.
 
 ### `llm_interpreter.py` - Interactive Navigation Instruction Interpreter
 
-**Purpose:** Real-time LLM-based interpreter that processes natural language navigation instructions and generates navigation plans.
+**Purpose:** Real-time LLM-based interpreter that processes natural language navigation instructions and generates structured navigation plans with semantic reasoning.
 
 **What it does:**
 - Parses user prompts in natural language (e.g., "Go to the kitchen", "Bring me the remote")
-- Extracts navigation goals and maps them to recognized objects in the house
+- Extracts navigation goals using LLM with synonym mapping (e.g., "fridge" → "refrigerator")
+- Queries the semantic map (`config/map.json`) for objects matching the goal
+- Classifies robot actions: `go_to_object` (navigate and stay) vs `bring_back_object` (fetch and return)
+- Provides semantic alternatives: If exact goal not found, uses LLM to suggest 3 most related objects
 - Generates CLIP prompts for visual object localization
-- Determines robot actions (navigate to object vs. fetch and return)
-- Provides semantic alternatives if the requested object isn't found
-- Runs interactively with real-time feedback
+- Runs interactively with real-time feedback and timing information
 
 **Key Features:**
-- Goal extraction with synonym mapping (e.g., "fridge" → "refrigerator")
-- Action classification: `go_to_object` (navigate and stay) vs `bring_back_object` (fetch and return)
-- Semantic fallback: If exact goal not in map, suggests 3 most related objects using LLM reasoning
-- Computation timing for each step
-- Household object dictionary with 40+ recognized items
+- Three-stage LLM pipeline: Goal extraction → Map lookup → Action classification
+- Synonym handling with household object dictionary (40+ items)
+- Semantic fallback reasoning when exact match not found
+- Per-step computation timing for optimization
+- Real-time user interaction with formatted output
 
-**Output Format:**
-```json
-{
-    "goal": "television",
-    "goal_objects": [{"class": "tv", "coords": {"x": 1.2, "y": 2.3, "z": 0.5}}],
-    "alternatives": ["sofa", "armchair", "coffee_table"],
-    "clip_prompt": "red television",
-    "action": "go_to_object"
-}
+**Output Format (Console):**
+```
+============================================================
+RESULTS
+============================================================
+
+Goal: television
+Action: go_to_object
+CLIP Prompt: red television
+
+Found in map (2 instance(s)):
+  • tv at {'x': 1.2, 'y': 2.3, 'z': 0.5}
+  • tv at {'x': 3.4, 'y': 1.2, 'z': 0.8}
+
+Semantic alternatives (3 most related):
+  1. sofa
+  2. armchair
+  3. coffee_table
+
+Total processing time: 2.45s
+============================================================
 ```
 
-**How to run it (interactive mode):**
+**How to run it:**
 ```bash
 # 1) Start the Ollama container (if not running)
 docker start robot_brain
@@ -78,37 +91,17 @@ sleep 5
 cd ~/ros2_ws/src/yolo11_seg_bringup
 python scripts/llm_interpreter.py
 
-# 3) Enter navigation instructions
+# 3) Enter navigation instructions (interactive loop)
 Navigation Instruction: Go to the kitchen
 Navigation Instruction: Bring me the remote control
 Navigation Instruction: Where is the bathroom?
 
-# 4) Stop the container when done
+# 4) Press Ctrl+C to exit, then stop the container
 docker stop robot_brain
 ```
 
-### `llm_script.py` - Batch Navigation Command Generator
+**Container Setup (Ollama on Jetson)**
 
-**Purpose:** Offline script that reads the semantic map and generates a single navigation command JSON file.
-
-**What it does:**
-- Reads the exported semantic map (`config/map.json`)
-- Generates navigation hints with target class and CLIP prompt
-- Writes structured command to `config/robot_command.json`
-- Useful for batch processing or external command generation
-
-**How to run it:**
-```bash
-docker start robot_brain
-sleep 5
-
-cd ~/ros2_ws/src/yolo11_seg_bringup
-python scripts/llm_script.py
-
-docker stop robot_brain
-```
-
-### Container setup (Ollama on Jetson)
 This configuration emphasizes stability (uses `-t`), isolation (dedicated port `11435`), and on-demand usage (no auto-restart to save RAM).
 
 **Phase 1: One-time install**
@@ -147,15 +140,12 @@ docker start robot_brain
 # wait ~5s
 
 # 2) Run the script
-cd ~/robot_project
-source venv/bin/activate
-python main.py
+cd ~/ros2_ws/src/yolo11_seg_bringup
+python scripts/llm_interpreter.py
 
 # 3) Stop to free RAM
 docker stop robot_brain
 ```
-
-### Container Setup (Ollama on Jetson)
 
 ## Nodes
 
