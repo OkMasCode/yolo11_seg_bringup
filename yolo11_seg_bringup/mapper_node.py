@@ -6,7 +6,7 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPo
 import tf2_ros
 from geometry_msgs.msg import Vector3
 
-from yolo11_seg_bringup.mapper2 import SemanticObjectMap
+from yolo11_seg_bringup.mapper import SemanticObjectMap
 from yolo11_seg_interfaces.msg import DetectedObject, SemanticObjectArray, SemanticObject
 
 # -------------------- NODE -------------------- #
@@ -50,8 +50,10 @@ class PointCloudMapperNode(Node):
         if self.load_map_on_start:
             self.semantic_map.load_from_json(
                 directory_path=self.output_dir,
-                file=self.input_map_file
+                file=self.input_map_file,
             )
+            print(f"Loaded existing semantic map from {self.input_map_file}")
+            print(f"Current number of objects in map: {len(self.semantic_map.objects)}")
 
         qos_sensor = QoSProfile(depth=1, history=HistoryPolicy.KEEP_LAST, reliability=ReliabilityPolicy.BEST_EFFORT, durability=DurabilityPolicy.VOLATILE)
         
@@ -73,12 +75,12 @@ class PointCloudMapperNode(Node):
         try:
             with self.lock:
                 # Extract fields from DetectedObject message
-                class_name = msg.class_name
-                instance_id = msg.instance_id
+                class_name = msg.object_name
+                instance_id = msg.object_id
                 centroid = msg.centroid
                 timestamp = msg.timestamp
                 embedding = msg.embedding
-                global_embedding = msg.global_embedding
+                text_embedding = msg.text_embedding
 
                 # Create a unique object ID for this particular detection
                 object_id = (
@@ -96,7 +98,7 @@ class PointCloudMapperNode(Node):
                     fixed_frame = self.map_frame, # Fixed map frame ID
                     distance_threshold = 0.2, # Distance threshold for association
                     embeddings = embedding,
-                    goal_embedding = global_embedding
+                    goal_embedding = text_embedding
                 )
 
                 self.publish_semantic_map()

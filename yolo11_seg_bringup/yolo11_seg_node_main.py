@@ -143,7 +143,7 @@ class Yolo11SegNode(Node):
     def _declare_parameters(self):
         """Declare all ROS parameters."""
         # Topic parameters
-        self.declare_parameter("model_path", "/home/sensor/yolov8n-seg.engine")
+        self.declare_parameter("model_path", "/home/sensor/yolo11n-seg.engine")
         self.declare_parameter("image_topic", "/camera/camera/color/image_raw")
         self.declare_parameter("depth_topic", "/camera/camera/aligned_depth_to_color/image_raw")
         self.declare_parameter("camera_info_topic", "/camera/camera/color/camera_info")

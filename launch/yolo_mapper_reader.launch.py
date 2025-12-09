@@ -18,7 +18,7 @@ def generate_launch_description():
     # Declare launch arguments
     model_path_arg = DeclareLaunchArgument(
         'model_path',
-        default_value='/home/sensor/yolov8n-seg.engine',
+        default_value='/home/sensor/yolo11n-seg.engine',
         description='Path to YOLO model file'
     )
     

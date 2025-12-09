@@ -246,6 +246,9 @@ class SemanticObjectMap:
 
         export_data = {}
         for object_id, entry in self.objects.items():
+            # Convert similarity to native Python float, handling None values
+            similarity_value = float(entry.similarity) if entry.similarity is not None else None
+            
             export_data[object_id] = {
                 'name': entry.name,
                 'frame': entry.frame,
@@ -254,12 +257,12 @@ class SemanticObjectMap:
                     'nanosec': entry.timestamp.nanosec
                 },
                 'pose_map': {
-                    'x': entry.pose_map[0],
-                    'y': entry.pose_map[1],
-                    'z': entry.pose_map[2]
+                    'x': float(entry.pose_map[0]),
+                    'y': float(entry.pose_map[1]),
+                    'z': float(entry.pose_map[2])
                 },
-                'occurrences': entry.occurrences,
-                'similarity': entry.similarity,
+                'occurrences': int(entry.occurrences),
+                'similarity': similarity_value,
                 'image_embedding': entry.image_embedding.tolist() if entry.image_embedding is not None else None
             }
 
