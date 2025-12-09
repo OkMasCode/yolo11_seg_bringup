@@ -23,7 +23,8 @@ yolo11_seg_bringup/
 │       ├── pointcloud.py             # Pointcloud generation utilities
 │       └── visualization.py          # Visualization helpers
 ├── scripts/
-│   └── llm_script.py                 # LLM helper (non-ROS) that reads map.json and writes robot_command.json
+|   ├── llm_interpreter.py            # LLM interpreter
+│   └── llm_script.py                 # Legacy LLM script
 ├── launch/
 │   └── yolo_mapper_reader.launch.py  # Main launch file
 ├── config/
@@ -33,16 +34,79 @@ yolo11_seg_bringup/
 ├── setup.py                          # Python package setup
 └── README.md                         # This file
 ```
-## LLM Helper (Non-ROS Script)
+## LLM Helper Scripts (Non-ROS Scripts)
 
-### What it does
-- `scripts/llm_script.py` is a standalone Python script (not a ROS2 node).
-- It connects to a local Ollama server (container) on port `11435`, reads the semantic map (`config/map.json`), and emits a formatted JSON command (`config/robot_command.json`) with navigation hints (target rooms, target class, CLIP prompt).
+These standalone Python scripts connect to a local Ollama server for semantic reasoning about the environment. They are **not ROS2 nodes** but complementary tools for high-level planning.
 
-### How to run it (summary)
-1) Start the Ollama container (see setup below): `docker start robot_brain` (wait ~5s)
-2) Run the script: `python scripts/llm_script.py`
-3) Stop the container when done: `docker stop robot_brain`
+### `llm_interpreter.py` - Interactive Navigation Instruction Interpreter
+
+**Purpose:** Real-time LLM-based interpreter that processes natural language navigation instructions and generates navigation plans.
+
+**What it does:**
+- Parses user prompts in natural language (e.g., "Go to the kitchen", "Bring me the remote")
+- Extracts navigation goals and maps them to recognized objects in the house
+- Generates CLIP prompts for visual object localization
+- Determines robot actions (navigate to object vs. fetch and return)
+- Provides semantic alternatives if the requested object isn't found
+- Runs interactively with real-time feedback
+
+**Key Features:**
+- Goal extraction with synonym mapping (e.g., "fridge" → "refrigerator")
+- Action classification: `go_to_object` (navigate and stay) vs `bring_back_object` (fetch and return)
+- Semantic fallback: If exact goal not in map, suggests 3 most related objects using LLM reasoning
+- Computation timing for each step
+- Household object dictionary with 40+ recognized items
+
+**Output Format:**
+```json
+{
+    "goal": "television",
+    "goal_objects": [{"class": "tv", "coords": {"x": 1.2, "y": 2.3, "z": 0.5}}],
+    "alternatives": ["sofa", "armchair", "coffee_table"],
+    "clip_prompt": "red television",
+    "action": "go_to_object"
+}
+```
+
+**How to run it (interactive mode):**
+```bash
+# 1) Start the Ollama container (if not running)
+docker start robot_brain
+sleep 5
+
+# 2) Run the script
+cd ~/ros2_ws/src/yolo11_seg_bringup
+python scripts/llm_interpreter.py
+
+# 3) Enter navigation instructions
+Navigation Instruction: Go to the kitchen
+Navigation Instruction: Bring me the remote control
+Navigation Instruction: Where is the bathroom?
+
+# 4) Stop the container when done
+docker stop robot_brain
+```
+
+### `llm_script.py` - Batch Navigation Command Generator
+
+**Purpose:** Offline script that reads the semantic map and generates a single navigation command JSON file.
+
+**What it does:**
+- Reads the exported semantic map (`config/map.json`)
+- Generates navigation hints with target class and CLIP prompt
+- Writes structured command to `config/robot_command.json`
+- Useful for batch processing or external command generation
+
+**How to run it:**
+```bash
+docker start robot_brain
+sleep 5
+
+cd ~/ros2_ws/src/yolo11_seg_bringup
+python scripts/llm_script.py
+
+docker stop robot_brain
+```
 
 ### Container setup (Ollama on Jetson)
 This configuration emphasizes stability (uses `-t`), isolation (dedicated port `11435`), and on-demand usage (no auto-restart to save RAM).
@@ -91,16 +155,7 @@ python main.py
 docker stop robot_brain
 ```
 
-### Running the helper script in this package
-```bash
-cd ~/ros2_ws/src/yolo11_seg_bringup
-python scripts/llm_script.py
-```
-The script expects `config/map.json` to exist (exported by `mapper_node2`) and writes `config/robot_command.json` with navigation guidance.
-- Configurable detection parameters (confidence, IOU, image size)
-- Optional visualization outputs
-
----
+### Container Setup (Ollama on Jetson)
 
 ## Nodes
 
