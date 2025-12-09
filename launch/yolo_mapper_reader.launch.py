@@ -92,7 +92,7 @@ def generate_launch_description():
     # Semantic mapper node
     mapper_node = Node(
         package='yolo11_seg_bringup',
-        executable='mapper_node2',
+        executable='mapper_node',
         name='pointcloud_mapper_node',
         output='screen',
         parameters=[{
