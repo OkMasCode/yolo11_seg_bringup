@@ -108,14 +108,19 @@ CLASS_NAMES = [
     "toothbrush",     # 79
 ]
 
+# -------------------- NODE -------------------- #
 
 class Yolo11SegNode(Node):
     """ROS2 node for YOLO segmentation with CLIP embeddings and pointcloud generation."""
-    
+
+    # ------------- Initialization ------------- #
+
     def __init__(self):
         super().__init__("yolo11_seg_node")
         
-        # Declare parameters - Topic parameters
+        # ============= Parameters ============= #
+
+        # Topic parameters
         self.declare_parameter("model_path", "/home/sensor/yolo11n-seg.engine")
         self.declare_parameter("image_topic", "/camera/camera/color/image_raw")
         self.declare_parameter("depth_topic", "/camera/camera/aligned_depth_to_color/image_raw")
@@ -125,7 +130,6 @@ class Yolo11SegNode(Node):
         self.declare_parameter("clip_boxes_topic", "/yolo/clip_boxes")
         self.declare_parameter("detections_topic", "/yolo/detections")
         self.declare_parameter("text_prompt", "a photo of a person")
-        
         # Algorithm parameters
         self.declare_parameter("conf", 0.25)
         self.declare_parameter("iou", 0.70)
@@ -138,7 +142,7 @@ class Yolo11SegNode(Node):
         self.declare_parameter("clip_square_scale", 1.4)
         self.declare_parameter("publish_annotated", False)
         self.declare_parameter("publish_clip_boxes_vis", False)
-        
+
         # Get parameter values - Topics
         self.model_path = self.get_parameter("model_path").value
         self.image_topic = self.get_parameter("image_topic").value
@@ -149,7 +153,6 @@ class Yolo11SegNode(Node):
         self.clip_boxes_topic = self.get_parameter("clip_boxes_topic").value
         self.detections_topic = self.get_parameter("detections_topic").value
         self.text_prompt = self.get_parameter("text_prompt").value
-        
         # Algorithm settings
         self.conf = float(self.get_parameter("conf").value)
         self.iou = float(self.get_parameter("iou").value)
@@ -163,13 +166,14 @@ class Yolo11SegNode(Node):
         self.publish_annotated = bool(self.get_parameter("publish_annotated").value)
         self.publish_clip_boxes_vis = bool(self.get_parameter("publish_clip_boxes_vis").value)
         
+        # =========== Initialization =========== #
+
         # Initialize YOLO model
-        self.get_logger().info(f"Loading YOLO model: {self.model_path}")
+        self.get_logger().info(f"\nLoading YOLO model: {self.model_path}")
         self.model = YOLO(self.model_path, task="segment")
-        
         # Initialize CLIP model
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.get_logger().info(f"Loading CLIP model on {self.device}...")
+        self.get_logger().info(f"Loading CLIP model on {self.device}...\n")
         self.clip_processor = CLIPProcessor(device=self.device)
         
         # Load clip_prompt from robot_command.json if available
@@ -177,21 +181,18 @@ class Yolo11SegNode(Node):
             os.path.dirname(__file__), 
             "..", "..", "config", "robot_command.json"
         )
-        
         if os.path.exists(command_file):
             try:
                 with open(command_file, 'r') as f:
                     command_data = json.load(f)
                     if command_data.get('clip_prompt'):
                         self.text_prompt = command_data['clip_prompt']
-                        self.get_logger().info(f"Using clip_prompt from robot_command.json: '{self.text_prompt}'")
             except Exception as e:
                 self.get_logger().warn(f"Failed to load robot_command.json: {e}")
-        
         # Encode text prompt
         self.text_features = self.clip_processor.encode_text_prompt(self.text_prompt)
         self.text_embedding_list = self.text_features.cpu().numpy().flatten().tolist()
-        self.get_logger().info(f"Searching for: '{self.text_prompt}'")
+        self.get_logger().info(f"\nSearching for: '{self.text_prompt}'\n")
         
         # Initialize processing utilities
         self.bridge = CvBridge()

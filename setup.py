@@ -29,6 +29,7 @@ setup(
         'console_scripts': [
             '3d_yolo11_seg_node2 = yolo11_seg_bringup.3d_yolo11_seg_node2:main',
             '3d_yolo11_seg_node_main = yolo11_seg_bringup.yolo11_seg_node_main:main',
+            'vision_node = yolo11_seg_bringup.vision_node:main',
             'stereo_to_pc_node = yolo11_seg_bringup.stereo_to_pc:main',
             'mapper_node = yolo11_seg_bringup.mapper_node:main',
             'clip_reader = yolo11_seg_bringup.clip_reader:main',
