@@ -229,26 +229,31 @@ class CLIPProcessor:
         
         return sx1, sy1, sx2, sy2
 
-    def encode_image_crop(self, crop_bgr):
+    def encode_images_batch(self, crops_bgr):
         """
-        Encode image crop to CLIP embedding.
-        
+        Encode a batch of image crops to CLIP embeddings efficiently.
         Args:
-            crop_bgr: BGR image crop (numpy array)
-            
+            crops_bgr: List of BGR image crops (numpy arrays)
         Returns:
-            Normalized image features as numpy array
+            List of normalized image features (numpy arrays)
         """
+        if not crops_bgr:
+            return []
 
-        crop_rgb = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2RGB)
-        pil_crop = PILImage.fromarray(crop_rgb)
-        image_in = self.preprocess(pil_crop).unsqueeze(0).to(self.device)
+        # 1. Preprocess all images
+        pil_images = [PILImage.fromarray(cv2.cvtColor(c, cv2.COLOR_BGR2RGB)) for c in crops_bgr]
         
+        # 2. Stack into a single tensor (Batch Size, 3, 224, 224)
+        # This is much faster than processing one by one
+        image_input = torch.stack([self.preprocess(img) for img in pil_images]).to(self.device)
+
+        # 3. Run Inference once
         with torch.no_grad():
-            feat = self.model.encode_image(image_in)
-            feat = feat / feat.norm(dim=-1, keepdim=True)
-        
-        return feat.squeeze(0).detach().float().cpu().numpy()
+            features = self.model.encode_image(image_input)
+            features /= features.norm(dim=-1, keepdim=True)
+
+        # 4. Convert back to numpy list
+        return features.cpu().numpy()
     
 # -------------------- CLASS ------------------- #
 
@@ -474,6 +479,8 @@ class VisionNode(Node):
         self.last_centroids = []
         self.last_clip_embeddings = []
 
+        crops_batch = []
+
         do_clip_frame = (self.frame_idx % max(1, self.clip_every_n_frames) == 0)
 
         self.get_logger().debug(
@@ -484,16 +491,12 @@ class VisionNode(Node):
             result = self.process_single_detection(
                 i, xyxy[i], clss[i], ids[i], masks_t,
                 cv_bgr, depth_t, valid_mask_t, scale_factor,
-                height, width, rgb_msg, do_clip_frame
+                height, width, rgb_msg, do_clip_frame, crops_batch
             )
+            if result is not None:
+                all_points_list.append(result)
 
-            if result is None:
-                continue
-
-            instance_cloud_t = result
-
-            all_points_list.append(instance_cloud_t)
-        
+        # 1. Publish PointCloud ASAP (Latency sensitive)
         if all_points_list:
             final_points_t = torch.cat(all_points_list, dim=0)
             final_points = final_points_t.cpu().numpy().astype(np.float32)
@@ -503,14 +506,34 @@ class VisionNode(Node):
             )
 
         self.publish_text_embedding_callback()
+
+        # 2. Run CLIP Batch Inference (Computation heavy)
+        if crops_batch:
+            try:
+                # Extract just the images for the batch
+                images_only = [item["crop"] for item in crops_batch]
+                
+                # Run inference on all at once
+                embeddings = self.clip_processor.encode_images_batch(images_only)
+                
+                # Re-associate embeddings with metadata
+                for i, emb in enumerate(embeddings):
+                    meta = crops_batch[i]["metadata"]
+                    meta["embedding"] = emb
+                    self.last_clip_embeddings.append(meta)
+                    
+            except Exception as e:
+                self.get_logger().error(f"Batch CLIP inference failed: {e}")
+
         self.publish_clip_embeddings()
         
     def process_single_detection(self, idx, bbox, class_id, instance_id, masks_t,
                                  cv_bgr, depth_t, valid_mask_t, scale_factor,
-                                 height, width, rgb_msg, do_clip_frame):
+                                 height, width, rgb_msg, do_clip_frame, batch_collector):
 
-        """ Process a single detection to generate pointcloud segment and annotated image. """
-
+        """ 
+        Process geometry and prepare CLIP crops, but DO NOT run inference here.
+        """
         x1, y1, x2, y2 = bbox
 
         x1 = max(0, min(x1, width - 1))
@@ -520,25 +543,25 @@ class VisionNode(Node):
 
         if x2 <= x1 or y2 <= y1:
             return None
-
-        # Compute CLIP crop
-        sx1, sy1, sx2, sy2 = CLIPProcessor.compute_square_crop(
-            x1, y1, x2, y2, width, height, self.clip_square_scale
-        )
         
-        if do_clip_frame and sx2 > sx1 and sy2 > sy1:
-            crop_bgr = cv_bgr[sy1:sy2, sx1:sx2]
-            try:
-                embedding = self.clip_processor.encode_image_crop(crop_bgr)
-                self.last_clip_embeddings.append({
-                    "class_id": int(class_id),
-                    "instance_id": int(instance_id),
-                    "bbox_full": [int(x1), int(y1), int(x2), int(y2)],
-                    "square_crop": [int(sx1), int(sy1), int(sx2), int(sy2)],
-                    "embedding": embedding,
+        if do_clip_frame:
+            # Compute CLIP crop
+            sx1, sy1, sx2, sy2 = CLIPProcessor.compute_square_crop(
+                x1, y1, x2, y2, width, height, self.clip_square_scale
+            )
+        
+            if x2 > sx1 and sy2 > sy1:
+                crop_bgr = cv_bgr[sy1:sy2, sx1:sx2]
+                # Add to batch collector
+                batch_collector.append({
+                    "crop": crop_bgr,
+                    "metadata": {
+                        "class_id": int(class_id),
+                        "instance_id": int(instance_id),
+                        "bbox_full": [int(x1), int(y1), int(x2), int(y2)],
+                        "square_crop": [int(sx1), int(sy1), int(sx2), int(sy2)]
+                    }
                 })
-            except Exception as e:
-                self.get_logger().warn(f"CLIP embedding failed for det {idx}: {e}")
         
         if masks_t is None or idx >= masks_t.shape[0]:
             return None
