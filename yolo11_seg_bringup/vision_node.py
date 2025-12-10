@@ -2,6 +2,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from sensor_msgs.msg import Image, CameraInfo, PointCloud2, PointField
+from std_msgs.msg import Float32MultiArray, MultiArrayDimension
 from sensor_msgs_py import point_cloud2
 import message_filters
 from message_filters import TimeSynchronizer, ApproximateTimeSynchronizer
@@ -9,13 +10,15 @@ from builtin_interfaces.msg import Time
 import threading
 
 from ultralytics import YOLO
+import clip
 from cv_bridge import CvBridge
 
 # PointCloud processing utilities
 import torch
 import struct
 import numpy as np
-
+import os
+import json
 
 # ------------------ FUNCTIONS ----------------- #
 
@@ -159,6 +162,37 @@ class PointCloudProcessor:
         except Exception as e:
             print(f"Error publishing pointcloud: {e}")
 
+class CLIPProcessor:
+    
+    """ Handles CLIP model loading and encoding. """
+
+    def __init__(self, model_name='ViT-B/32', device='cpu'):
+        """
+        Initialize CLIP model and preprocessing.
+        
+        Args:
+            model_name: CLIP model variant
+            device: torch device (cpu/cuda)
+        """
+        self.device = device
+        self.model, self.preprocess = clip.load(model_name, device=device)
+
+    def encode_text_prompt(self, text):
+        """
+        Encode text prompt to CLIP embedding.
+        
+        Args:
+            text: Text string to encode
+            
+        Returns:
+            Normalized text features tensor
+        """
+        with torch.no_grad():
+            text_token = clip.tokenize([text]).to(self.device)
+            text_features = self.model.encode_text(text_token)
+            text_features /= text_features.norm(dim=-1, keepdim=True)
+        return text_features
+
 # -------------------- CLASS ------------------- #
 
 class VisionNode(Node):
@@ -186,6 +220,9 @@ class VisionNode(Node):
         self.declare_parameter('conf', 0.25)
         self.declare_parameter('iou', 0.45)
         self.declare_parameter('retina_masks', True)
+        self.declare_parameter('embedding_topic', '/yolo/text_embedding')
+        self.declare_parameter('embedding_freq', 10.0)  # Hz
+        self.declare_parameter('text_prompt', 'a photo of a robot')  # Default prompt
 
         self.model = self.get_parameter('model').value
         self.image_topic = self.get_parameter('image_topic').value
@@ -201,6 +238,9 @@ class VisionNode(Node):
         self.conf = float(self.get_parameter('conf').value)
         self.iou = float(self.get_parameter('iou').value)
         self.retina_masks = bool(self.get_parameter('retina_masks').value)
+        self.embedding_topic = self.get_parameter('embedding_topic').value
+        self.embedding_freq = float(self.get_parameter('embedding_freq').value)
+        self.text_prompt = self.get_parameter('text_prompt').value
 
         # =========== Initialization =========== #
 
@@ -208,7 +248,25 @@ class VisionNode(Node):
         self.model = YOLO(self.model, task='segment')
 
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.get_logger().info(f"Loading CLIP model on {self.device}...\n")
+        self.clip_processor = CLIPProcessor(device=self.device)
+
+        # Load clip_prompt from robot_command.json if available
+        command_file = os.path.join("/home/sensor/ros2_ws/src/yolo11_seg_bringup/config/robot_command.json")
+        if os.path.exists(command_file):
+            try:
+                with open(command_file, 'r') as f:
+                    command_data = json.load(f)
+                    if command_data.get('clip_prompt'):
+                        self.text_prompt = command_data['clip_prompt']
+            except Exception as e:
+                self.get_logger().warn(f"Failed to load robot_command.json: {e}")
         
+        # Encode text prompt
+        self.text_features = self.clip_processor.encode_text_prompt(self.text_prompt)
+        self.text_embedding_list = self.text_features.cpu().numpy().flatten().tolist()
+        self.get_logger().info(f"\nSearching for: '{self.text_prompt}'\n")
+
         self.bridge = CvBridge()
         self.pc_processor = None
 
@@ -230,6 +288,7 @@ class VisionNode(Node):
 
         self.pc_pub = self.create_publisher(PointCloud2, self.pc_topic, 10)
         self.anno_pub = self.create_publisher(Image, self.anno_topic, 10)
+        self.embedding_pub = self.create_publisher(Float32MultiArray, self.embedding_topic, 10)
 
         self.last_centroids = []
         self.class_colors = {}
@@ -238,6 +297,12 @@ class VisionNode(Node):
         self.latest_depth_msg = None
         self.warned_missing_intrinsics = False
         self.sync_lock = threading.Lock()
+
+        # Embedding publisher timer
+        # self.embedding_timer = self.create_timer(
+        #     1.0 / self.embedding_freq,  # Convert Hz to period
+        #     self.publish_text_embedding_callback
+        # )
 
     # ---------------- Callbacks --------------- #
 
@@ -350,6 +415,8 @@ class VisionNode(Node):
             self.get_logger().info(
                 f"Published pointcloud with {final_points.shape[0]} points from {len(all_points_list)} instances."
             )
+
+        self.publish_text_embedding_callback()
         
     def process_single_detection(self, idx, bbox, class_id, instance_id, masks_t,
                                  cv_bgr, depth_t, valid_mask_t, scale_factor,
@@ -404,6 +471,27 @@ class VisionNode(Node):
                 g = (g + 64) & 0xFF
             class_colors[class_id] = (r, g, b)
         return class_colors[class_id]
+    
+    def publish_text_embedding_callback(self):
+        """Timer callback to publish text embeddings at fixed frequency."""
+        try:
+            
+            # Create Float32MultiArray message
+            msg = Float32MultiArray()
+            msg.data = self.text_embedding_list
+            
+            # Set shape metadata for clarity
+            msg.layout.dim.append(MultiArrayDimension(
+                label='embedding',
+                size=len(self.text_embedding_list),
+                stride=1
+            ))
+            
+            # Publish
+            self.embedding_pub.publish(msg)
+
+        except Exception as e:
+            self.get_logger().error(f"Error publishing text embedding: {e}")
     
 def main(args=None):
     rclpy.init(args=args)
