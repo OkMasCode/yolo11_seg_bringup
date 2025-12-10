@@ -3,9 +3,13 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from sensor_msgs.msg import Image, CameraInfo, PointCloud2, PointField
 from std_msgs.msg import Float32MultiArray, MultiArrayDimension
+from geometry_msgs.msg import Vector3
 from sensor_msgs_py import point_cloud2
 from visualization_msgs.msg import MarkerArray
 import threading
+
+from yolo11_seg_interfaces.msg import DetectedObject
+from builtin_interfaces.msg import Time
 
 from ultralytics import YOLO
 import clip
@@ -20,9 +24,7 @@ import os
 import json
 import cv2
 
-
-
-# ------------------ FUNCTIONS ----------------- #
+# ------------------ UTILITIES ----------------- #
 
 class PointCloudProcessor:
 
@@ -284,7 +286,7 @@ class VisionNode(Node):
         self.declare_parameter('retina_masks', True)
         self.declare_parameter('embedding_topic', '/yolo/text_embedding')
         self.declare_parameter('clip_embedding_topic', '/yolo/clip_embeddings')
-        self.declare_parameter('embedding_freq', 10.0)  # Hz
+        self.declare_parameter('detections_topic', '/yolo/detections')
         self.declare_parameter('text_prompt', 'a photo of a robot')  # Default prompt
         self.declare_parameter('centroid_topic', '/yolo/centroid_markers')
         self.declare_parameter('clip_square_scale', 1.3)
@@ -307,7 +309,7 @@ class VisionNode(Node):
         self.retina_masks = bool(self.get_parameter('retina_masks').value)
         self.embedding_topic = self.get_parameter('embedding_topic').value
         self.clip_embedding_topic = self.get_parameter('clip_embedding_topic').value
-        self.embedding_freq = float(self.get_parameter('embedding_freq').value)
+        self.detections_topic = self.get_parameter('detections_topic').value
         self.text_prompt = self.get_parameter('text_prompt').value
         self.centroid_topic = self.get_parameter('centroid_topic').value
         self.clip_square_scale = float(self.get_parameter('clip_square_scale').value)
@@ -348,24 +350,17 @@ class VisionNode(Node):
             reliability=ReliabilityPolicy.BEST_EFFORT,
             durability=DurabilityPolicy.VOLATILE
         )
-        self.rgb_sub = self.create_subscription(
-            Image, self.image_topic, self.rgb_callback, qos_profile=qos_sensor
-        )
-        self.depth_sub = self.create_subscription(
-            Image, self.depth_topic, self.depth_callback, qos_profile=qos_sensor
-        )
-        self.camera_info_sub = self.create_subscription(
-            CameraInfo, self.camera_info_topic, self.camera_info_cb, qos_profile=qos_sensor
-        )
+        self.rgb_sub = self.create_subscription(Image, self.image_topic, self.rgb_callback, qos_profile=qos_sensor)
+        self.depth_sub = self.create_subscription(Image, self.depth_topic, self.depth_callback, qos_profile=qos_sensor)
+        self.camera_info_sub = self.create_subscription(CameraInfo, self.camera_info_topic, self.camera_info_cb, qos_profile=qos_sensor)
 
         self.pc_pub = self.create_publisher(PointCloud2, self.pc_topic, 10)
         self.anno_pub = self.create_publisher(Image, self.anno_topic, 10)
         self.embedding_pub = self.create_publisher(Float32MultiArray, self.embedding_topic, 10)
         self.clip_embedding_pub = self.create_publisher(Float32MultiArray, self.clip_embedding_topic, 10)
+        self.detections_pub = self.create_publisher(DetectedObject, self.detections_topic, 10)
         self.marker_pub = self.create_publisher(MarkerArray, self.centroid_topic, 10)
 
-        self.last_clip_embeddings = []
-        self.last_centroids = []
         self.class_colors = {}
         self.frame_idx = 0
 
@@ -373,6 +368,19 @@ class VisionNode(Node):
         self.latest_depth_msg = None
         self.warned_missing_intrinsics = False
         self.sync_lock = threading.Lock()
+
+        # Define class names (COCO)
+        self.CLASS_NAMES = [
+            "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat", "traffic light",
+            "fire hydrant", "stop sign", "parking meter", "bench", "bird", "cat", "dog", "horse", "sheep", "cow",
+            "elephant", "bear", "zebra", "giraffe", "backpack", "umbrella", "handbag", "tie", "suitcase", "frisbee",
+            "skis", "snowboard", "sports ball", "kite", "baseball bat", "baseball glove", "skateboard", "surfboard",
+            "tennis racket", "bottle", "wine glass", "cup", "fork", "knife", "spoon", "bowl", "banana", "apple",
+            "sandwich", "orange", "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair", "couch",
+            "potted plant", "bed", "dining table", "toilet", "tv", "laptop", "mouse", "remote", "keyboard", "cell phone",
+            "microwave", "oven", "toaster", "sink", "refrigerator", "book", "clock", "vase", "scissors", "teddy bear",
+            "hair drier", "toothbrush"
+        ]
 
     # ---------------- Callbacks --------------- #
 
@@ -423,7 +431,6 @@ class VisionNode(Node):
 
         if cv_depth.ndim != 2 or self.fx is None:
             if self.fx is None and not self.warned_missing_intrinsics:
-                self.get_logger().warning("Waiting for camera intrinsics; skipping frame.")
                 self.warned_missing_intrinsics = True
             return
         
@@ -442,14 +449,19 @@ class VisionNode(Node):
         )
         res = results[0]
         if not hasattr(res, 'masks') or len(res.boxes) == 0:
-            self.get_logger().debug("No detections or masks; skipping pointcloud publish.")
             return
         
         self._process_detections(res, cv_bgr, cv_depth, depth_msg, rgb_msg, height, width)
 
     def _process_detections(self, res, cv_bgr, cv_depth, depth_msg, rgb_msg, height, width):
 
-        """ Process all detections from YOLO results. """
+        """ 
+        Unified pipeline: 
+        1. Calculate Geometry (Centroids/PCs) for all objects.
+        2. Publish PointCloud immediately.
+        3. Batch Process CLIP for all objects.
+        4. Publish Custom Messages with coupled Geometry + Embeddings.
+        """
 
         xyxy = res.boxes.xyxy.cpu().numpy()
         clss = res.boxes.cls.cpu().numpy().astype(int)
@@ -457,10 +469,9 @@ class VisionNode(Node):
         masks_t = res.masks.data if hasattr(res, 'masks') and res.masks is not None else None
         confs = res.boxes.conf.cpu().numpy()
 
-        # Filter by confidence ≥ 0.7
+        # Filter by confidence
         keep = confs >= self.conf_threshold
         if not np.any(keep):
-            self.get_logger().debug("All detections below confidence threshold; skipping.")
             return
     
         xyxy = xyxy[keep]
@@ -476,26 +487,30 @@ class VisionNode(Node):
         depth_t, valid_mask_t = self.pc_processor.prepare_depth_tensor(cv_depth, depth_msg.encoding, scale_factor)
 
         all_points_list = []
-        self.last_centroids = []
-        self.last_clip_embeddings = []
-
-        crops_batch = []
+        frame_detections = []   # Stores the unified detection objects
+        batch_queue = []        # Stores REFERENCES to objects needing CLIP
 
         do_clip_frame = (self.frame_idx % max(1, self.clip_every_n_frames) == 0)
-
-        self.get_logger().debug(
-            f"Depth shape {tuple(depth_t.shape)}, masks {tuple(masks_t.shape) if masks_t is not None else 'None'}"
-        )
 
         for i in range(len(xyxy)):
             result = self.process_single_detection(
                 i, xyxy[i], clss[i], ids[i], masks_t,
                 cv_bgr, depth_t, valid_mask_t, scale_factor,
-                height, width, rgb_msg, do_clip_frame, crops_batch
+                height, width, rgb_msg, do_clip_frame
             )
-            if result is not None:
-                all_points_list.append(result)
 
+            if result is None:
+                continue
+
+            instance_cloud, det_entry = result
+            
+            all_points_list.append(instance_cloud)
+            frame_detections.append(det_entry)
+
+            # If this entry has a crop waiting for CLIP, add reference to queue
+            if det_entry.get("crop") is not None:
+                batch_queue.append(det_entry)
+            
         # 1. Publish PointCloud ASAP (Latency sensitive)
         if all_points_list:
             final_points_t = torch.cat(all_points_list, dim=0)
@@ -508,31 +523,32 @@ class VisionNode(Node):
         self.publish_text_embedding_callback()
 
         # 2. Run CLIP Batch Inference (Computation heavy)
-        if crops_batch:
+        if batch_queue:
             try:
                 # Extract just the images for the batch
-                images_only = [item["crop"] for item in crops_batch]
+                images = [item["crop"] for item in batch_queue]
                 
                 # Run inference on all at once
-                embeddings = self.clip_processor.encode_images_batch(images_only)
+                embeddings = self.clip_processor.encode_images_batch(images)
                 
                 # Re-associate embeddings with metadata
                 for i, emb in enumerate(embeddings):
-                    meta = crops_batch[i]["metadata"]
-                    meta["embedding"] = emb
-                    self.last_clip_embeddings.append(meta)
+                    batch_queue[i]["embedding"] = emb
+                    # Clear the image to free memory
+                    batch_queue[i]["crop"] = None
                     
             except Exception as e:
                 self.get_logger().error(f"Batch CLIP inference failed: {e}")
 
-        self.publish_clip_embeddings()
+        self.publish_custom_detections(frame_detections, depth_msg.header, rgb_msg.header.stamp)
         
     def process_single_detection(self, idx, bbox, class_id, instance_id, masks_t,
                                  cv_bgr, depth_t, valid_mask_t, scale_factor,
-                                 height, width, rgb_msg, do_clip_frame, batch_collector):
+                                 height, width, rgb_msg, do_clip_frame):
 
         """ 
-        Process geometry and prepare CLIP crops, but DO NOT run inference here.
+        Process geometry and prepare data container. 
+        Returns (pointcloud_tensor, detection_dictionary)
         """
         x1, y1, x2, y2 = bbox
 
@@ -544,27 +560,14 @@ class VisionNode(Node):
         if x2 <= x1 or y2 <= y1:
             return None
         
+        if masks_t is None or idx >= masks_t.shape[0]:
+            return None
+        
         if do_clip_frame:
             # Compute CLIP crop
             sx1, sy1, sx2, sy2 = CLIPProcessor.compute_square_crop(
                 x1, y1, x2, y2, width, height, self.clip_square_scale
             )
-        
-            if x2 > sx1 and sy2 > sy1:
-                crop_bgr = cv_bgr[sy1:sy2, sx1:sx2]
-                # Add to batch collector
-                batch_collector.append({
-                    "crop": crop_bgr,
-                    "metadata": {
-                        "class_id": int(class_id),
-                        "instance_id": int(instance_id),
-                        "bbox_full": [int(x1), int(y1), int(x2), int(y2)],
-                        "square_crop": [int(sx1), int(sy1), int(sx2), int(sy2)]
-                    }
-                })
-        
-        if masks_t is None or idx >= masks_t.shape[0]:
-            return None
         
         rgb_color = self.get_color_for_class(str(class_id), self.class_colors)
         instance_cloud_t, centroid = self.pc_processor.process_detection(
@@ -572,19 +575,33 @@ class VisionNode(Node):
             int(class_id), int(instance_id),
             rgb_color, scale_factor
         )
-        
+
         if instance_cloud_t is None:
             return None
+        
+        # --- Create Shared Object (The "Box") ---
+        class_name = self.class_id_to_name(int(class_id))
 
-        # Store centroid and metadata
-        self.last_centroids.append({
+        detection_entry = {
             "class_id": int(class_id),
             "instance_id": int(instance_id),
-            "centroid": centroid
-        })
+            "object_name": class_name,
+            "centroid": centroid, # (x, y, z) tuple
+            "embedding": None,    # Placeholder
+            "crop": None          # Placeholder
+        }
+        
+        # --- Prepare CLIP Crop (If enabled) ---
+        if do_clip_frame:
+            sx1, sy1, sx2, sy2 = CLIPProcessor.compute_square_crop(
+                x1, y1, x2, y2, width, height, self.clip_square_scale
+            )
+            if sx2 > sx1 and sy2 > sy1:
+                # Store crop in the object
+                detection_entry["crop"] = cv_bgr[sy1:sy2, sx1:sx2]
 
-        return instance_cloud_t
-    
+        return instance_cloud_t, detection_entry
+
     # ------------ Secondary Methods ------------ #
 
     @staticmethod
@@ -602,7 +619,12 @@ class VisionNode(Node):
                 g = (g + 64) & 0xFF
             class_colors[class_id] = (r, g, b)
         return class_colors[class_id]
-    
+   
+    def class_id_to_name(self, class_id: int) -> str:
+        if 0 <= class_id < len(self.CLASS_NAMES):
+            return self.CLASS_NAMES[class_id]
+        return f"class_{class_id}"
+
     # ---------------- Publishers --------------- #
 
     def publish_text_embedding_callback(self):
@@ -626,30 +648,35 @@ class VisionNode(Node):
         except Exception as e:
             self.get_logger().error(f"Error publishing text embedding: {e}")
 
-    def publish_clip_embeddings(self):
-        """Publish stored CLIP embeddings for testing."""
-        if not self.last_clip_embeddings:
-            return
+    def publish_custom_detections(self, detections, header, timestamp):
+        """ Iterate through the unified list and publish messages. """
+        for det in detections:
+            msg = DetectedObject()
+            
+            # Basic Info
+            msg.object_name = det["object_name"]
+            msg.object_id = det["instance_id"]
+            
+            # Centroid
+            cx, cy, cz = det["centroid"]
+            msg.centroid = Vector3(x=cx, y=cy, z=cz)
+            
+        # Timestamp (Extract directly from the header)
+            msg.timestamp = header.stamp
+            
+            # Embedding (might be None if skipped/failed)
+            if det["embedding"] is not None:
+                msg.embedding = det["embedding"].tolist()
+            else:
+                msg.embedding = [] # Empty list
+            
+            # Add text embedding for mapper convenience
+            msg.text_embedding = self.text_embedding_list
+            
+            self.detections_pub.publish(msg)
 
-        try:
-            for emb_info in self.last_clip_embeddings:
-                emb = emb_info.get("embedding")
-                if emb is None:
-                    continue
+# -------------------- MAIN -------------------- # 
 
-                msg = Float32MultiArray()
-                msg.data = emb.tolist()
-
-                msg.layout.dim.append(MultiArrayDimension(
-                    label=f"class_{emb_info.get('class_id', -1)}_inst_{emb_info.get('instance_id', -1)}",
-                    size=len(msg.data),
-                    stride=1
-                ))
-
-                self.clip_embedding_pub.publish(msg)
-        except Exception as e:
-            self.get_logger().error(f"Error publishing CLIP embeddings: {e}")
-    
 def main(args=None):
     rclpy.init(args=args)
     node = VisionNode()
@@ -659,7 +686,6 @@ def main(args=None):
         pass
     node.destroy_node()
     rclpy.shutdown()
-
 
 if __name__ == "__main__":
     main()
