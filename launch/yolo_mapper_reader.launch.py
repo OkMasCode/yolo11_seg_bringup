@@ -3,7 +3,7 @@
 Launch file for YOLO segmentation pipeline with semantic mapping and reader.
 
 This launch file starts:
-1. yolo11_seg_node_main - YOLO detection with CLIP embeddings
+1. vision_node - YOLO detection with CLIP embeddings
 2. mapper_node2 - Semantic object mapping
 3. clip_reader - Semantic map visualization/printer
 """
@@ -58,34 +58,35 @@ def generate_launch_description():
         description='Camera frame for detections'
     )
     
-    # YOLO segmentation node
-    yolo_node = Node(
+    # Vision node (YOLO + CLIP)
+    vision_node = Node(
         package='yolo11_seg_bringup',
-        executable='3d_yolo11_seg_node_main',
-        name='yolo11_seg_node',
+        executable='vision_node',
+        name='vision_node',
         output='screen',
         parameters=[{
-            'model_path': LaunchConfiguration('model_path'),
+            'model': LaunchConfiguration('model_path'),
             'image_topic': LaunchConfiguration('image_topic'),
             'depth_topic': LaunchConfiguration('depth_topic'),
             'camera_info_topic': LaunchConfiguration('camera_info_topic'),
             'text_prompt': LaunchConfiguration('text_prompt'),
-            'pointcloud_topic': '/yolo/pointcloud',
-            'annotated_topic': '/yolo/annotated',
-            'clip_boxes_topic': '/yolo/clip_boxes',
+            'pc_topic': '/yolo/pointcloud',
+            'anno_topic': '/yolo/annotated_image',
             'detections_topic': '/yolo/detections',
+            'embedding_topic': '/yolo/text_embedding',
+            'clip_embedding_topic': '/yolo/clip_embeddings',
+            'centroid_topic': '/yolo/centroid_markers',
             'conf': 0.25,
-            'iou': 0.70,
+            'iou': 0.45,
             'imgsz': 640,
             'retina_masks': True,
             'depth_scale': 1000.0,
             'pc_downsample': 2,
             'pc_max_range': 8.0,
             'mask_threshold': 0.5,
-            'clip_square_scale': 1.4,
-            'debug_clip_boxes': False,
-            'publish_annotated': False,
-            'publish_clip_boxes_vis': False,
+            'clip_square_scale': 1.3,
+            'conf_threshold': 0.7,
+            'clip_every_n_frames': 3,
         }]
     )
     
@@ -121,7 +122,7 @@ def generate_launch_description():
         text_prompt_arg,
         map_frame_arg,
         camera_frame_arg,
-        yolo_node,
+        vision_node,
         mapper_node,
         reader_node,
     ])
