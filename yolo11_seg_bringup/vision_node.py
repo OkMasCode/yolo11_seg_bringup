@@ -5,7 +5,7 @@ from sensor_msgs.msg import Image, CameraInfo, PointCloud2, PointField
 from std_msgs.msg import Float32MultiArray, MultiArrayDimension
 from geometry_msgs.msg import Vector3
 from sensor_msgs_py import point_cloud2
-from visualization_msgs.msg import MarkerArray
+from visualization_msgs.msg import MarkerArray, Marker
 import threading
 
 from yolo11_seg_interfaces.msg import DetectedObject
@@ -292,6 +292,7 @@ class VisionNode(Node):
         self.declare_parameter('clip_square_scale', 1.3)
         self.declare_parameter('conf_threshold', 0.7)
         self.declare_parameter('clip_every_n_frames', 3)
+        self.declare_parameter('enable_visualization', True)
 
         self.model = self.get_parameter('model').value
         self.image_topic = self.get_parameter('image_topic').value
@@ -315,7 +316,7 @@ class VisionNode(Node):
         self.clip_square_scale = float(self.get_parameter('clip_square_scale').value)
         self.conf_threshold = float(self.get_parameter('conf_threshold').value)
         self.clip_every_n_frames = int(self.get_parameter('clip_every_n_frames').value)
-
+        self.enable_vis = bool(self.get_parameter('enable_visualization').value)
         # =========== Initialization =========== #
 
         self.get_logger().info(f"\nLoading YOLO model from {self.model}...")
@@ -355,11 +356,12 @@ class VisionNode(Node):
         self.camera_info_sub = self.create_subscription(CameraInfo, self.camera_info_topic, self.camera_info_cb, qos_profile=qos_sensor)
 
         self.pc_pub = self.create_publisher(PointCloud2, self.pc_topic, 10)
-        self.anno_pub = self.create_publisher(Image, self.anno_topic, 10)
         self.embedding_pub = self.create_publisher(Float32MultiArray, self.embedding_topic, 10)
         self.clip_embedding_pub = self.create_publisher(Float32MultiArray, self.clip_embedding_topic, 10)
         self.detections_pub = self.create_publisher(DetectedObject, self.detections_topic, 10)
         self.marker_pub = self.create_publisher(MarkerArray, self.centroid_topic, 10)
+        if self.enable_vis:
+            self.vis_pub = self.create_publisher(Image, self.anno_topic, 10)
 
         self.class_colors = {}
         self.frame_idx = 0
@@ -453,6 +455,13 @@ class VisionNode(Node):
         
         self._process_detections(res, cv_bgr, cv_depth, depth_msg, rgb_msg, height, width)
 
+        if self.enable_vis:
+            # result.plot() draws boxes, masks, and IDs on the image
+            annotated_frame = res.plot()
+            vis_msg = self.bridge.cv2_to_imgmsg(annotated_frame, encoding="bgr8")
+            vis_msg.header = rgb_msg.header
+            self.vis_pub.publish(vis_msg)
+
     def _process_detections(self, res, cv_bgr, cv_depth, depth_msg, rgb_msg, height, width):
 
         """ 
@@ -541,6 +550,7 @@ class VisionNode(Node):
                 self.get_logger().error(f"Batch CLIP inference failed: {e}")
 
         self.publish_custom_detections(frame_detections, depth_msg.header, rgb_msg.header.stamp)
+        self.publish_centroid_markers(frame_detections, depth_msg.header)
         
     def process_single_detection(self, idx, bbox, class_id, instance_id, masks_t,
                                  cv_bgr, depth_t, valid_mask_t, scale_factor,
@@ -674,6 +684,46 @@ class VisionNode(Node):
             msg.text_embedding = self.text_embedding_list
             
             self.detections_pub.publish(msg)
+
+    def publish_centroid_markers(self, detections, header):
+        """Publish centroids as marker array."""
+        try:
+            marker_array = MarkerArray()
+            
+            for i, det in enumerate(detections):
+                marker = Marker()
+                marker.header = header
+                marker.ns = "centroids"
+                marker.id = i
+                marker.type = Marker.SPHERE
+                marker.action = Marker.ADD
+                
+                # Set position from centroid
+                cx, cy, cz = det["centroid"]
+                marker.pose.position.x = cx
+                marker.pose.position.y = cy
+                marker.pose.position.z = cz
+                marker.pose.orientation.w = 1.0
+                
+                # Set scale (radius of sphere)
+                marker.scale.x = 0.05
+                marker.scale.y = 0.05
+                marker.scale.z = 0.05
+                
+                # Set color from class color
+                class_id_str = str(det["class_id"])
+                r, g, b = self.get_color_for_class(class_id_str, self.class_colors)
+                marker.color.r = r / 255.0
+                marker.color.g = g / 255.0
+                marker.color.b = b / 255.0
+                marker.color.a = 1.0
+                
+                marker_array.markers.append(marker)
+            
+            self.marker_pub.publish(marker_array)
+            
+        except Exception as e:
+            self.get_logger().error(f"Error publishing centroid markers: {e}")
 
 # -------------------- MAIN -------------------- # 
 
