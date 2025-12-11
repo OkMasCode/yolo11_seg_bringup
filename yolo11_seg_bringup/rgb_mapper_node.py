@@ -5,8 +5,9 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 import tf2_ros
 from geometry_msgs.msg import Vector3
+from rcl_interfaces.msg import SetParametersResult
 
-from yolo11_seg_bringup.mapper import SemanticObjectMap
+from yolo11_seg_bringup.rgb_mapper import SemanticObjectMap
 from yolo11_seg_interfaces.msg import DetectedObject, SemanticObjectArray, SemanticObject
 
 # -------------------- NODE -------------------- #
@@ -21,13 +22,16 @@ class PointCloudMapperNode(Node):
         # ============= Parameters ============= #
 
         self.declare_parameter('detection_message', '/yolo/detections')
-        self.declare_parameter('map_frame', 'camera_color_optical_frame')
-        self.declare_parameter('camera_frame', 'camera_color_optical_frame')
+        # In RGB case, we treat centroids as pixel coordinates; TF frames are unused
+        self.declare_parameter('map_frame', 'camera_frame')
+        self.declare_parameter('camera_frame', 'camera_frame')
         self.declare_parameter('semantic_map_topic', '/yolo/semantic_map')
         self.declare_parameter("output_dir", "/home/sensor/ros2_ws/src/yolo11_seg_bringup/config/")
         self.declare_parameter('export_interval', 5.0)
         self.declare_parameter('load_map_on_start', False)
         self.declare_parameter('input_map_file', 'map.json')
+        # Pixel threshold for merging detections (RGB mode)
+        self.declare_parameter('pixel_merge_threshold', 120.0)
 
         self.dm_topic = self.get_parameter('detection_message').value
         self.map_frame = self.get_parameter('map_frame').value
@@ -38,13 +42,18 @@ class PointCloudMapperNode(Node):
         self.export_interval = float(self.get_parameter('export_interval').value)
         self.load_map_on_start = self.get_parameter('load_map_on_start').value
         self.input_map_file = self.get_parameter('input_map_file').value
+        self.pixel_merge_threshold = float(self.get_parameter('pixel_merge_threshold').value)
 
         # =========== Initialization =========== #
 
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
-        self.semantic_map = SemanticObjectMap(self.tf_buffer, self)
+        # Enable RGB mode in the mapper (pixel-frame, no TF transform)
+        self.semantic_map = SemanticObjectMap(self.tf_buffer, self, use_pixel_frame=True)
+
+        # Allow runtime parameter updates (e.g., ros2 param set)
+        self.add_on_set_parameters_callback(self._on_set_params)
 
         # Load existing map if enabled
         if self.load_map_on_start:
@@ -64,7 +73,9 @@ class PointCloudMapperNode(Node):
 
         self.lock = threading.Lock()
 
-        self.get_logger().info(f"PointCloud Mapper Node initialized. " f"Subscribing to {self.dm_topic}, output to {self.output_dir}")
+        self.get_logger().info(
+            f"RGB Mapper Node initialized. Subscribing to {self.dm_topic}, merging threshold {self.pixel_merge_threshold}px, output to {self.output_dir}"
+        )
 
     # ---------------- Callbacks --------------- #
 
@@ -96,7 +107,8 @@ class PointCloudMapperNode(Node):
                     detection_stamp = timestamp,
                     camera_frame = self.camera_frame, # Camera frame ID
                     fixed_frame = self.map_frame, # Fixed map frame ID
-                    distance_threshold = 0.8, # Distance threshold for association
+                    # In RGB mode, centroids are pixel coordinates; use pixel threshold
+                    distance_threshold = self.pixel_merge_threshold,
                     embeddings = embedding,
                     goal_embedding = text_embedding
                 )
@@ -105,6 +117,27 @@ class PointCloudMapperNode(Node):
                 
         except Exception as e:
             self.get_logger().error(f"Error processing DetectedObject: {e}")
+
+    def _on_set_params(self, params):
+        result = SetParametersResult()
+        result.successful = True
+        result.reason = ''
+
+        try:
+            for p in params:
+                if p.name == 'pixel_merge_threshold':
+                    val = float(p.value)
+                    if val <= 0:
+                        result.successful = False
+                        result.reason = 'pixel_merge_threshold must be > 0'
+                        return result
+                    self.pixel_merge_threshold = val
+                    self.get_logger().info(f"Updated pixel_merge_threshold to {self.pixel_merge_threshold}px")
+        except Exception as ex:
+            result.successful = False
+            result.reason = str(ex)
+
+        return result
 
     def publish_semantic_map(self):
         """

@@ -29,7 +29,7 @@
             }
         }
     ],
-    "clip_prompt": "blue television",
+    "clip_prompt": "photo of a white chair",
     "action": "go_to_object",
     "valid": true
 }
