@@ -29,7 +29,7 @@
             }
         }
     ],
-    "clip_prompt": "photo of a white chair",
+    "clip_prompt": "photo of a chair with red cushion",
     "action": "go_to_object",
     "valid": true
 }

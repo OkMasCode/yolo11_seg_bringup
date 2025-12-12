@@ -12,24 +12,72 @@ import torch
 from ultralytics import YOLO
 import clip
 from PIL import Image as PILImage
+import json
+import os
 
 # Import your custom interface
 from yolo11_seg_interfaces.msg import DetectedObject
 
 class CLIPProcessor:
     """Handles CLIP model loading and embedding generation."""
-    def __init__(self, model_name='ViT-B/32', device='cpu'):
+    def __init__(self, model_name='ViT-L/14@336px', device='cpu'):
         self.device = device
         self.model, self.preprocess = clip.load(model_name, device=device)
+
+    def encode_text(self, text: str):
+        """Encode a single text prompt to a normalized CLIP embedding."""
+        if text is None or text.strip() == "":
+            return None
+        with torch.no_grad():
+            tokens = clip.tokenize([text]).to(self.device)
+            feat = self.model.encode_text(tokens)
+            feat = feat / feat.norm(dim=-1, keepdim=True)
+        return feat.squeeze(0).detach().cpu().numpy()
+
+    def apply_clahe(self, image_bgr):
+        """
+        Applies Contrast Limited Adaptive Histogram Equalization (CLAHE)
+        and saturation boost to enhance local details and make colors more prominent.
+        This helps CLIP distinguish objects by color (e.g., red cushion on white chair).
+        """
+        # 1. Convert to LAB and apply CLAHE for contrast
+        lab = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2LAB)
+        l, a, b = cv2.split(lab)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+        cl = clahe.apply(l)
+        limg = cv2.merge((cl, a, b))
+        contrast_enhanced = cv2.cvtColor(limg, cv2.COLOR_LAB2BGR)
+        
+        # 2. Convert to HSV and boost saturation to make colors more vivid
+        hsv = cv2.cvtColor(contrast_enhanced, cv2.COLOR_BGR2HSV).astype(np.float32)
+        h, s, v = cv2.split(hsv)
+        
+        # Increase saturation by 1.5x (boost colors like red, blue, etc.)
+        s = np.clip(s * 1.5, 0, 255)
+        
+        # Merge and convert back
+        hsv_boosted = cv2.merge([h, s, v]).astype(np.uint8)
+        final = cv2.cvtColor(hsv_boosted, cv2.COLOR_HSV2BGR)
+        
+        return final
 
     def encode_images_batch(self, crops_bgr):
         """Encode a batch of BGR image crops to CLIP embeddings."""
         if not crops_bgr:
             return []
         
-        # Preprocess and stack
-        pil_images = [PILImage.fromarray(cv2.cvtColor(c, cv2.COLOR_BGR2RGB)) for c in crops_bgr]
-        image_input = torch.stack([self.preprocess(img) for img in pil_images]).to(self.device)
+        processed_crops = []
+        for c in crops_bgr:
+            # --- PREPROCESSING STEP ---
+            # enhance contrast before giving to CLIP
+            enhanced_c = self.apply_clahe(c) 
+            
+            # Convert to RGB for PIL
+            rgb_c = cv2.cvtColor(enhanced_c, cv2.COLOR_BGR2RGB)
+            processed_crops.append(PILImage.fromarray(rgb_c))
+        
+        # Stack and Encode
+        image_input = torch.stack([self.preprocess(img) for img in processed_crops]).to(self.device)
 
         with torch.no_grad():
             features = self.model.encode_image(image_input)
@@ -38,8 +86,8 @@ class CLIPProcessor:
         return features.cpu().numpy()
 
     @staticmethod
-    def compute_square_crop(x1, y1, x2, y2, width, height, scale=1.3):
-        """Compute square crop coordinates for CLIP."""
+    def compute_square_crop(x1, y1, x2, y2, width, height, scale=1.5):
+        """Compute square crop coordinates for CLIP. Increased scale to capture more context."""
         bw, bh = x2 - x1, y2 - y1
         side = int(max(bw, bh) * scale)
         cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
@@ -69,6 +117,8 @@ class RGBVisionNode(Node):
         self.declare_parameter('markers_topic', '/yolo/centroid_markers')
         self.declare_parameter('conf', 0.25)
         self.declare_parameter('clip_every_n_frames', 3) # Optimization: don't run CLIP every frame
+        self.declare_parameter('robot_command_file', '/home/sensor/ros2_ws/src/yolo11_seg_bringup/config/robot_command.json')
+        self.declare_parameter('command_check_interval', 1.0)  # Check file every 1 second
 
         self.model_path = self.get_parameter('model_path').value
         self.image_topic = self.get_parameter('image_topic').value
@@ -77,6 +127,8 @@ class RGBVisionNode(Node):
         self.markers_topic = self.get_parameter('markers_topic').value
         self.conf_thres = self.get_parameter('conf').value
         self.clip_skip = self.get_parameter('clip_every_n_frames').value
+        self.robot_command_file = self.get_parameter('robot_command_file').value
+        self.command_check_interval = self.get_parameter('command_check_interval').value
 
         # --- Setup ---
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -89,6 +141,13 @@ class RGBVisionNode(Node):
         self.get_logger().info("Loading CLIP...")
         self.clip = CLIPProcessor(device=self.device)
 
+        # Track goal text and embedding
+        self.current_clip_prompt = None
+        self.goal_text_embedding = None
+        
+        # Initial load of robot command
+        self._load_clip_prompt()
+
         # ROS Comm
         self.bridge = CvBridge()
         qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT, durability=DurabilityPolicy.VOLATILE)
@@ -98,8 +157,38 @@ class RGBVisionNode(Node):
         self.pub_anno = self.create_publisher(Image, self.anno_topic, 10)
         self.pub_markers = self.create_publisher(MarkerArray, self.markers_topic, 10)
 
+        # Timer to periodically check robot_command.json for updates
+        self.command_timer = self.create_timer(self.command_check_interval, self._load_clip_prompt)
+
         self.frame_count = 0
         self.get_logger().info("RGB Vision Node Ready.")
+
+    def _load_clip_prompt(self):
+        """Load clip_prompt from robot_command.json and update text embedding if changed."""
+        try:
+            if not os.path.exists(self.robot_command_file):
+                if self.current_clip_prompt is not None:
+                    self.get_logger().warning(f"Robot command file not found: {self.robot_command_file}")
+                return
+            
+            with open(self.robot_command_file, 'r') as f:
+                data = json.load(f)
+            
+            clip_prompt = data.get('clip_prompt', '')
+            
+            # Only re-encode if the prompt has changed
+            if clip_prompt != self.current_clip_prompt:
+                self.current_clip_prompt = clip_prompt
+                
+                if clip_prompt and clip_prompt.strip():
+                    self.goal_text_embedding = self.clip.encode_text(clip_prompt)
+                    self.get_logger().info(f"Updated CLIP prompt: '{clip_prompt}'")
+                else:
+                    self.goal_text_embedding = None
+                    self.get_logger().info("CLIP prompt cleared (empty)")
+                    
+        except Exception as e:
+            self.get_logger().error(f"Error loading robot_command.json: {e}")
 
     def image_callback(self, msg: Image):
         self.frame_count += 1
@@ -185,6 +274,9 @@ class RGBVisionNode(Node):
                 # Attach embedding if computed
                 if i < len(embeddings):
                     msg_det.embedding = embeddings[i].tolist()
+                # Attach goal text embedding if available (mapper computes similarity)
+                if self.goal_text_embedding is not None:
+                    msg_det.text_embedding = self.goal_text_embedding.tolist()
                 
                 self.pub_det.publish(msg_det)
 
