@@ -29,7 +29,8 @@
             }
         }
     ],
-    "clip_prompt": "photo of a chair with red cushion",
+    "clip_prompt": ["a dark green cup", "a ceramic cup in dark green", "photo of a green cup"],
+    "distractor" : ["a red cup", "a blue cup", "a yellow cup", "a printed cup with multiple colors"],
     "action": "go_to_object",
     "valid": true
 }

@@ -10,7 +10,7 @@ import cv2
 import numpy as np
 import torch
 from ultralytics import YOLO
-import clip
+import open_clip
 from PIL import Image as PILImage
 import json
 import os
@@ -18,29 +18,76 @@ import os
 # Import your custom interface
 from yolo11_seg_interfaces.msg import DetectedObject
 
-class CLIPProcessor:
-    """Handles CLIP model loading and embedding generation."""
-    def __init__(self, model_name='ViT-L/14@336px', device='cpu'):
-        self.device = device
-        self.model, self.preprocess = clip.load(model_name, device=device)
+import torch
+import open_clip  # Changed from 'clip'
+import cv2
+import numpy as np
+from PIL import Image as PILImage
 
-    def encode_text(self, text: str):
-        """Encode a single text prompt to a normalized CLIP embedding."""
-        if text is None or text.strip() == "":
-            return None
+class CLIPProcessor:
+    """Handles SigLIP model loading and embedding generation."""
+    
+    def __init__(self, device='cpu', model_name='ViT-B-16-SigLIP', pretrained='webli'):
+        """
+        Initialize SigLIP processor.
+        
+        Args:
+            device: torch device (cuda/cpu)
+            model_name: SigLIP model variant (default: ViT-B-16-SigLIP)
+            pretrained: Weights tag (default: webli)
+        """
+        self.device = device
+        print(f"Loading SigLIP model: {model_name} ({pretrained})...")
+        
+        # 1. Load SigLIP Model & Transforms (Replaces clip.load)
+        self.model, _, self.preprocess = open_clip.create_model_and_transforms(
+            model_name, 
+            pretrained=pretrained, 
+            device=device
+        )
+        
+        # 2. Load SigLIP Tokenizer (Required for text)
+        self.tokenizer = open_clip.get_tokenizer(model_name)
+        
+        self.model.eval()
+
+    def encode_text(self, text):
+        """
+        Encode text prompt(s) to a single normalized SigLIP embedding.
+        Supports PROMPT ENSEMBLING.
+        """
+        if text is None: return None
+        
+        # Handle Input (String vs List)
+        if isinstance(text, str):
+            if not text.strip(): return None
+            text = [text]
+        elif isinstance(text, list):
+            text = [t for t in text if isinstance(t, str) and t.strip()]
+            if not text: return None
+
         with torch.no_grad():
-            tokens = clip.tokenize([text]).to(self.device)
-            feat = self.model.encode_text(tokens)
-            feat = feat / feat.norm(dim=-1, keepdim=True)
-        return feat.squeeze(0).detach().cpu().numpy()
+            # 3. Tokenize using OpenCLIP tokenizer
+            tokens = self.tokenizer(text).to(self.device)
+            
+            # 4. Encode
+            feats = self.model.encode_text(tokens)
+            
+            # 5. Normalize
+            feats = feats / feats.norm(dim=-1, keepdim=True)
+            
+            # 6. Ensemble (Average) & Re-Normalize
+            ensemble_feat = feats.mean(dim=0, keepdim=True)
+            ensemble_feat = ensemble_feat / ensemble_feat.norm(dim=-1, keepdim=True)
+            
+        return ensemble_feat.squeeze(0).detach().cpu().numpy()
 
     def apply_clahe(self, image_bgr):
         """
-        Applies Contrast Limited Adaptive Histogram Equalization (CLAHE)
-        and saturation boost to enhance local details and make colors more prominent.
-        This helps CLIP distinguish objects by color (e.g., red cushion on white chair).
+        Applies Contrast Limited Adaptive Histogram Equalization (CLAHE).
+        (Your existing logic is preserved exactly as is)
         """
-        # 1. Convert to LAB and apply CLAHE for contrast
+        # Convert to LAB and apply CLAHE
         lab = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2LAB)
         l, a, b = cv2.split(lab)
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
@@ -48,35 +95,31 @@ class CLIPProcessor:
         limg = cv2.merge((cl, a, b))
         contrast_enhanced = cv2.cvtColor(limg, cv2.COLOR_LAB2BGR)
         
-        # 2. Convert to HSV and boost saturation to make colors more vivid
+        # Boost Saturation
         hsv = cv2.cvtColor(contrast_enhanced, cv2.COLOR_BGR2HSV).astype(np.float32)
         h, s, v = cv2.split(hsv)
-        
-        # Increase saturation by 1.5x (boost colors like red, blue, etc.)
         s = np.clip(s * 1.5, 0, 255)
-        
-        # Merge and convert back
         hsv_boosted = cv2.merge([h, s, v]).astype(np.uint8)
         final = cv2.cvtColor(hsv_boosted, cv2.COLOR_HSV2BGR)
         
         return final
 
     def encode_images_batch(self, crops_bgr):
-        """Encode a batch of BGR image crops to CLIP embeddings."""
+        """Encode a batch of BGR image crops to SigLIP embeddings."""
         if not crops_bgr:
             return []
         
         processed_crops = []
         for c in crops_bgr:
-            # --- PREPROCESSING STEP ---
-            # enhance contrast before giving to CLIP
+            # Apply your CLAHE + Saturation Boost
             enhanced_c = self.apply_clahe(c) 
             
-            # Convert to RGB for PIL
+            # Convert BGR to RGB (SigLIP expects RGB)
             rgb_c = cv2.cvtColor(enhanced_c, cv2.COLOR_BGR2RGB)
             processed_crops.append(PILImage.fromarray(rgb_c))
         
-        # Stack and Encode
+        # Stack and Preprocess
+        # OpenCLIP transforms work similarly to OpenAI's
         image_input = torch.stack([self.preprocess(img) for img in processed_crops]).to(self.device)
 
         with torch.no_grad():
@@ -86,8 +129,8 @@ class CLIPProcessor:
         return features.cpu().numpy()
 
     @staticmethod
-    def compute_square_crop(x1, y1, x2, y2, width, height, scale=1.5):
-        """Compute square crop coordinates for CLIP. Increased scale to capture more context."""
+    def compute_square_crop(x1, y1, x2, y2, width, height, scale=1.1):
+        """Compute square crop coordinates (Preserved)."""
         bw, bh = x2 - x1, y2 - y1
         side = int(max(bw, bh) * scale)
         cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
@@ -115,7 +158,7 @@ class RGBVisionNode(Node):
         self.declare_parameter('detections_topic', '/yolo/detections')
         self.declare_parameter('annotated_topic', '/yolo/annotated_image')
         self.declare_parameter('markers_topic', '/yolo/centroid_markers')
-        self.declare_parameter('conf', 0.25)
+        self.declare_parameter('conf', 0.45)
         self.declare_parameter('clip_every_n_frames', 3) # Optimization: don't run CLIP every frame
         self.declare_parameter('robot_command_file', '/home/sensor/ros2_ws/src/yolo11_seg_bringup/config/robot_command.json')
         self.declare_parameter('command_check_interval', 1.0)  # Check file every 1 second
@@ -139,8 +182,11 @@ class RGBVisionNode(Node):
         self.yolo = YOLO(self.model_path, task='segment')
         
         self.get_logger().info("Loading CLIP...")
-        self.clip = CLIPProcessor(device=self.device)
-
+        self.clip = CLIPProcessor(
+            device=self.device, 
+            model_name="ViT-B-16-SigLIP", 
+            pretrained="webli"
+        )
         # Track goal text and embedding
         self.current_clip_prompt = None
         self.goal_text_embedding = None
@@ -161,6 +207,20 @@ class RGBVisionNode(Node):
         self.command_timer = self.create_timer(self.command_check_interval, self._load_clip_prompt)
 
         self.frame_count = 0
+        
+        # Define class names (COCO)
+        self.CLASS_NAMES = [
+            "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat", "traffic light",
+            "fire hydrant", "stop sign", "parking meter", "bench", "bird", "cat", "dog", "horse", "sheep", "cow",
+            "elephant", "bear", "zebra", "giraffe", "backpack", "umbrella", "handbag", "tie", "suitcase", "frisbee",
+            "skis", "snowboard", "sports ball", "kite", "baseball bat", "baseball glove", "skateboard", "surfboard",
+            "tennis racket", "bottle", "wine glass", "cup", "fork", "knife", "spoon", "bowl", "banana", "apple",
+            "sandwich", "orange", "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair", "couch",
+            "potted plant", "bed", "dining table", "toilet", "tv", "laptop", "mouse", "remote", "keyboard", "cell phone",
+            "microwave", "oven", "toaster", "sink", "refrigerator", "book", "clock", "vase", "scissors", "teddy bear",
+            "hair drier", "toothbrush"
+        ]
+        
         self.get_logger().info("RGB Vision Node Ready.")
 
     def _load_clip_prompt(self):
@@ -174,21 +234,36 @@ class RGBVisionNode(Node):
             with open(self.robot_command_file, 'r') as f:
                 data = json.load(f)
             
-            clip_prompt = data.get('clip_prompt', '')
+            # Get the prompt (can be str or list)
+            clip_prompt = data.get('clip_prompt', None)
             
-            # Only re-encode if the prompt has changed
+            # Check if variable has changed
             if clip_prompt != self.current_clip_prompt:
                 self.current_clip_prompt = clip_prompt
                 
-                if clip_prompt and clip_prompt.strip():
+                # Check for valid content (Handle both List and String)
+                has_content = False
+                if isinstance(clip_prompt, str) and clip_prompt.strip():
+                    has_content = True
+                elif isinstance(clip_prompt, list) and len(clip_prompt) > 0:
+                    has_content = True
+
+                if has_content:
+                    # encode_text now handles the list automatically
                     self.goal_text_embedding = self.clip.encode_text(clip_prompt)
-                    self.get_logger().info(f"Updated CLIP prompt: '{clip_prompt}'")
+                    self.get_logger().info(f"Updated CLIP prompt ensemble: {clip_prompt}")
                 else:
                     self.goal_text_embedding = None
-                    self.get_logger().info("CLIP prompt cleared (empty)")
+                    self.get_logger().info("CLIP prompt cleared")
                     
         except Exception as e:
             self.get_logger().error(f"Error loading robot_command.json: {e}")
+
+    def class_id_to_name(self, class_id: int) -> str:
+        """Convert class ID to class name."""
+        if 0 <= class_id < len(self.CLASS_NAMES):
+            return self.CLASS_NAMES[class_id]
+        return f"class_{class_id}"
 
     def image_callback(self, msg: Image):
         self.frame_count += 1
@@ -218,6 +293,9 @@ class RGBVisionNode(Node):
                 # Skip class 0
                 if classes[i] == 0:
                     continue
+                
+                # Get class name from class ID
+                class_name = self.class_id_to_name(classes[i])
                     
                 x1, y1, x2, y2 = box
                 
@@ -249,7 +327,7 @@ class RGBVisionNode(Node):
 
                 detections_to_process.append({
                     "id": ids[i],
-                    "class": self.yolo.names[classes[i]],
+                    "class": class_name,
                     "centroid": (cx, cy),
                     "bbox": box
                 })
