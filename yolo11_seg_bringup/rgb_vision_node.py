@@ -30,23 +30,18 @@ class CLIPProcessor:
     def __init__(self, device='cpu', model_name='ViT-B-16-SigLIP', pretrained='webli'):
         """
         Initialize SigLIP processor.
-        
-        Args:
-            device: torch device (cuda/cpu)
-            model_name: SigLIP model variant (default: ViT-B-16-SigLIP)
-            pretrained: Weights tag (default: webli)
         """
         self.device = device
         print(f"Loading SigLIP model: {model_name} ({pretrained})...")
         
-        # 1. Load SigLIP Model & Transforms (Replaces clip.load)
+        # 1. Load SigLIP Model & Transforms
         self.model, _, self.preprocess = open_clip.create_model_and_transforms(
             model_name, 
             pretrained=pretrained, 
             device=device
         )
         
-        # 2. Load SigLIP Tokenizer (Required for text)
+        # 2. Load SigLIP Tokenizer
         self.tokenizer = open_clip.get_tokenizer(model_name)
         
         self.model.eval()
@@ -67,26 +62,23 @@ class CLIPProcessor:
             if not text: return None
 
         with torch.no_grad():
-            # 3. Tokenize using OpenCLIP tokenizer
+            # Tokenize using OpenCLIP tokenizer
             tokens = self.tokenizer(text).to(self.device)
             
-            # 4. Encode
+            # Encode
             feats = self.model.encode_text(tokens)
             
-            # 5. Normalize
+            # Normalize
             feats = feats / feats.norm(dim=-1, keepdim=True)
             
-            # 6. Ensemble (Average) & Re-Normalize
+            # Ensemble (Average) & Re-Normalize
             ensemble_feat = feats.mean(dim=0, keepdim=True)
             ensemble_feat = ensemble_feat / ensemble_feat.norm(dim=-1, keepdim=True)
             
         return ensemble_feat.squeeze(0).detach().cpu().numpy()
 
     def apply_clahe(self, image_bgr):
-        """
-        Applies Contrast Limited Adaptive Histogram Equalization (CLAHE).
-        (Your existing logic is preserved exactly as is)
-        """
+        """Applies Contrast Limited Adaptive Histogram Equalization (CLAHE)."""
         # Convert to LAB and apply CLAHE
         lab = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2LAB)
         l, a, b = cv2.split(lab)
@@ -111,15 +103,14 @@ class CLIPProcessor:
         
         processed_crops = []
         for c in crops_bgr:
-            # Apply your CLAHE + Saturation Boost
+            # Apply CLAHE + Saturation Boost
             enhanced_c = self.apply_clahe(c) 
             
-            # Convert BGR to RGB (SigLIP expects RGB)
+            # Convert BGR to RGB
             rgb_c = cv2.cvtColor(enhanced_c, cv2.COLOR_BGR2RGB)
             processed_crops.append(PILImage.fromarray(rgb_c))
         
         # Stack and Preprocess
-        # OpenCLIP transforms work similarly to OpenAI's
         image_input = torch.stack([self.preprocess(img) for img in processed_crops]).to(self.device)
 
         with torch.no_grad():
@@ -127,10 +118,36 @@ class CLIPProcessor:
             features /= features.norm(dim=-1, keepdim=True)
 
         return features.cpu().numpy()
+    
+    def get_sigmoid_probability(self, image_embedding, text_embedding):
+        """
+        Converts raw SigLIP dot product into a readable 0-1 probability.
+        Formula: sigmoid( dot_product * scale + bias )
+        """
+        if image_embedding is None or text_embedding is None:
+            return 0.0
+            
+        # Ensure numpy
+        img = np.array(image_embedding)
+        txt = np.array(text_embedding)
+        
+        # 1. Compute Raw Dot Product (Cosine Similarity)
+        dot_product = np.dot(img, txt)
+        
+        # 2. Get Learned Scale & Bias from the Model
+        with torch.no_grad():
+            logit_scale = self.model.logit_scale.exp().item()
+            logit_bias = self.model.logit_bias.item()
+            
+        # 3. Apply Sigmoid Transformation
+        logits = (dot_product * logit_scale) + logit_bias
+        probability = 1.0 / (1.0 + np.exp(-logits))
+        
+        return probability
 
     @staticmethod
     def compute_square_crop(x1, y1, x2, y2, width, height, scale=1.1):
-        """Compute square crop coordinates (Preserved)."""
+        """Compute square crop coordinates."""
         bw, bh = x2 - x1, y2 - y1
         side = int(max(bw, bh) * scale)
         cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
@@ -140,7 +157,6 @@ class CLIPProcessor:
         sx2 = min(width, int(cx + side / 2))
         sy2 = min(height, int(cy + side / 2))
         return sx1, sy1, sx2, sy2
-
 class RGBVisionNode(Node):
     """
     Lightweight RGB-only YOLO+CLIP Node.
@@ -190,7 +206,9 @@ class RGBVisionNode(Node):
         # Track goal text and embedding
         self.current_clip_prompt = None
         self.goal_text_embedding = None
-        
+        self.distractor_embedding = None
+        self.current_distractor_prompt = None
+
         # Initial load of robot command
         self._load_clip_prompt()
 
@@ -227,8 +245,6 @@ class RGBVisionNode(Node):
         """Load clip_prompt from robot_command.json and update text embedding if changed."""
         try:
             if not os.path.exists(self.robot_command_file):
-                if self.current_clip_prompt is not None:
-                    self.get_logger().warning(f"Robot command file not found: {self.robot_command_file}")
                 return
             
             with open(self.robot_command_file, 'r') as f:
@@ -236,28 +252,32 @@ class RGBVisionNode(Node):
             
             # Get the prompt (can be str or list)
             clip_prompt = data.get('clip_prompt', None)
-            
-            # Check if variable has changed
             if clip_prompt != self.current_clip_prompt:
                 self.current_clip_prompt = clip_prompt
-                
-                # Check for valid content (Handle both List and String)
-                has_content = False
-                if isinstance(clip_prompt, str) and clip_prompt.strip():
-                    has_content = True
-                elif isinstance(clip_prompt, list) and len(clip_prompt) > 0:
-                    has_content = True
-
-                if has_content:
-                    # encode_text now handles the list automatically
+                if self._has_content(clip_prompt):
                     self.goal_text_embedding = self.clip.encode_text(clip_prompt)
-                    self.get_logger().info(f"Updated CLIP prompt ensemble: {clip_prompt}")
+                    self.get_logger().info(f"Updated Goal Ensemble: {clip_prompt}")
                 else:
                     self.goal_text_embedding = None
-                    self.get_logger().info("CLIP prompt cleared")
-                    
+
+            # 2. Update DISTRACTOR Prompt (NEW)
+            distractor_prompt = data.get('distractor', None)
+            if distractor_prompt != self.current_distractor_prompt:
+                self.current_distractor_prompt = distractor_prompt
+                if self._has_content(distractor_prompt):
+                    # We encode the distractor list just like the goal list
+                    self.distractor_embedding = self.clip.encode_text(distractor_prompt)
+                    self.get_logger().info(f"Updated Distractor Ensemble: {distractor_prompt}")
+                else:
+                    self.distractor_embedding = None
+
         except Exception as e:
             self.get_logger().error(f"Error loading robot_command.json: {e}")
+
+    def _has_content(self, text_obj):
+        if isinstance(text_obj, str) and text_obj.strip(): return True
+        if isinstance(text_obj, list) and len(text_obj) > 0: return True
+        return False
 
     def class_id_to_name(self, class_id: int) -> str:
         """Convert class ID to class name."""
@@ -288,73 +308,89 @@ class RGBVisionNode(Node):
             detections_to_process = []
             crops_for_clip = []
 
-            # 3. Process Detections
             for i, box in enumerate(boxes):
-                # Skip class 0
-                if classes[i] == 0:
-                    continue
+                if classes[i] == 0: continue # Skip person if needed
                 
-                # Get class name from class ID
                 class_name = self.class_id_to_name(classes[i])
-                    
                 x1, y1, x2, y2 = box
                 
-                # Calculate 2D Centroid from Mask (if available) or BBox
-                cx, cy = 0.0, 0.0
-                if masks is not None:
-                    # Resize mask to original image size if needed, but YOLO usually returns scaled masks
-                    # Simple moment calculation on the binary mask
-                    m = masks[i].cpu().numpy().astype(np.uint8)
-                    M = cv2.moments(m)
-                    if M["m00"] != 0:
-                        cx = int(M["m10"] / M["m00"]) # Scale if mask is smaller than image
-                        cy = int(M["m01"] / M["m00"])
-                        # Note: If retimask=True, mask matches image size usually
-                        # If mask is downsampled, you must scale cx, cy up.
-                        # Assuming retina_masks=True for 1:1 mapping:
-                        cx = float(cx * (w / m.shape[1]))
-                        cy = float(cy * (h / m.shape[0]))
-                    else:
-                        cx, cy = float((x1+x2)/2), float((y1+y2)/2)
-                else:
-                    cx, cy = float((x1+x2)/2), float((y1+y2)/2)
-
-                # Prepare CLIP crop
-                sx1, sy1, sx2, sy2 = CLIPProcessor.compute_square_crop(x1, y1, x2, y2, w, h)
-                crop = img[sy1:sy2, sx1:sx2]
+                # --- Centroid & Mask Logic ---
+                cx, cy = float((x1+x2)/2), float((y1+y2)/2)
+                binary_mask = None
                 
-                if crop.size == 0: continue
+                if masks is not None:
+                    m = masks[i].cpu().numpy()
+                    # Ensure mask size matches image
+                    if m.shape[0] != h or m.shape[1] != w:
+                         m = cv2.resize(m, (w, h), interpolation=cv2.INTER_NEAREST)
+                    
+                    binary_mask = (m > 0.5).astype(np.uint8) * 255
+                    
+                    # Compute Refined Centroid
+                    M = cv2.moments(binary_mask)
+                    if M["m00"] != 0:
+                        cx, cy = int(M["m10"] / M["m00"]), int(M["m01"] / M["m00"])
+                else:
+                    # Fallback mask (full white)
+                    binary_mask = np.ones((h, w), dtype=np.uint8) * 255
+
+                # --- Extract Masked Crop (Gray Background) ---
+                sx1, sy1, sx2, sy2 = CLIPProcessor.compute_square_crop(x1, y1, x2, y2, w, h)
+                img_crop = img[sy1:sy2, sx1:sx2]
+                mask_crop = binary_mask[sy1:sy2, sx1:sx2]
+                
+                if img_crop.size == 0 or mask_crop.size == 0: continue
+
+                # Apply Gray Masking (Critical for Distractor logic)
+                neutral_bg = np.full_like(img_crop, 122) # 122 is neutral gray
+                bg_mask = cv2.bitwise_not(mask_crop)
+                fg = cv2.bitwise_and(img_crop, img_crop, mask=mask_crop)
+                bg = cv2.bitwise_and(neutral_bg, neutral_bg, mask=bg_mask)
+                final_crop = cv2.add(fg, bg)
 
                 detections_to_process.append({
                     "id": ids[i],
                     "class": class_name,
                     "centroid": (cx, cy),
-                    "bbox": box
                 })
-                crops_for_clip.append(crop)
+                crops_for_clip.append(final_crop)
 
-            # 4. Batch CLIP Inference (Run less frequently for speed)
+            # --- Batch SigLIP Inference ---
             embeddings = []
             if self.frame_count % self.clip_skip == 0 and crops_for_clip:
                 embeddings = self.clip.encode_images_batch(crops_for_clip)
 
-            # 5. Publish DetectedObjects and Markers
+            # --- Publish ---
             marker_array = MarkerArray()
             for i, det in enumerate(detections_to_process):
                 msg_det = DetectedObject()
                 msg_det.timestamp = msg.header.stamp
                 msg_det.object_id = int(det["id"])
                 msg_det.object_name = det["class"]
+                msg_det.centroid = Vector3(x=float(det["centroid"][0]), y=float(det["centroid"][1]), z=0.0)
                 
-                # 2D Centroid in a 3D Vector (Z=0)
-                msg_det.centroid = Vector3(x=det["centroid"][0], y=det["centroid"][1], z=0.0)
-                
-                # Attach embedding if computed
                 if i < len(embeddings):
-                    msg_det.embedding = embeddings[i].tolist()
-                # Attach goal text embedding if available (mapper computes similarity)
-                if self.goal_text_embedding is not None:
-                    msg_det.text_embedding = self.goal_text_embedding.tolist()
+                    current_emb = embeddings[i]
+                    msg_det.embedding = current_emb.tolist()
+                    
+                    # --- NEW: DISTRACTOR COMPARISON LOGIC ---
+                    if self.goal_text_embedding is not None:
+                        # 1. Calculate Goal Probability
+                        prob_goal = self.clip.get_sigmoid_probability(current_emb, self.goal_text_embedding)
+                        msg_det.similarity = float(prob_goal) # If your msg definition has this field
+
+                        # 2. Calculate Distractor Probability (if exists)
+                        prob_distractor = 0.0
+                        if self.distractor_embedding is not None:
+                            prob_distractor = self.clip.get_sigmoid_probability(current_emb, self.distractor_embedding)
+
+                        # 3. Log the decision data (You can verify this in terminal)
+                        self.get_logger().info(
+                            f"ID {det['id']} ({det['class']}): Goal={prob_goal:.1%} | Distractor={prob_distractor:.1%}"
+                        )
+                        
+                        # Note: The logic "If Goal > Distractor + 0.1" can be implemented here 
+                        # to set a 'is_target' flag if your msg supports it, or filtered downstream.
                 
                 self.pub_det.publish(msg_det)
 
