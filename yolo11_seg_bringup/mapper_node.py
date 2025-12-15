@@ -20,10 +20,9 @@ class PointCloudMapperNode(Node):
 
         # ============= Parameters ============= #
 
-        self.declare_parameter('detection_message', '/yolo/detections')
+        self.declare_parameter('detection_message', '/vision/detections')
         self.declare_parameter('map_frame', 'camera_color_optical_frame')
         self.declare_parameter('camera_frame', 'camera_color_optical_frame')
-        self.declare_parameter('semantic_map_topic', '/yolo/semantic_map')
         self.declare_parameter("output_dir", "/home/sensor/ros2_ws/src/yolo11_seg_bringup/config/")
         self.declare_parameter('export_interval', 5.0)
         self.declare_parameter('load_map_on_start', False)
@@ -32,18 +31,17 @@ class PointCloudMapperNode(Node):
         self.dm_topic = self.get_parameter('detection_message').value
         self.map_frame = self.get_parameter('map_frame').value
         self.camera_frame = self.get_parameter('camera_frame').value
-        self.semantic_map_topic = self.get_parameter('semantic_map_topic').value
         self.output_dir = self.get_parameter("output_dir").value
-
         self.export_interval = float(self.get_parameter('export_interval').value)
         self.load_map_on_start = self.get_parameter('load_map_on_start').value
         self.input_map_file = self.get_parameter('input_map_file').value
 
         # =========== Initialization =========== #
 
+        self.semantic_map_topic = '/vision/semantic_map'
+
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
-
         self.semantic_map = SemanticObjectMap(self.tf_buffer, self)
 
         # Load existing map if enabled
@@ -81,6 +79,7 @@ class PointCloudMapperNode(Node):
                 timestamp = msg.timestamp
                 embedding = msg.embedding
                 text_embedding = msg.text_embedding
+                similarity = msg.similarity
 
                 # Create a unique object ID for this particular detection
                 object_id = (
@@ -98,7 +97,8 @@ class PointCloudMapperNode(Node):
                     fixed_frame = self.map_frame, # Fixed map frame ID
                     distance_threshold = 0.8, # Distance threshold for association
                     embeddings = embedding,
-                    goal_embedding = text_embedding
+                    goal_embedding = text_embedding,
+                    similarity = similarity
                 )
 
                 self.publish_semantic_map()

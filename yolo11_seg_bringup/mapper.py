@@ -66,7 +66,7 @@ class SemanticObjectMap:
         self.tf_buffer = tf_buffer
         self.node = node
     
-    def add_detection(self, object_name: str, object_id: str, pose_in_camera, detection_stamp, camera_frame='camera3_color_optical_frame', fixed_frame='camera3_color_optical_frame', distance_threshold=0.2, embeddings=None, goal_embedding=None):
+    def add_detection(self, object_name: str, object_id: str, pose_in_camera, detection_stamp, camera_frame='camera3_color_optical_frame', fixed_frame='camera3_color_optical_frame', distance_threshold=0.8, embeddings=None, goal_embedding=None, similarity=0.0):
         """
         Add a new detection to the semantic map.
         Transforms the pose to the fixed frame and merges with existing objects if close enough.
@@ -83,11 +83,6 @@ class SemanticObjectMap:
 
             # Prepare embeddings
             img_vec = np.array(embeddings, dtype=np.float32)
-            txt_vec = np.array(goal_embedding, dtype=np.float32)
-
-            # Compute Similarity
-            # Since publisher node already normalized them, we just dot product.
-            similarity = np.dot(img_vec, txt_vec)
 
             # Iterate over stored objects and check if this detection is close to any.
             for existing_id, entry in self.objects.items():
@@ -97,7 +92,7 @@ class SemanticObjectMap:
                         (entry.pose_map[i] * entry.occurrences + pose_in_map[i]) / (entry.occurrences + 1)
                         for i in range(3)
                     )
-                    new_similarity = similarity if similarity is not None else entry.similarity
+                    new_similarity = (entry.similarity + similarity) / 2
                     self.objects[existing_id] = entry._replace(pose_map=avg_pose, occurrences=entry.occurrences+1, similarity=new_similarity, image_embedding=img_vec)
                     return False
 
