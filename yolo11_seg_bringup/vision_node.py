@@ -105,8 +105,8 @@ class CLIPProcessor:
 
         hsv = cv2.cvtColor(contrast_enhanced, cv2.COLOR_BGR2HSV)
         h, s, v = cv2.split(hsv)
-        s = np.clip(s * 1.25, 0, 255)
-        hsv_boosted = cv2.merge([h, s, v]).astype(np.uint8)
+        s = np.clip(s * 1.25, 0, 255).astype(np.uint8)
+        hsv_boosted = cv2.merge([h, s, v])
 
         final = cv2.cvtColor(hsv_boosted, cv2.COLOR_HSV2BGR)
         return final
@@ -310,7 +310,7 @@ class VisionNode(Node):
         self.image_topic = self.get_parameter('image_topic').value
         self.depth_topic = self.get_parameter('depth_topic').value
         self.camera_info_topic = self.get_parameter('camera_info_topic').value
-        self.enable_visualization = bool(self.get_parameter('enable_visualization').value)
+        self.enable_vis = bool(self.get_parameter('enable_visualization').value)
 
         # yolo parameters
         self.declare_parameter('model_path', '/home/sensor/yolo11n-seg.engine')
@@ -345,13 +345,13 @@ class VisionNode(Node):
         self.pc_downsample = 2
         self.pc_max_range = 8.0
 
-        self.frame_skip = 3
+        self.frame_skip = 1
         self.prompt_check_interval = 10
         self.text_prompt = 'a photo of a chair'
 
         # Load YOLO model
         self.get_logger().info(f"Loading YOLO: {self.model_path}")
-        self.yolo = YOLO(self.model_path, task='segment')    
+        self.model = YOLO(self.model_path, task='segment')    
 
         # Load CLIP model
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -361,8 +361,6 @@ class VisionNode(Node):
             model_name="ViT-B-16-SigLIP", 
             pretrained="webli"
         )
-
-        self._load_clip_prompt()
 
         self.bridge = CvBridge()
         self.pc_processor = None
@@ -383,11 +381,8 @@ class VisionNode(Node):
         self.pc_pub = self.create_publisher(PointCloud2, self.pc_topic, 10)
         self.marker_pub = self.create_publisher(MarkerArray, self.markers_topic, 10)
         self.detections_pub = self.create_publisher(DetectedObject, self.detection_topic, 10)
-        if self.enable_visualization:
+        if self.enable_vis:
             self.vis_pub = self.create_publisher(Image, self.anno_topic, 10)
-
-
-        self.command_timer = self.create_timer(self.prompt_check_interval, self._load_clip_prompt)
 
         self.frame_count = 0
         self.class_colors = {}
@@ -399,6 +394,9 @@ class VisionNode(Node):
         self.latest_depth_msg = None
         self.warned_missing_intrinsics = False
         self.sync_lock = threading.Lock()
+
+        self._load_clip_prompt()
+        self.command_timer = self.create_timer(self.prompt_check_interval, self._load_clip_prompt)
 
         self.CLASS_NAMES = [
             "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat", "traffic light",
@@ -602,7 +600,7 @@ class VisionNode(Node):
         # --- Prepare CLIP Crop (If enabled) ---
         if do_clip_frame:
             sx1, sy1, sx2, sy2 = CLIPProcessor.compute_square_crop(
-                x1, y1, x2, y2, width, height, self.clip.square_crop_scale
+                x1, y1, x2, y2, width, height, self.square_crop_scale
             )
             if sx2 > sx1 and sy2 > sy1:
                 # Build binary mask for this instance
@@ -697,21 +695,27 @@ class VisionNode(Node):
             # Timestamp (Extract directly from the header)
             msg.timestamp = header.stamp
             
-            current_emb = det["embedding"].tolist() if det["embedding"] is not None else []
-            msg.embedding = current_emb
+            current_emb = det["embedding"]
+            msg.embedding = current_emb.tolist() if current_emb is not None else []
 
-            prob_goal = self.clip.compute_sigmoid_probs(current_emb, self.goal_text_embedding)
-            msg.similarity = float(prob_goal) if prob_goal is not None else 0.0
+            # Only compute similarity if embedding is available
+            prob_goal = 0.0
             prob_distractor = 0.0
-            if self.distractor_embedding is not None:
+            if current_emb is not None and self.goal_text_embedding is not None:
+                prob_goal = self.clip.compute_sigmoid_probs(current_emb, self.goal_text_embedding)
+                msg.similarity = float(prob_goal) if prob_goal is not None else 0.0
+            else:
+                msg.similarity = 0.0
+                
+            if current_emb is not None and self.distractor_embedding is not None:
                 prob_distractor = self.clip.compute_sigmoid_probs(current_emb, self.distractor_embedding)
 
             self.get_logger().info(
-                f"ID {det['id']} ({det['class']}): Goal={prob_goal:.1%} | Distractor={prob_distractor:.1%}"
+                f"ID {det['instance_id']} ({det['object_name']}): Goal={prob_goal:.1%} | Distractor={prob_distractor:.1%}"
             )
 
             # Add text embedding for mapper convenience
-            msg.text_embedding = self.goal_text_embedding.tolist()
+            msg.text_embedding = self.goal_text_embedding.tolist() if self.goal_text_embedding is not None else []
             self.detections_pub.publish(msg)
 
     def publish_centroid_markers(self, detections, header):
