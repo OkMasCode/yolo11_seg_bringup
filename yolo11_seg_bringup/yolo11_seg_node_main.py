@@ -22,7 +22,7 @@ import torch
 
 from .utils.pointcloud import PointCloudProcessor
 from .utils.clip_processor import CLIPProcessor
-from .utils.visualization import Visualizer
+from .utils.visualization2 import Visualizer
 
 # Define COCO class names
 CLASS_NAMES = [
