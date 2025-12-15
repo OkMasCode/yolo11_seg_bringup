@@ -14,15 +14,7 @@ import open_clip
 from PIL import Image as PILImage
 import json
 import os
-
-# Import your custom interface
 from yolo11_seg_interfaces.msg import DetectedObject
-
-import torch
-import open_clip  # Changed from 'clip'
-import cv2
-import numpy as np
-from PIL import Image as PILImage
 
 class CLIPProcessor:
     """Handles SigLIP model loading and embedding generation."""
@@ -174,10 +166,10 @@ class RGBVisionNode(Node):
         self.declare_parameter('detections_topic', '/yolo/detections')
         self.declare_parameter('annotated_topic', '/yolo/annotated_image')
         self.declare_parameter('markers_topic', '/yolo/centroid_markers')
-        self.declare_parameter('conf', 0.45)
+        self.declare_parameter('conf', 0.45) # Confidence threshold
         self.declare_parameter('clip_every_n_frames', 3) # Optimization: don't run CLIP every frame
         self.declare_parameter('robot_command_file', '/home/sensor/ros2_ws/src/yolo11_seg_bringup/config/robot_command.json')
-        self.declare_parameter('command_check_interval', 1.0)  # Check file every 1 second
+        self.declare_parameter('command_check_interval', 10.0)  # Check file every 1 second
 
         self.model_path = self.get_parameter('model_path').value
         self.image_topic = self.get_parameter('image_topic').value
@@ -203,6 +195,7 @@ class RGBVisionNode(Node):
             model_name="ViT-B-16-SigLIP", 
             pretrained="webli"
         )
+
         # Track goal text and embedding
         self.current_clip_prompt = None
         self.goal_text_embedding = None
@@ -217,6 +210,7 @@ class RGBVisionNode(Node):
         qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT, durability=DurabilityPolicy.VOLATILE)
         
         self.sub_img = self.create_subscription(Image, self.image_topic, self.image_callback, qos)
+
         self.pub_det = self.create_publisher(DetectedObject, self.detections_topic, 10)
         self.pub_anno = self.create_publisher(Image, self.anno_topic, 10)
         self.pub_markers = self.create_publisher(MarkerArray, self.markers_topic, 10)
@@ -260,7 +254,7 @@ class RGBVisionNode(Node):
                 else:
                     self.goal_text_embedding = None
 
-            # 2. Update DISTRACTOR Prompt (NEW)
+            # 2. Update DISTRACTOR Prompt
             distractor_prompt = data.get('distractor', None)
             if distractor_prompt != self.current_distractor_prompt:
                 self.current_distractor_prompt = distractor_prompt
