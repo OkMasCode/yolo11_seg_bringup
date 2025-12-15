@@ -4,6 +4,7 @@ from rclpy.node import Node
 from sensor_msgs_py import point_cloud2
 from sensor_msgs.msg import PointField, Image, CameraInfo, PointCloud2
 from visualization_msgs.msg import MarkerArray, Marker
+from geometry_msgs.msg import Vector3
 from rclpy.qos import QoSProfile, HistoryPolicy, ReliabilityPolicy, DurabilityPolicy
 
 import torch
@@ -21,6 +22,7 @@ from ultralytics import YOLO
 from yolo11_seg_interfaces.msg import DetectedObject
 
 # ------------------ UTILITIES ----------------- #
+
 class CLIPProcessor:
     """
     Handles SigLIP model processing tasks:
@@ -109,7 +111,7 @@ class CLIPProcessor:
         final = cv2.cvtColor(hsv_boosted, cv2.COLOR_HSV2BGR)
         return final
 
-    def encode_images(self, crops_bgr):
+    def encode_images_batch(self, crops_bgr):
         """
         Encode a batch of image crops to SigLIP embeddings.
         """
@@ -149,17 +151,17 @@ class CLIPProcessor:
         logits = (dot_product * logit_scale) + logit_bias
         probs = 1 / (1 + np.exp(-logits))
         return probs
+
 class PointCloudProcessor:
     """ 
     Handles PointCloud generation from depth and segmentation masks. 
     """
     def __init__(self, fx, fy, cx, cy, device, depth_scale = 1000.0, 
-                 pc_downsample = 2, pc_max_range = 8.0, mask_threshold = 0.5):
+                 pc_downsample = 2, pc_max_range = 8.0):
          
         self.depth_scale = depth_scale
         self.pc_downsample = pc_downsample
         self.pc_max_range = pc_max_range
-        self.mask_threshold = mask_threshold
         self.device = device
 
         self.fx_t = torch.tensor(fx, dtype=torch.float32, device=device)
@@ -219,7 +221,7 @@ class PointCloudProcessor:
         """ 
         Process a single detection to generate pointcloud segment. 
         """
-        obj_mask_t = (mask_t >= self.mask_threshold).to(self.device)
+        obj_mask_t = (mask_t).to(self.device)
         valid_t = valid_mask_t & obj_mask_t
 
         v_coords_t, u_coords_t = valid_t.nonzero(as_tuple=True)
@@ -342,7 +344,6 @@ class VisionNode(Node):
         self.depth_scale = 1000.0
         self.pc_downsample = 2
         self.pc_max_range = 8.0
-        self.mask_threshold = 0.5
 
         self.frame_skip = 3
         self.prompt_check_interval = 10
@@ -415,9 +416,232 @@ class VisionNode(Node):
 
     # ---------------- Callbacks --------------- #
 
+    def camera_info_cb(self, msg: CameraInfo):
+        """ 
+        Process camera intrinsic parameters 
+        """
+        if self.fx is None:
+            self.fx = msg.k[0]
+            self.fy = msg.k[4]
+            self.cx = msg.k[2]
+            self.cy = msg.k[5]
+            self.get_logger().info(f"Camera intrinsics received: fx={self.fx}, fy={self.fy}, cx={self.cx}, cy={self.cy}")
 
+            self.pc_processor = PointCloudProcessor(
+                self.fx, self.fy, self.cx, self.cy,
+                device = self.device,
+                depth_scale = self.depth_scale,
+                pc_downsample = self.pc_downsample,
+                pc_max_range = self.pc_max_range,
+                )
+
+    def depth_callback(self, msg: Image):
+        """
+        Store latest depth message.
+        """
+        with self.sync_lock:
+            self.latest_depth_msg = msg
+
+    def rgb_callback(self, msg: Image):
+        """
+        Process RGB image with synchronized depth.
+        """
+        with self.sync_lock:
+            if self.latest_depth_msg is None:
+                self.get_logger().debug("Waiting for depth message.")
+                return
+            rgb_msg = msg
+            depth_msg = self.latest_depth_msg
+        
+        self.process_frame(rgb_msg, depth_msg)
 
     # --------------- Main Methods ------------- #
+
+    def process_frame(self, rgb_msg: Image, depth_msg: Image):
+        """
+        Process a single RGB-D frame.
+        """
+        self.frame_count += 1
+
+        cv_bgr = self.bridge.imgmsg_to_cv2(rgb_msg, desired_encoding='bgr8')
+        cv_depth = self.bridge.imgmsg_to_cv2(depth_msg, desired_encoding='passthrough')
+        height, width = cv_depth.shape
+
+        results = self.model.track(
+            source=cv_bgr,
+            imgsz=self.imgsz,
+            conf=self.conf,
+            iou=self.iou,
+            retina_masks=self.retina_masks,
+            stream=False,
+            verbose=False,
+            persist=True,
+            tracker="botsort.yaml",
+        )
+        res = results[0]
+        if not hasattr(res, 'masks') or len(res.boxes) == 0:
+            return
+        
+        self._process_detections(res, cv_bgr, cv_depth, depth_msg, rgb_msg, height, width)
+
+        if self.enable_vis:
+            # result.plot() draws boxes, masks, and IDs on the image
+            annotated_frame = res.plot()
+            vis_msg = self.bridge.cv2_to_imgmsg(annotated_frame, encoding="bgr8")
+            vis_msg.header = rgb_msg.header
+            self.vis_pub.publish(vis_msg)
+
+    def _process_detections(self, res, cv_bgr, cv_depth, depth_msg, rgb_msg, height, width):
+        """ 
+        Unified pipeline: 
+        1. Calculate Geometry (Centroids/PCs) for all objects.
+        2. Publish PointCloud immediately.
+        3. Batch Process CLIP for all objects.
+        4. Publish Custom Messages with coupled Geometry + Embeddings.
+        """
+        xyxy = res.boxes.xyxy.cpu().numpy()
+        clss = res.boxes.cls.cpu().numpy().astype(int)
+        ids = res.boxes.id.cpu().numpy().astype(int) if res.boxes.id is not None else np.arange(len(clss))
+        masks_t = res.masks.data if hasattr(res, 'masks') and res.masks is not None else None
+
+        is_uint16 = (depth_msg.encoding == '16UC1')
+        scale_factor = (1.0 / self.depth_scale) if is_uint16 else 1.0
+        depth_t, valid_mask_t = self.pc_processor.prepare_depth_tensor(cv_depth, depth_msg.encoding, scale_factor)
+
+        all_points_list = []
+        frame_detections = []
+        batch_queue = []
+
+        do_clip_frame = (self.frame_count % max(1, self.frame_skip) == 0)
+
+        for i in range(len(xyxy)):
+            result = self.process_single_detection(
+                i, xyxy[i], clss[i], ids[i], masks_t,
+                cv_bgr, depth_t, valid_mask_t, scale_factor,
+                height, width, rgb_msg, do_clip_frame
+            )
+
+            if result is None:
+                continue
+
+            instance_cloud, det_entry = result
+            all_points_list.append(instance_cloud)
+            frame_detections.append(det_entry)
+            if det_entry.get("crop") is not None:
+                batch_queue.append(det_entry)
+            
+        if all_points_list:
+            final_points_t = torch.cat(all_points_list, dim=0)
+            final_points = final_points_t.cpu().numpy().astype(np.float32)
+            PointCloudProcessor.publish_pointcloud(final_points, depth_msg.header, self.pc_pub)
+            self.get_logger().info(
+                f"Published pointcloud with {final_points.shape[0]} points from {len(all_points_list)} instances."
+            )
+
+        if batch_queue:
+            try:
+                # Extract just the images for the batch
+                images = [item["crop"] for item in batch_queue]
+                
+                # Run inference on all at once
+                embeddings = self.clip.encode_images_batch(images)
+                
+                # Re-associate embeddings with metadata
+                for i, emb in enumerate(embeddings):
+                    batch_queue[i]["embedding"] = emb
+                    # Clear the image to free memory
+                    batch_queue[i]["crop"] = None
+            except Exception as e:
+                self.get_logger().error(f"Batch CLIP inference failed: {e}")
+
+        self.publish_custom_detections(frame_detections, depth_msg.header, rgb_msg.header.stamp)
+        self.publish_centroid_markers(frame_detections, depth_msg.header)
+
+    def process_single_detection(self, idx, bbox, class_id, instance_id, masks_t,
+                                 cv_bgr, depth_t, valid_mask_t, scale_factor,
+                                 height, width, rgb_msg, do_clip_frame):
+        """ 
+        Process geometry and prepare data container. 
+        Returns (pointcloud_tensor, detection_dictionary)
+        """
+        x1, y1, x2, y2 = bbox
+
+        x1 = max(0, min(x1, width - 1))
+        y1 = max(0, min(y1, height - 1))
+        x2 = max(0, min(x2, width - 1))
+        y2 = max(0, min(y2, height - 1))
+
+        if x2 <= x1 or y2 <= y1:
+            return None
+        
+        if masks_t is None or idx >= masks_t.shape[0]:
+            return None
+
+        rgb_color = self.get_color_for_class(str(class_id), self.class_colors)
+        instance_cloud_t, centroid = self.pc_processor.process_detection(
+            masks_t[idx], depth_t, valid_mask_t,
+            int(class_id), int(instance_id),
+            rgb_color, scale_factor
+        )
+
+        if instance_cloud_t is None:
+            return None
+        
+        # --- Create Shared Object (The "Box") ---
+        class_name = self.class_id_to_name(int(class_id))
+
+        detection_entry = {
+            "class_id": int(class_id),
+            "instance_id": int(instance_id),
+            "object_name": class_name,
+            "centroid": centroid, # (x, y, z) tuple
+            "embedding": None,    # Placeholder
+            "crop": None          # Placeholder
+        }
+
+        # --- Prepare CLIP Crop (If enabled) ---
+        if do_clip_frame:
+            sx1, sy1, sx2, sy2 = CLIPProcessor.compute_square_crop(
+                x1, y1, x2, y2, width, height, self.clip.square_crop_scale
+            )
+            if sx2 > sx1 and sy2 > sy1:
+                # Build binary mask for this instance
+                m = masks_t[idx].detach().cpu().numpy()
+                if m.shape[0] != height or m.shape[1] != width:
+                    m = cv2.resize(m, (width, height), interpolation=cv2.INTER_NEAREST)
+                binary_mask = (m > 0.5).astype(np.uint8) * 255
+
+                img_crop = cv_bgr[sy1:sy2, sx1:sx2]
+                mask_crop = binary_mask[sy1:sy2, sx1:sx2]
+
+                if img_crop.size > 0 and mask_crop.size > 0:
+                    # Gray masking
+                    neutral_bg = np.full_like(img_crop, 122)  # neutral gray
+                    bg_mask = cv2.bitwise_not(mask_crop)
+                    fg = cv2.bitwise_and(img_crop, img_crop, mask=mask_crop)
+                    bg = cv2.bitwise_and(neutral_bg, neutral_bg, mask=bg_mask)
+                    final_crop = cv2.add(fg, bg)
+                    detection_entry["crop"] = final_crop
+
+        return instance_cloud_t, detection_entry
+    
+    # ----------- Secondary Methods ------------ #
+
+    @staticmethod
+    def get_color_for_class(class_id: str, class_colors: dict):
+        """ 
+        Deterministically generate a color for a given class ID. 
+        """
+        if class_id not in class_colors:
+            h = abs(hash(class_id))
+            r = (h >> 0) & 0xFF
+            g = (h >> 8) & 0xFF
+            b = (h >> 16) & 0xFF
+            if r < 30 and g < 30 and b < 30:
+                r = (r + 128) & 0xFF
+                g = (g + 64) & 0xFF
+            class_colors[class_id] = (r, g, b)
+        return class_colors[class_id]
 
     def _load_clip_prompt(self):
         """
@@ -447,8 +671,6 @@ class VisionNode(Node):
         except Exception as e:
             self.get_logger().error(f"Error loading robot_command.json: {e}")
 
-    # ----------- Secondary Methods ------------ #
-
     def class_id_to_name(self, class_id: int) -> str:
         """
         Convert class ID to class name.
@@ -457,18 +679,92 @@ class VisionNode(Node):
             return self.CLASS_NAMES[class_id]
         return f"class_{class_id}"
 
-    @staticmethod
-    def get_color_for_class(class_id: str, class_colors: dict):
-        """ 
-        Deterministically generate a color for a given class ID. 
-        """
-        if class_id not in class_colors:
-            h = abs(hash(class_id))
-            r = (h >> 0) & 0xFF
-            g = (h >> 8) & 0xFF
-            b = (h >> 16) & 0xFF
-            if r < 30 and g < 30 and b < 30:
-                r = (r + 128) & 0xFF
-                g = (g + 64) & 0xFF
-            class_colors[class_id] = (r, g, b)
-        return class_colors[class_id]
+    # ---------------- Publishers -------------- #
+
+    def publish_custom_detections(self, detections, header, timestamp):
+        """ Iterate through the unified list and publish messages. """
+        for det in detections:
+            msg = DetectedObject()
+            
+            # Basic Info
+            msg.object_name = det["object_name"]
+            msg.object_id = det["instance_id"]
+            
+            # Centroid
+            cx, cy, cz = det["centroid"]
+            msg.centroid = Vector3(x=cx, y=cy, z=cz)
+            
+            # Timestamp (Extract directly from the header)
+            msg.timestamp = header.stamp
+            
+            current_emb = det["embedding"].tolist() if det["embedding"] is not None else []
+            msg.embedding = current_emb
+
+            prob_goal = self.clip.compute_sigmoid_probs(current_emb, self.goal_text_embedding)
+            msg.similarity = float(prob_goal) if prob_goal is not None else 0.0
+            prob_distractor = 0.0
+            if self.distractor_embedding is not None:
+                prob_distractor = self.clip.compute_sigmoid_probs(current_emb, self.distractor_embedding)
+
+            self.get_logger().info(
+                f"ID {det['id']} ({det['class']}): Goal={prob_goal:.1%} | Distractor={prob_distractor:.1%}"
+            )
+
+            # Add text embedding for mapper convenience
+            msg.text_embedding = self.goal_text_embedding.tolist()
+            self.detections_pub.publish(msg)
+
+    def publish_centroid_markers(self, detections, header):
+        """Publish centroids as marker array."""
+        try:
+            marker_array = MarkerArray()
+            
+            for i, det in enumerate(detections):
+                marker = Marker()
+                marker.header = header
+                marker.ns = "centroids"
+                marker.id = i
+                marker.type = Marker.SPHERE
+                marker.action = Marker.ADD
+                
+                # Set position from centroid
+                cx, cy, cz = det["centroid"]
+                marker.pose.position.x = cx
+                marker.pose.position.y = cy
+                marker.pose.position.z = cz
+                marker.pose.orientation.w = 1.0
+                
+                # Set scale (radius of sphere)
+                marker.scale.x = 0.05
+                marker.scale.y = 0.05
+                marker.scale.z = 0.05
+                
+                # Set color from class color
+                class_id_str = str(det["class_id"])
+                r, g, b = self.get_color_for_class(class_id_str, self.class_colors)
+                marker.color.r = r / 255.0
+                marker.color.g = g / 255.0
+                marker.color.b = b / 255.0
+                marker.color.a = 1.0
+                
+                marker_array.markers.append(marker)
+            
+            self.marker_pub.publish(marker_array)
+            
+        except Exception as e:
+            self.get_logger().error(f"Error publishing centroid markers: {e}")
+
+# -------------------- MAIN -------------------- # 
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = VisionNode()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    node.destroy_node()
+    rclpy.shutdown()
+
+if __name__ == "__main__":
+    main()
