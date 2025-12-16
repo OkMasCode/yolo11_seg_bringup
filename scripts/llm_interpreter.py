@@ -5,13 +5,14 @@ import ollama
 import json
 import os
 from pydantic import BaseModel
-from typing import List
+from typing import List, Dict
 
 CHAT_MODEL = "llama3.2:3b"
 
 OLLAMA_HOST = "http://localhost:11435"
 
 MAP_FILE = "/home/sensor/ros2_ws/src/yolo11_seg_bringup/config/map.json"
+CLUSTERED_MAP_FILE = "/home/sensor/ros2_ws/src/yolo11_seg_bringup/config/clustered_map.json"
 
 DICTIONARY = [
     "sink", "refrigerator", "oven", "microwave", "toaster", "dishwasher",
@@ -27,6 +28,8 @@ DICTIONARY = [
 client = ollama.Client(host=OLLAMA_HOST)
 
 house_map = []
+clustered_map = []
+cluster_summaries = []
 
 # ------------------ FUNCTIONS ----------------- #
 
@@ -57,6 +60,39 @@ def load_house_map(filename):
     
     return data if isinstance(data, list) else []
 
+def load_clustered_map(filename):
+    """Loads the clustered_map.json file containing clusters and outliers."""
+    if not os.path.exists(filename):
+        raise FileNotFoundError(f"Clustered map file not found: {filename}")
+    
+    with open(filename, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    
+    return data if isinstance(data, list) else []
+
+def summarize_clusters(clustered_map_data):
+    """
+    Generates simple summaries of clusters.
+    Returns a dict mapping cluster_id to list of object classes.
+    Outliers are treated as single-element clusters with negative IDs.
+    """
+    cluster_objects = {}
+    outlier_id = -1
+    
+    for entry in clustered_map_data:
+        if "cluster_id" in entry:
+            # This is a cluster
+            cluster_id = entry["cluster_id"]
+            items = entry["items"]
+            cluster_objects[cluster_id] = [item["class"] for item in items]
+        else:
+            # This is an outlier - treat as single-element cluster
+            obj_class = entry["class"]
+            cluster_objects[outlier_id] = [obj_class]
+            outlier_id -= 1  # Use negative IDs for outliers
+    
+    return cluster_objects
+
 def get_map_objects():
     """Returns all unique object classes from the map."""
     return sorted(list(set(obj.get("class", "") for obj in house_map if obj.get("class"))))
@@ -71,6 +107,55 @@ def find_objects(class_name: str):
             matches.append(obj)
     
     return matches
+
+def find_object_clusters(class_name: str):
+    """
+    Find which clusters contain the given object class.
+    Returns a list of cluster_ids.
+    """
+    class_name_lower = class_name.strip().lower()
+    found_cluster_ids = []
+    
+    for cluster_id, objects in cluster_summaries.items():
+        # Check if the object is in this cluster
+        objects_lower = [obj.lower() for obj in objects]
+        
+        if class_name_lower in objects_lower:
+            found_cluster_ids.append(cluster_id)
+    
+    return found_cluster_ids
+
+def get_most_likely_cluster(goal_class: str, alternatives: List[str]):
+    """
+    Determines the most likely cluster for the goal object.
+    Returns cluster_id and list of objects in that cluster.
+    """
+    if not cluster_summaries:
+        return None
+    
+    # Get clusters containing the goal
+    goal_cluster_ids = find_object_clusters(goal_class)
+    
+    if goal_cluster_ids:
+        # If goal is found in clusters, return the first one
+        cluster_id = goal_cluster_ids[0]
+        return {
+            "cluster_id": cluster_id,
+            "objects": cluster_summaries[cluster_id]
+        }
+    
+    # Goal not found, check alternatives
+    if alternatives:
+        for alt in alternatives:
+            alt_cluster_ids = find_object_clusters(alt)
+            if alt_cluster_ids:
+                cluster_id = alt_cluster_ids[0]
+                return {
+                    "cluster_id": cluster_id,
+                    "objects": cluster_summaries[cluster_id]
+                }
+    
+    return None
 
 def find_goal_objects(goal: str):
 
@@ -98,10 +183,11 @@ def find_goal_objects(goal: str):
 
 class NavResult(BaseModel):
     goal: str # class of the object to navigate to
-    goal_objects: List[str] # list of objects of that class in the map
+    goal_objects: List[Dict] # list of objects of that class in the map
     alternatives: List[str] # list of alternative classes if goal not found
     clip_prompts: List[str] # list of 3 prompts for CLIP model to find the object visually
     action: str # high-level action plan to reach the goal
+    cluster_info: Dict | None # information about the most likely cluster
 
 class Goal(BaseModel):
     goal: str # class of the object to navigate to
@@ -335,30 +421,68 @@ def process_nav_instruction(prompt : str) -> NavResult:
             goal_objects=[],
             alternatives=[],
             clip_prompts=[],
-            action=""
+            action="",
+            cluster_info=None
         )
     # 2. Read the map and find objects of the goal class
     goal_objects, alternatives = find_goal_objects(goal.goal)
 
     # 3. Determine action plan
-    action = extract_action(prompt) 
+    action = extract_action(prompt)
+    
+    # 4. Find the most likely cluster
+    print("4. .......Finding most likely cluster.........\n")
+    start_time = time.time()
+    cluster_info = get_most_likely_cluster(goal.goal, alternatives)
+    end_time = time.time()
+    elapsed = end_time - start_time
+    
+    if cluster_info:
+        cluster_id = cluster_info["cluster_id"]
+        objects = cluster_info["objects"]
+        if cluster_id >= 0:
+            print(f"Most likely cluster: Cluster {cluster_id}")
+        else:
+            print(f"Object found as outlier (Cluster ID: {cluster_id})")
+        print(f"  Objects in cluster: {', '.join(objects)}")
+    else:
+        print("No cluster information available")
+    print(f"Computation time: {elapsed:.2f} seconds\n")
 
     return NavResult(
         goal=goal.goal,
         goal_objects=goal_objects,
         alternatives=alternatives,
         clip_prompts=goal.clip_prompts,
-        action=action.action
+        action=action.action,
+        cluster_info=cluster_info
     )
 
 # -------------------- MAIN -------------------- #
 
 def main():
-    global house_map
+    global house_map, clustered_map, cluster_summaries
     wait_for_server()
 
     house_map = load_house_map(MAP_FILE)
     map_objects = get_map_objects()
+    
+    # Load clustered map and generate summaries
+    try:
+        clustered_map = load_clustered_map(CLUSTERED_MAP_FILE)
+        cluster_summaries = summarize_clusters(clustered_map)
+        print(f"Loaded {len(clustered_map)} cluster entries")
+        print(f"Generated summaries for {len(cluster_summaries)} clusters")
+        print(f"Cluster breakdown:")
+        for cluster_id, objects in cluster_summaries.items():
+            if cluster_id >= 0:
+                print(f"  Cluster {cluster_id}: {objects}")
+            else:
+                print(f"  Outlier {cluster_id}: {objects}")
+        print()
+    except FileNotFoundError as e:
+        print(f"Warning: {e}")
+        print("Continuing without cluster information\n")
 
     print(f"Number of objects in the house map: {len(house_map)}")
     print(f"Number of unique classes in the map: {len(map_objects)}")
@@ -393,6 +517,16 @@ def main():
                 print(f"\nSemantic alternatives (3 most related):")
                 for i, alt in enumerate(result.alternatives, 1):
                     print(f"  {i}. {alt}")
+            
+            if result.cluster_info:
+                print(f"\nCluster Information:")
+                cluster_id = result.cluster_info["cluster_id"]
+                objects = result.cluster_info["objects"]
+                if cluster_id >= 0:
+                    print(f"  Cluster ID: {cluster_id}")
+                else:
+                    print(f"  Cluster ID: {cluster_id} (outlier)")
+                print(f"  Objects in cluster: {', '.join(objects)}")
         else:
             print("Goal: (could not determine)")
             print("Action: N/A")
