@@ -387,7 +387,7 @@ class VisionNode(Node):
                 data = json.load(f)
             
             # Update GOAL Prompt
-            clip_prompt = data.get('clip_prompt', None)
+            clip_prompt = data.get('clip_prompts', None)
             if clip_prompt != self.current_clip_prompt:
                 self.current_clip_prompt = clip_prompt
                 self.goal_text_embedding = self.clip.encode_text(clip_prompt)

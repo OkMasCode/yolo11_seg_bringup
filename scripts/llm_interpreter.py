@@ -100,12 +100,12 @@ class NavResult(BaseModel):
     goal: str # class of the object to navigate to
     goal_objects: List[str] # list of objects of that class in the map
     alternatives: List[str] # list of alternative classes if goal not found
-    clip_prompt: str # prompt for CLIP model to find the object visually
+    clip_prompts: List[str] # list of 3 prompts for CLIP model to find the object visually
     action: str # high-level action plan to reach the goal
 
 class Goal(BaseModel):
     goal: str # class of the object to navigate to
-    clip_prompt: str # prompt for CLIP model to find the object visually
+    clip_prompts: List[str] # list of 3 prompts for CLIP model to find the object visually
 
 class Alternatives(BaseModel):
     alternatives: List[str] # list of alternative classes if goal not found
@@ -136,18 +136,24 @@ def extract_goal(prompt : str) -> Goal:
     - NEVER invent new object names
     - NEVER return objects not in the valid list
 
-    2. CLIP PROMPT CONSTRUCTION:
+    2. CLIP PROMPTS CONSTRUCTION (Generate EXACTLY 3 variations):
+    - You MUST provide EXACTLY 3 different prompt variations for the same object
     - Format: "<features> <goal>" where goal is the exact object name
-    - ALWAYS include the goal object name in the clip_prompt
-    - If user provides features (color, size, position, etc.), include them BEFORE the goal
-        * Example: "Go to red sofa" → clip_prompt: "red sofa"
-        * Example: "Navigate to the small tv" → clip_prompt: "small television"
-    - If NO features provided, clip_prompt should be ONLY the goal name
-        * Example: "Go to sofa" → clip_prompt: "sofa"
+    - ALWAYS include the goal object name in ALL clip_prompts
+    - Generate 3 semantic variations by:
+        * Reordering features and object name
+        * Using synonymous phrasing for the same features
+        * Emphasizing different aspects of the description
+    - If user provides features (color, size, position, etc.):
+        * Example: "Go to the mug with red stripes" → clip_prompts: ["mug with red stripes", "red striped mug", "red stripes on a mug"]
+        * Example: "Navigate to the small black tv" → clip_prompts: ["small black television", "black small television", "television that is small and black"]
+    - If NO features provided, generate variations using just the object name:
+        * Example: "Go to sofa" → clip_prompts: ["sofa", "a sofa", "the sofa"]
     - DO NOT add features that were not mentioned by the user
-    - DO NOT use isolated words, always include the object name
+    - DO NOT use isolated words, always include the object name in each variation
+    - ALL 3 prompts must describe the SAME object with the SAME features, just phrased differently
 
-    Output JSON: {{"goal": "<exact string from list or empty>", "clip_prompt": "<string with features>"}}"""
+    Output JSON: {{"goal": "<exact string from list or empty>", "clip_prompts": ["<variation 1>", "<variation 2>", "<variation 3>"]}}"""
 
     # message passed to the LLM
     msgs = [
@@ -167,7 +173,9 @@ def extract_goal(prompt : str) -> Goal:
  
     result = Goal.model_validate_json(respose["message"]["content"])
     print(f"Goal: {result.goal}")
-    print(f"Clip Prompt: {result.clip_prompt}")
+    print(f"Clip Prompts:")
+    for i, prompt in enumerate(result.clip_prompts, 1):
+        print(f"  {i}. {prompt}")
     print(f"Computation time: {elapsed:.2f} seconds\n")
     return result
 
@@ -326,7 +334,7 @@ def process_nav_instruction(prompt : str) -> NavResult:
             goal="",
             goal_objects=[],
             alternatives=[],
-            clip_prompt="",
+            clip_prompts=[],
             action=""
         )
     # 2. Read the map and find objects of the goal class
@@ -339,7 +347,7 @@ def process_nav_instruction(prompt : str) -> NavResult:
         goal=goal.goal,
         goal_objects=goal_objects,
         alternatives=alternatives,
-        clip_prompt=goal.clip_prompt,
+        clip_prompts=goal.clip_prompts,
         action=action.action
     )
 
@@ -372,7 +380,9 @@ def main():
         if result.goal:
             print(f"Goal: {result.goal}")
             print(f"Action: {result.action}")
-            print(f"CLIP Prompt: {result.clip_prompt}")
+            print(f"CLIP Prompts:")
+            for i, prompt in enumerate(result.clip_prompts, 1):
+                print(f"  {i}. {prompt}")
             
             if result.goal_objects:
                 print(f"\nFound in map ({len(result.goal_objects)} instance(s)):")
