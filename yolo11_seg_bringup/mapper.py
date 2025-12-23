@@ -140,7 +140,7 @@ class SemanticObjectMap:
         """Compute Euclidean distance between two 3D points represented as (x,y,z)."""
         return math.sqrt((p1[0] - p2[0]) ** 2 + (p1[1] - p2[1]) ** 2 + (p1[2] - p2[2]) ** 2)
     
-    def update_all_to_latest_map(self, fixed_frame: str = 'map') -> None:
+    def update_all_to_latest_map(self, fixed_frame: str = 'odom') -> None:
         """
         Recompute pose_map for every stored object using the transform available in tf.
 

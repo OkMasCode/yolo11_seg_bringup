@@ -440,9 +440,6 @@ class VisionNode(Node):
                 msg.similarity = float(prob_goal) if prob_goal is not None else 0.0
             else:
                 msg.similarity = 0.0
-                
-            if current_emb is not None and self.distractor_embedding is not None:
-                prob_distractor = self.clip.compute_sigmoid_probs(current_emb, self.distractor_embedding)
 
             self.get_logger().info(
                 f"ID {det['instance_id']} ({det['object_name']}): Goal={prob_goal:.1%} | Distractor={prob_distractor:.1%}"

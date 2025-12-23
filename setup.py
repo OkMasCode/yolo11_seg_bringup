@@ -27,13 +27,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            '3d_yolo11_seg_node2 = yolo11_seg_bringup.3d_yolo11_seg_node2:main',
-            '3d_yolo11_seg_node_main = yolo11_seg_bringup.yolo11_seg_node_main:main',
-            'vision_node_depth = yolo11_seg_bringup.vision_node_depth:main',
             'vision_node = yolo11_seg_bringup.vision_node:main',
-            'rgb_vision_node = yolo11_seg_bringup.rgb_vision_node:main',
-            'rgb_mapper_node = yolo11_seg_bringup.rgb_mapper_node:main',
-            'stereo_to_pc_node = yolo11_seg_bringup.stereo_to_pc:main',
             'mapper_node = yolo11_seg_bringup.mapper_node:main',
             'clip_reader = yolo11_seg_bringup.clip_reader:main',
         ],

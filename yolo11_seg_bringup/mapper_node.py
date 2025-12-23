@@ -21,7 +21,7 @@ class PointCloudMapperNode(Node):
         # ============= Parameters ============= #
 
         self.declare_parameter('detection_message', '/vision/detections')
-        self.declare_parameter('map_frame', 'camera_color_optical_frame')
+        self.declare_parameter('map_frame', 'odom')
         self.declare_parameter('camera_frame', 'camera_color_optical_frame')
         self.declare_parameter("output_dir", "/home/sensor/ros2_ws/src/yolo11_seg_bringup/config/")
         self.declare_parameter('export_interval', 5.0)
