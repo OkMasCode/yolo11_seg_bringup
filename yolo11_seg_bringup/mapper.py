@@ -1,7 +1,9 @@
+from polars import Duration
 from tf2_ros import Buffer, TransformException
 from geometry_msgs.msg import TransformStamped, Vector3
 from rclpy.node import Node
 import rclpy
+from rclpy.duration import Duration
 
 from collections import namedtuple
 import os
@@ -72,15 +74,17 @@ class SemanticObjectMap:
         Transforms the pose to the fixed frame and merges with existing objects if close enough.
         """
         try:
+            lookup_time = rclpy.time.Time.from_msg(detection_stamp)
             # Get the transform from camera frame to fixed frame
             transform = self.tf_buffer.lookup_transform(
                 fixed_frame,
                 camera_frame,
-                Time(sec=0, nanosec=0)
+                lookup_time,
+                timeout=Duration(seconds=0.1)
             )
             # Transform the pose to the fixed frame
             pose_in_map = self.transform_point(pose_in_camera, transform)
-
+            
             # Prepare embeddings
             img_vec = np.array(embeddings, dtype=np.float32)
 

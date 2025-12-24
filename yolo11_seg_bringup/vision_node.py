@@ -5,6 +5,7 @@ from sensor_msgs.msg import Image, CameraInfo, PointCloud2
 from visualization_msgs.msg import MarkerArray, Marker
 from geometry_msgs.msg import Vector3
 from rclpy.qos import QoSProfile, HistoryPolicy, ReliabilityPolicy, DurabilityPolicy
+import message_filters
 
 import torch
 import cv2
@@ -36,9 +37,9 @@ class VisionNode(Node):
         # ============= Parameters ============= #
 
         # Comunication parameters
-        self.declare_parameter('image_topic', '/camera/camera/color/image_raw')
-        self.declare_parameter('depth_topic', '/camera/camera/aligned_depth_to_color/image_raw')
-        self.declare_parameter('camera_info_topic', '/camera/camera/color/camera_info')
+        self.declare_parameter('image_topic', '/camera_color/image_raw')
+        self.declare_parameter('depth_topic', '/camera_color/depth/image_raw')
+        self.declare_parameter('camera_info_topic', '/camera_color/camera_info')
         self.declare_parameter('enable_visualization', True)
 
         self.image_topic = self.get_parameter('image_topic').value
@@ -107,11 +108,20 @@ class VisionNode(Node):
         )
 
         # Subscribers
-        self.rgb_sub = self.create_subscription(Image, self.image_topic, self.rgb_callback, qos_profile=qos_sensor)
-        self.depth_sub = self.create_subscription(Image, self.depth_topic, self.depth_callback, qos_profile=qos_sensor)
+        #self.rgb_sub = self.create_subscription(Image, self.image_topic, self.rgb_callback, qos_profile=qos_sensor)
+        #self.depth_sub = self.create_subscription(Image, self.depth_topic, self.depth_callback, qos_profile=qos_sensor)
         self.camera_info_sub = self.create_subscription(CameraInfo, self.camera_info_topic, self.camera_info_cb, qos_profile=qos_sensor)
+        self.rgb_sub = message_filters.Subscriber(self, Image, self.image_topic)
+        self.depth_sub = message_filters.Subscriber(self, Image, self.depth_topic)
 
-        # Publishers
+        self.ts = message_filters.ApproximateTimeSynchronizer(
+            [self.rgb_sub, self.depth_sub], 
+            queue_size=10, 
+            slop=0.05
+        )
+        self.ts.registerCallback(self.sync_callback)
+
+        # Publishers    
         self.pc_pub = self.create_publisher(PointCloud2, self.pc_topic, 10)
         self.marker_pub = self.create_publisher(MarkerArray, self.markers_topic, 10)
         self.detections_pub = self.create_publisher(DetectedObject, self.detection_topic, 10)
@@ -125,7 +135,7 @@ class VisionNode(Node):
         self.distractor_embedding = None
         self.current_distractor_prompt = None
         self.fx = self.fy = self.cx = self.cy = None
-        self.latest_depth_msg = None
+        #self.latest_depth_msg = None
         self.warned_missing_intrinsics = False
         self.sync_lock = threading.Lock()
 
@@ -167,25 +177,32 @@ class VisionNode(Node):
                 pc_max_range = self.pc_max_range,
                 )
 
-    def depth_callback(self, msg: Image):
-        """
-        Store latest depth message.
-        """
-        with self.sync_lock:
-            self.latest_depth_msg = msg
+    # def depth_callback(self, msg: Image):
+    #     """
+    #     Store latest depth message.
+    #     """
+    #     with self.sync_lock:
+    #         self.latest_depth_msg = msg
 
-    def rgb_callback(self, msg: Image):
+    # def rgb_callback(self, msg: Image):
+    #     """
+    #     Process RGB image with synchronized depth.
+    #     """
+    #     with self.sync_lock:
+    #         if self.latest_depth_msg is None:
+    #             self.get_logger().debug("Waiting for depth message.")
+    #             return
+    #         rgb_msg = msg
+    #         depth_msg = self.latest_depth_msg
+        
+    #     self.process_frame(rgb_msg, depth_msg)
+
+    def sync_callback(self, rgb_msg: Image, depth_msg: Image):
         """
-        Process RGB image with synchronized depth.
+        Synchronized RGB-D callback.
         """
         with self.sync_lock:
-            if self.latest_depth_msg is None:
-                self.get_logger().debug("Waiting for depth message.")
-                return
-            rgb_msg = msg
-            depth_msg = self.latest_depth_msg
-        
-        self.process_frame(rgb_msg, depth_msg)
+            self.process_frame(rgb_msg, depth_msg)
 
     # --------------- Main Methods ------------- #
 
