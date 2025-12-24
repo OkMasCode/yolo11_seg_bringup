@@ -71,21 +71,29 @@ class PointCloudProcessor:
 
     def process_detection(self, mask_t, depth_t, valid_mask_t, class_id, instance_id, 
                          rgb_color, scale_factor, min_points=10):
-        """ 
-        Process a single detection to generate pointcloud segment. 
-        """
+        # 1. Apply Mask
         obj_mask_t = (mask_t).to(self.device)
         valid_t = valid_mask_t & obj_mask_t
 
         v_coords_t, u_coords_t = valid_t.nonzero(as_tuple=True)
         if v_coords_t.shape[0] < min_points:
-            return None, None # Not enough points
+            return None, None
         
         z_vals_t = (depth_t[v_coords_t, u_coords_t].mul_(scale_factor))
 
-        z_min = torch.quantile(z_vals_t, 0.1)
-        z_max = torch.quantile(z_vals_t, 0.9)
-        keep_mask_t = (z_vals_t >= z_min) & (z_vals_t <= z_max)
+        # 2. HISTOGRAM FILTERING (Fixes the Drift)
+        # Instead of averaging everything (Mean), find the DENSEST depth (Mode)
+        # Create 50 bins from 0 to Max Range (e.g. 0 to 8m)
+        hist = torch.histc(z_vals_t, bins=50, min=0, max=self.pc_max_range)
+        max_bin_idx = torch.argmax(hist) 
+        
+        # Calculate the depth of the peak bin
+        bin_width = self.pc_max_range / 50.0
+        peak_depth = max_bin_idx * bin_width + (bin_width / 2.0)
+        
+        # Only keep points within 20cm of the peak (cuts off the floor at 8m)
+        keep_mask_t = (z_vals_t >= peak_depth - 0.2) & (z_vals_t <= peak_depth + 0.2)
+        
         if not torch.any(keep_mask_t):
             return None, None
         
@@ -93,40 +101,30 @@ class PointCloudProcessor:
         u_clean_t = u_coords_t[keep_mask_t].float()
         v_clean_t = v_coords_t[keep_mask_t].float()
 
+        # ... (Downsampling code same as before) ...
         if self.pc_downsample and self.pc_downsample > 1:
             step_t = int(self.pc_downsample)
             idx = torch.arange(0, z_clean_t.shape[0], step_t, device=self.device, dtype=torch.long)
             z_clean_t = z_clean_t[idx]
             u_clean_t = u_clean_t[idx]
             v_clean_t = v_clean_t[idx]
-        
+
         x_t = (u_clean_t - self.cx_t) * z_clean_t / self.fx_t
         y_t = (v_clean_t - self.cy_t) * z_clean_t / self.fy_t
 
+        # 3. Use MEDIAN for Centroid (Stable against outliers)
         centroid = (
-            float(torch.mean(x_t).item()),
-            float(torch.mean(y_t).item()),
-            float(torch.mean(z_clean_t).item())
+            float(torch.median(x_t).item()),       # Median X
+            float(torch.median(y_t).item()),       # Median Y
+            float(torch.median(z_clean_t).item())  # Median Z
         )
 
+        # ... (Rest of the packing code same as before) ...
         N = x_t.shape[0]
-        if N == 0:
-            return None, None
-        
         r, g, b = rgb_color
         rgb_packed = self.pack_rgb(r, g, b)
-
-        instance_cloud_t = torch.stack(
-            [
-                x_t, 
-                y_t, 
-                z_clean_t,
-                torch.full((N,), float(rgb_packed), dtype=torch.float32, device=self.device),
-                torch.full((N,), int(class_id), dtype=torch.int32, device=self.device),
-                torch.full((N,), int(instance_id), dtype=torch.int32, device=self.device),
-            ],
-            dim=1
-        )
+        instance_cloud_t = torch.stack([x_t, y_t, z_clean_t, torch.full((N,), float(rgb_packed), dtype=torch.float32, device=self.device), torch.full((N,), int(class_id), dtype=torch.int32, device=self.device), torch.full((N,), int(instance_id), dtype=torch.int32, device=self.device)], dim=1)
+        
         return instance_cloud_t, centroid
 
     def prepare_depth_tensor(self, depth_img, encoding, scale_factor):

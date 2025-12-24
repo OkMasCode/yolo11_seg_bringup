@@ -85,6 +85,8 @@ class SemanticObjectMap:
             # Transform the pose to the fixed frame
             pose_in_map = self.transform_point(pose_in_camera, transform)
             
+            self.node.get_logger().info(f"Centroid in map frame for {object_name}: x={pose_in_map[0]:.3f}, y={pose_in_map[1]:.3f}, z={pose_in_map[2]:.3f}")
+
             # Prepare embeddings
             img_vec = np.array(embeddings, dtype=np.float32)
 
