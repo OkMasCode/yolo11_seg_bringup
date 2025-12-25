@@ -80,7 +80,7 @@ class SemanticObjectMap:
                 fixed_frame,
                 camera_frame,
                 lookup_time,
-                timeout=Duration(seconds=0.1)
+                timeout=Duration(seconds=0.8)
             )
             # Transform the pose to the fixed frame
             pose_in_map = self.transform_point(pose_in_camera, transform)

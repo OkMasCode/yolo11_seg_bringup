@@ -5,6 +5,7 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 import tf2_ros
 from geometry_msgs.msg import Vector3
+from rclpy.executors import MultiThreadedExecutor
 
 from yolo11_seg_bringup.mapper import SemanticObjectMap
 from yolo11_seg_interfaces.msg import DetectedObject, SemanticObjectArray, SemanticObject
@@ -174,8 +175,12 @@ def main(args=None):
     rclpy.init(args=args)
     node = PointCloudMapperNode()
     
+    # Use MultiThreadedExecutor to allow TF listener to run in parallel
+    executor = MultiThreadedExecutor()
+    executor.add_node(node)
+    
     try:
-        rclpy.spin(node)
+        executor.spin() # Spin the executor, not the node directly
     except KeyboardInterrupt:
         pass
     finally:
