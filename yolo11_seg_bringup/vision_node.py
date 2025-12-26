@@ -37,9 +37,9 @@ class VisionNode(Node):
         # ============= Parameters ============= #
 
         # Comunication parameters
-        self.declare_parameter('image_topic', '/camera_color/image_raw')
-        self.declare_parameter('depth_topic', '/camera_color/depth/image_raw')
-        self.declare_parameter('camera_info_topic', '/camera_color/camera_info')
+        self.declare_parameter('image_topic', '/camera/color/image_raw')
+        self.declare_parameter('depth_topic', '/camera/aligned_depth_to_color/image_raw')
+        self.declare_parameter('camera_info_topic', '/camera/color/camera_info')
         self.declare_parameter('enable_visualization', True)
 
         self.image_topic = self.get_parameter('image_topic').value
@@ -111,8 +111,8 @@ class VisionNode(Node):
         #self.rgb_sub = self.create_subscription(Image, self.image_topic, self.rgb_callback, qos_profile=qos_sensor)
         #self.depth_sub = self.create_subscription(Image, self.depth_topic, self.depth_callback, qos_profile=qos_sensor)
         self.camera_info_sub = self.create_subscription(CameraInfo, self.camera_info_topic, self.camera_info_cb, qos_profile=qos_sensor)
-        self.rgb_sub = message_filters.Subscriber(self, Image, self.image_topic)
-        self.depth_sub = message_filters.Subscriber(self, Image, self.depth_topic)
+        self.rgb_sub = message_filters.Subscriber(self, Image, self.image_topic, qos_profile=qos_sensor)
+        self.depth_sub = message_filters.Subscriber(self, Image, self.depth_topic, qos_profile=qos_sensor)
 
         self.ts = message_filters.ApproximateTimeSynchronizer(
             [self.rgb_sub, self.depth_sub], 
@@ -210,6 +210,11 @@ class VisionNode(Node):
         """
         Process a single RGB-D frame.
         """
+        if self.pc_processor is None:
+            if not self.warned_missing_intrinsics:
+                self.get_logger().warn("Waiting for Camera Info (intrinsics)... ignoring frames.")
+                self.warned_missing_intrinsics = True
+            return
         self.frame_count += 1
 
         cv_bgr = self.bridge.imgmsg_to_cv2(rgb_msg, desired_encoding='bgr8')
