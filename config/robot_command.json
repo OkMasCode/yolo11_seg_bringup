@@ -29,7 +29,7 @@
             }
         }
     ],
-    "clip_prompt": ["photo of a white bed", "bed with white sheets", "white bed"],
+    "clip_prompt": ["photo of a person wearing white shirt", "person with white shirt", "white shirt on a person"],
     "action": "go_to_object",
     "valid": true
 }

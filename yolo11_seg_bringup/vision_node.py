@@ -48,7 +48,7 @@ class VisionNode(Node):
         self.enable_vis = bool(self.get_parameter('enable_visualization').value)
 
         # yolo parameters
-        self.declare_parameter('model_path', '/home/sensor/yolo11n-seg.engine')
+        self.declare_parameter('model_path', '/home/sensor/yolov8n-seg.engine')
         self.declare_parameter('imgsz', 640)
         self.declare_parameter('conf', 0.45)
         self.declare_parameter('iou', 0.45)
