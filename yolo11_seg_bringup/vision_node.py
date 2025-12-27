@@ -37,9 +37,9 @@ class VisionNode(Node):
         # ============= Parameters ============= #
 
         # Comunication parameters
-        self.declare_parameter('image_topic', '/camera/color/image_raw')
-        self.declare_parameter('depth_topic', '/camera/aligned_depth_to_color/image_raw')
-        self.declare_parameter('camera_info_topic', '/camera/color/camera_info')
+        self.declare_parameter('image_topic', '/camera_color/image_raw')
+        self.declare_parameter('depth_topic', '/camera_color/depth/image_raw')
+        self.declare_parameter('camera_info_topic', '/camera_color/camera_info')
         self.declare_parameter('enable_visualization', True)
 
         self.image_topic = self.get_parameter('image_topic').value
@@ -176,26 +176,6 @@ class VisionNode(Node):
                 pc_downsample = self.pc_downsample,
                 pc_max_range = self.pc_max_range,
                 )
-
-    # def depth_callback(self, msg: Image):
-    #     """
-    #     Store latest depth message.
-    #     """
-    #     with self.sync_lock:
-    #         self.latest_depth_msg = msg
-
-    # def rgb_callback(self, msg: Image):
-    #     """
-    #     Process RGB image with synchronized depth.
-    #     """
-    #     with self.sync_lock:
-    #         if self.latest_depth_msg is None:
-    #             self.get_logger().debug("Waiting for depth message.")
-    #             return
-    #         rgb_msg = msg
-    #         depth_msg = self.latest_depth_msg
-        
-    #     self.process_frame(rgb_msg, depth_msg)
 
     def sync_callback(self, rgb_msg: Image, depth_msg: Image):
         """
@@ -409,7 +389,7 @@ class VisionNode(Node):
                 data = json.load(f)
             
             # Update GOAL Prompt
-            clip_prompt = data.get('clip_prompts', None)
+            clip_prompt = data.get('clip_prompt', None)
             if clip_prompt != self.current_clip_prompt:
                 self.current_clip_prompt = clip_prompt
                 self.goal_text_embedding = self.clip.encode_text(clip_prompt)

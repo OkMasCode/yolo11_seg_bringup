@@ -29,7 +29,7 @@
             }
         }
     ],
-    "clip_prompt": ["photo of a person wearing white shirt", "person with white shirt", "white shirt on a person"],
+    "clip_prompt": ["a person wearing white shirt", "white shirt on a person", "photo of a person with white shirt"],
     "action": "go_to_object",
     "valid": true
 }

@@ -28,6 +28,7 @@ setup(
     entry_points={
         'console_scripts': [
             'vision_node = yolo11_seg_bringup.vision_node:main',
+            'rgb_vision_node = yolo11_seg_bringup.rgb_vision_node:main',
             'mapper_node = yolo11_seg_bringup.mapper_node:main',
             'clip_reader = yolo11_seg_bringup.clip_reader:main',
         ],

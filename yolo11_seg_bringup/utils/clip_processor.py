@@ -117,12 +117,18 @@ class CLIPProcessor:
         """
         Converts raw SigLIP dot product into a readable probability.
         Formula: sigmoid( dot_product * scale + bias)
+        
+        Returns:
+            tuple: (dot_product, probability) or (None, None) if embeddings are None
         """
         if image_embedding is None or text_embedding is None:
             return None
 
-        img = np.array(image_embedding)
-        txt = np.array(text_embedding)
+        img = np.array(image_embedding).flatten()
+        txt = np.array(text_embedding).flatten()
+        
+        if img.size != txt.size:
+            raise ValueError(f"Embedding size mismatch: image {img.size} vs text {txt.size}")
         
         dot_product = np.dot(img, txt)
         
@@ -132,4 +138,4 @@ class CLIPProcessor:
         
         logits = (dot_product * logit_scale) + logit_bias
         probs = 1 / (1 + np.exp(-logits))
-        return probs
+        return float(probs)
