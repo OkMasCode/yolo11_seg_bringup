@@ -29,7 +29,7 @@
             }
         }
     ],
-    "clip_prompt": ["a person wearing white shirt", "white shirt on a person", "photo of a person with white shirt"],
+    "clip_prompt": ["a fridge", "gray fridge", "photo of a gray fridge"],
     "action": "go_to_object",
     "valid": true
 }
