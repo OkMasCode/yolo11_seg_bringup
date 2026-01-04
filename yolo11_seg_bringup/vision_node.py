@@ -82,7 +82,6 @@ class VisionNode(Node):
 
         self.frame_skip = 1
         self.prompt_check_interval = 10
-        self.text_prompt = 'a photo of a chair'
 
         # Load YOLO model
         self.get_logger().info(f"Loading YOLO: {self.model_path}")
@@ -135,7 +134,6 @@ class VisionNode(Node):
         self.distractor_embedding = None
         self.current_distractor_prompt = None
         self.fx = self.fy = self.cx = self.cy = None
-        #self.latest_depth_msg = None
         self.warned_missing_intrinsics = False
         self.sync_lock = threading.Lock()
 
