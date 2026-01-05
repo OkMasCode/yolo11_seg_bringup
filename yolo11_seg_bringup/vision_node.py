@@ -17,6 +17,7 @@ import json
 from ultralytics import YOLO
 
 from yolo11_seg_interfaces.msg import DetectedObject
+from yolo11_seg_interfaces.srv import CheckCandidates
 from .utils.pointcloud_processor import PointCloudProcessor
 from .utils.clip_processor import CLIPProcessor
 
@@ -63,6 +64,7 @@ class VisionNode(Node):
         # CLIP parameters
         self.declare_parameter('CLIP_model_name', 'ViT-B-16-SigLIP')
         self.declare_parameter('robot_command_file', '/home/sensor/ros2_ws/src/yolo11_seg_bringup/config/robot_command.json')
+        self.declare_parameter('map_file_path', '/home/sensor/ros2_ws/src/yolo11_seg_bringup/config/map.json')
         self.declare_parameter('square_crop_scale', 1.2)
 
         self.CLIP_model_name = self.get_parameter('CLIP_model_name').value
@@ -107,8 +109,6 @@ class VisionNode(Node):
         )
 
         # Subscribers
-        #self.rgb_sub = self.create_subscription(Image, self.image_topic, self.rgb_callback, qos_profile=qos_sensor)
-        #self.depth_sub = self.create_subscription(Image, self.depth_topic, self.depth_callback, qos_profile=qos_sensor)
         self.camera_info_sub = self.create_subscription(CameraInfo, self.camera_info_topic, self.camera_info_cb, qos_profile=qos_sensor)
         self.rgb_sub = message_filters.Subscriber(self, Image, self.image_topic, qos_profile=qos_sensor)
         self.depth_sub = message_filters.Subscriber(self, Image, self.depth_topic, qos_profile=qos_sensor)
@@ -127,18 +127,14 @@ class VisionNode(Node):
         if self.enable_vis:
             self.vis_pub = self.create_publisher(Image, self.anno_topic, 10)
 
+        # State Variables
         self.frame_count = 0
         self.class_colors = {}
         self.current_clip_prompt = None
         self.goal_text_embedding = None
-        self.distractor_embedding = None
-        self.current_distractor_prompt = None
         self.fx = self.fy = self.cx = self.cy = None
         self.warned_missing_intrinsics = False
         self.sync_lock = threading.Lock()
-
-        self._load_clip_prompt()
-        self.command_timer = self.create_timer(self.prompt_check_interval, self._load_clip_prompt)
 
         self.CLASS_NAMES = [
             "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat", "traffic light",
@@ -151,6 +147,18 @@ class VisionNode(Node):
             "microwave", "oven", "toaster", "sink", "refrigerator", "book", "clock", "vase", "scissors", "teddy bear",
             "hair drier", "toothbrush"
         ]
+
+        self._load_clip_prompt()
+        self.command_timer = self.create_timer(self.prompt_check_interval, self._load_clip_prompt)
+
+
+
+        # Services
+        self.candidates_srv = self.create_service(
+            CheckCandidates,
+            'check_candidates',
+            self.check_candidates_callback
+        )
 
         self.get_logger().info("RGB Vision Node Ready.")
 
@@ -182,6 +190,95 @@ class VisionNode(Node):
         with self.sync_lock:
             self.process_frame(rgb_msg, depth_msg)
 
+    def check_candidates_callback(self, request, response):
+        """
+        Filter map entries by candidate IDs, build an ID->embedding vocabulary,
+        and rank candidates by CLIP text-image similarity.
+        """
+        response.match_found = False
+        response.best_candidate_id = ""
+        response.max_score = 0.0
+        response.position.x = 0.0
+        response.position.y = 0.0
+
+        try:
+            candidates = list(request.candidate_ids or [])
+
+            if not os.path.exists(self.map_file_path):
+                self.get_logger().warn(f"Map file not found: {self.map_file_path}")
+                return response
+
+            if self.goal_text_embedding is None:
+                self.get_logger().warn("Prompt is empty; cannot compute text embedding.")
+                return response
+            self.get_logger().info(f"Updated goal embedding for prompt: {self.current_clip_prompt}")
+
+            with open(self.map_file_path, 'r') as f:
+                data = json.load(f)
+
+            vocabulary = {}
+            for cid in candidates:
+                obj = data.get(cid)
+                if not obj:
+                    continue
+
+                embedding = obj.get("image_embedding")
+                # Use pose information when available to return coordinates with the response.
+                pose = obj.get("pose_map")
+
+                if embedding is None:
+                    continue
+
+                vocabulary[cid] = {
+                    "embedding": embedding,
+                    "pose": pose,
+                }
+
+            if not vocabulary:
+                self.get_logger().warn("No candidate embeddings found in map for provided IDs.")
+                return response
+
+            best_id = ""
+            best_score = float("-inf")
+            best_pose = None
+
+            for cid, info in vocabulary.items():
+                embedding = info["embedding"]
+                score = self.clip.compute_sigmoid_probs(embedding, self.goal_text_embedding)
+                if score is None:
+                    continue
+                if score > best_score:
+                    best_score = score
+                    best_id = cid
+                    best_pose = info.get("pose")
+
+            if best_id:
+                response.match_found = True
+                response.best_candidate_id = best_id
+                response.max_score = float(best_score)
+                if isinstance(best_pose, dict):
+                    px = best_pose.get("x")
+                    py = best_pose.get("y")
+                    if px is not None and py is not None:
+                        response.position.x = float(px)
+                        response.position.y = float(py)
+                    else:
+                        self.get_logger().warn(
+                            f"Pose for {best_id} missing x/y fields; leaving default coordinates."
+                        )
+                elif best_pose is not None:
+                    self.get_logger().warn(
+                        f"Pose for {best_id} is not a dict; leaving default coordinates."
+                    )
+                self.get_logger().info(f"Best candidate: {best_id} (score={best_score:.4f})")
+            else:
+                self.get_logger().warn("Unable to compute similarity scores for candidates.")
+
+        except Exception as e:
+            self.get_logger().error(f"Error processing candidates: {e}")
+
+        return response
+        
     # --------------- Main Methods ------------- #
 
     def process_frame(self, rgb_msg: Image, depth_msg: Image):
