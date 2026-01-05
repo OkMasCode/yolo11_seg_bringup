@@ -47,6 +47,8 @@ class ClipServiceNode(Node):
         response.match_found = False
         response.best_candidate_id = ""
         response.max_score = 0.0
+        response.position.x = 0.0
+        response.position.y = 0.0
 
         try:
             candidates = list(request.candidate_ids or [])
@@ -72,10 +74,18 @@ class ClipServiceNode(Node):
                 obj = data.get(cid)
                 if not obj:
                     continue
+
                 embedding = obj.get("image_embedding")
+                # Use pose information when available to return coordinates with the response.
+                pose = obj.get("pose_map")
+
                 if embedding is None:
                     continue
-                vocabulary[cid] = embedding
+
+                vocabulary[cid] = {
+                    "embedding": embedding,
+                    "pose": pose,
+                }
 
             if not vocabulary:
                 self.get_logger().warn("No candidate embeddings found in map for provided IDs.")
@@ -83,18 +93,36 @@ class ClipServiceNode(Node):
 
             best_id = ""
             best_score = float("-inf")
-            for cid, embedding in vocabulary.items():
+            best_pose = None
+
+            for cid, info in vocabulary.items():
+                embedding = info["embedding"]
                 score = self.clip.compute_sigmoid_probs(embedding, self.goal_text_embedding)
                 if score is None:
                     continue
                 if score > best_score:
                     best_score = score
                     best_id = cid
+                    best_pose = info.get("pose")
 
             if best_id:
                 response.match_found = True
                 response.best_candidate_id = best_id
                 response.max_score = float(best_score)
+                if isinstance(best_pose, dict):
+                    px = best_pose.get("x")
+                    py = best_pose.get("y")
+                    if px is not None and py is not None:
+                        response.position.x = float(px)
+                        response.position.y = float(py)
+                    else:
+                        self.get_logger().warn(
+                            f"Pose for {best_id} missing x/y fields; leaving default coordinates."
+                        )
+                elif best_pose is not None:
+                    self.get_logger().warn(
+                        f"Pose for {best_id} is not a dict; leaving default coordinates."
+                    )
                 self.get_logger().info(f"Best candidate: {best_id} (score={best_score:.4f})")
             else:
                 self.get_logger().warn("Unable to compute similarity scores for candidates.")
