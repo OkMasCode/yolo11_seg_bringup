@@ -247,7 +247,7 @@ class VisionNode(Node):
                 score = self.clip.compute_sigmoid_probs(embedding, self.goal_text_embedding)
                 if score is None:
                     continue
-                if score > best_score:
+                if score > best_score and score >= 5.0:
                     best_score = score
                     best_id = cid
                     best_pose = info.get("pose")
@@ -489,13 +489,6 @@ class VisionNode(Node):
                 self.current_clip_prompt = clip_prompt
                 self.goal_text_embedding = self.clip.encode_text(clip_prompt)
                 self.get_logger().info(f"Updated Goal Ensemble: {clip_prompt}")
-
-            # Update DISTRACTOR Prompt
-            distractor_prompt = data.get('distractor', None)
-            if distractor_prompt != self.current_distractor_prompt:
-                self.current_distractor_prompt = distractor_prompt
-                self.distractor_embedding = self.clip.encode_text(distractor_prompt)
-                self.get_logger().info(f"Updated Distractor Ensemble: {distractor_prompt}")
 
         except Exception as e:
             self.get_logger().error(f"Error loading robot_command.json: {e}")
