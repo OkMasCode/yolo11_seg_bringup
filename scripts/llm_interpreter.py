@@ -482,14 +482,14 @@ def process_nav_instruction(prompt : str) -> NavResult:
 # ----------------- RESULT SAVING ----------------- #
 
 def _objects_minimal(objects: List[Dict]) -> List[Dict]:
-    """Reduce map objects to minimal schema {class, coords}."""
+    """Reduce map objects to minimal schema {id, coords}."""
     out = []
     for obj in objects:
-        cls = obj.get("class", "")
+        obj_id = obj.get("id")
         coords = obj.get("coords") or obj.get("pose_map")
-        if not cls:
+        if not obj_id:
             continue
-        entry = {"class": cls}
+        entry = {"id": obj_id}
         if isinstance(coords, dict):
             entry["coords"] = coords
         out.append(entry)
@@ -612,7 +612,7 @@ def main():
             if result.goal_objects:
                 print(f"\nFound in map ({len(result.goal_objects)} instance(s)):")
                 for obj in result.goal_objects:
-                    print(f"  • {obj.get('class')} at {obj.get('coords')}")
+                    print(f"  • {obj.get('id')} at {obj.get('coords')}")
             else:
                 print(f"\nNot found in map (0 instances)")
             

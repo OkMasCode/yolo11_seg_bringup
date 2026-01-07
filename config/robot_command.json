@@ -1,10 +1,10 @@
 {
-    "timestamp": 1767795754.0170925,
-    "prompt": "go to the truck with black tiers",
+    "timestamp": 1767796783.111627,
+    "prompt": "go to the black truck",
     "goal": "truck",
     "goal_objects": [
         {
-            "class": "truck",
+            "id": "truck_inst24_308_492000000",
             "coords": {
                 "x": -5.3699419289742,
                 "y": 6.313528931285155,
@@ -12,7 +12,7 @@
             }
         },
         {
-            "class": "truck",
+            "id": "truck_inst24_309_526000000",
             "coords": {
                 "x": -6.701090198562144,
                 "y": 6.41509676584138,
@@ -20,7 +20,7 @@
             }
         },
         {
-            "class": "truck",
+            "id": "truck_inst24_314_347000000",
             "coords": {
                 "x": -7.7881658642545055,
                 "y": 6.3789452563494065,
@@ -28,7 +28,7 @@
             }
         },
         {
-            "class": "truck",
+            "id": "truck_inst24_316_251000000",
             "coords": {
                 "x": -8.615963584207483,
                 "y": 6.3484147372578335,
@@ -44,7 +44,7 @@
             "truck",
             "truck"
         ],
-        "reasoning": "Truck is in Cluster 0 which contains multiple trucks with black tires.",
+        "reasoning": "Black truck is in Cluster 0 with multiple trucks, which is likely a common area such as a garage or parking lot.",
         "coords": {
             "x": -7.118790393999584,
             "y": 6.363996422683444,
@@ -52,9 +52,9 @@
         }
     },
     "clip_prompt": [
-        "truck with black tires",
-        "black tire truck",
-        "a truck with black tires"
+        "the black truck",
+        "black truck",
+        "a black truck"
     ],
     "action": "go_to_object",
     "valid": true
