@@ -1,35 +1,61 @@
 {
-    "timestamp": 1765213055.1462836,
-    "prompt": "go to the blue tv",
-    "goal": "television",
-    "goal_objects": [],
-    "alternatives": [
+    "timestamp": 1767795754.0170925,
+    "prompt": "go to the truck with black tiers",
+    "goal": "truck",
+    "goal_objects": [
         {
-            "class": "armchair",
+            "class": "truck",
             "coords": {
-                "x": 4.5,
-                "y": 2.5,
-                "z": 0.0
+                "x": -5.3699419289742,
+                "y": 6.313528931285155,
+                "z": 0.6033205729126941
             }
         },
         {
-            "class": "sofa",
+            "class": "truck",
             "coords": {
-                "x": 5.0,
-                "y": 4.0,
-                "z": 0.0
+                "x": -6.701090198562144,
+                "y": 6.41509676584138,
+                "z": 1.109857042604023
             }
         },
         {
-            "class": "kitchen counter",
+            "class": "truck",
             "coords": {
-                "x": 2.5,
-                "y": 2.0,
-                "z": 0.0
+                "x": -7.7881658642545055,
+                "y": 6.3789452563494065,
+                "z": 1.165642695267996
+            }
+        },
+        {
+            "class": "truck",
+            "coords": {
+                "x": -8.615963584207483,
+                "y": 6.3484147372578335,
+                "z": 1.0752959317366286
             }
         }
     ],
-    "clip_prompt": ["a fridge", "gray fridge", "photo of a gray fridge"],
+    "cluster_info": {
+        "cluster_id": 0,
+        "objects": [
+            "truck",
+            "truck",
+            "truck",
+            "truck"
+        ],
+        "reasoning": "Truck is in Cluster 0 which contains multiple trucks with black tires.",
+        "coords": {
+            "x": -7.118790393999584,
+            "y": 6.363996422683444,
+            "z": 0.9885290606303354
+        }
+    },
+    "clip_prompt": [
+        "truck with black tires",
+        "black tire truck",
+        "a truck with black tires"
+    ],
     "action": "go_to_object",
     "valid": true
 }

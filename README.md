@@ -47,7 +47,7 @@ This standalone Python script connects to a local Ollama server for semantic rea
 - Extracts navigation goals using LLM with synonym mapping (e.g., "fridge" → "refrigerator")
 - Queries the semantic map (`config/map.json`) for objects matching the goal
 - Classifies robot actions: `go_to_object` (navigate and stay) vs `bring_back_object` (fetch and return)
-- Provides semantic alternatives: If exact goal not found, uses LLM to suggest 3 most related objects
+- Predicts the most likely cluster containing the goal and records it in `robot_command.json`
 - Generates CLIP prompts for visual object localization
 - Runs interactively with real-time feedback and timing information
 
@@ -69,13 +69,13 @@ Action: go_to_object
 CLIP Prompt: red television
 
 Found in map (2 instance(s)):
-  • tv at {'x': 1.2, 'y': 2.3, 'z': 0.5}
-  • tv at {'x': 3.4, 'y': 1.2, 'z': 0.8}
+    • tv at {'x': 1.2, 'y': 2.3, 'z': 0.5}
+    • tv at {'x': 3.4, 'y': 1.2, 'z': 0.8}
 
-Semantic alternatives (3 most related):
-  1. sofa
-  2. armchair
-  3. coffee_table
+Cluster Information:
+    Cluster ID: 0
+    Objects in cluster: tv, sofa, coffee table
+    Reasoning: Matches living room context with tv and seating
 
 Total processing time: 2.45s
 ============================================================
