@@ -12,27 +12,23 @@ This package provides a complete pipeline for detecting objects in RGB-D camera 
 yolo11_seg_bringup/
 ├── yolo11_seg_bringup/               # Python package source
 │   ├── __init__.py
-│   ├── 3d_yolo11_seg_node2.py        # Legacy YOLO node (monolithic)
-│   ├── yolo11_seg_node_main.py       # Main YOLO detection node (modular)
-│   ├── mapper_node2.py               # Semantic mapping node
-│   ├── mapper2.py                    # Semantic map data structure
-│   ├── clip_reader.py                # Semantic map visualization node
-│   ├── stereo_to_pc.py               # Stereo to pointcloud converter
+│   ├── vision_node.py                # RGB-D YOLO+CLIP node with depth processing
+│   ├── flat_vision_node.py           # RGB-only node (no publishers, logging only)
+│   ├── mapper_node.py                # Semantic mapping node
+│   ├── mapper.py                     # Semantic map data structure
 │   └── utils/                        # Utility modules
-│       ├── clip_processor.py         # CLIP embedding processing
-│       ├── pointcloud.py             # Pointcloud generation utilities
-│       └── visualization.py          # Visualization helpers
+│       ├── __init__.py
+│       ├── clip_processor.py         # SigLIP/CLIP embedding processing
+│       └── pointcloud_processor.py   # GPU-accelerated pointcloud generation
 ├── scripts/
-│   ├── llm_script.py                 # Legacy LLM script
-│   └── llm_interpreter.py            # Interactive LLM navigation instruction interpreter (non-ROS)
+│   ├── llm_interpreter.py            # LLM-based navigation instruction interpreter
+│   └── map_preproc.py                # Semantic map clustering preprocessor
 ├── launch/
 │   └── yolo_mapper_reader.launch.py  # Main launch file
 ├── config/
-│   └── map.json                      # Exported semantic map (JSON)
-├── test/                             # Unit tests
-├── package.xml                       # ROS2 package manifest
-├── setup.py                          # Python package setup
-└── README.md                         # This file
+│   ├── map.json                      # Exported semantic map (raw)
+│   ├── clustered_map.json            # Spatially clustered semantic map
+│   └── robot_command.json            # LLM-generated navigation commands
 ```
 ## LLM Helper Script (Non-ROS Script)
 
@@ -40,45 +36,73 @@ This standalone Python script connects to a local Ollama server for semantic rea
 
 ### `llm_interpreter.py` - Interactive Navigation Instruction Interpreter
 
-**Purpose:** Real-time LLM-based interpreter that processes natural language navigation instructions and generates structured navigation plans with semantic reasoning.
+**Purpose:** Real-time LLM-based interpreter that processes natural language navigation instructions and generates a structured JSON command file (`robot_command.json`) for robot navigation.
 
 **What it does:**
-- Parses user prompts in natural language (e.g., "Go to the kitchen", "Bring me the remote")
-- Extracts navigation goals using LLM with synonym mapping (e.g., "fridge" → "refrigerator")
-- Queries the semantic map (`config/map.json`) for objects matching the goal
-- Classifies robot actions: `go_to_object` (navigate and stay) vs `bring_back_object` (fetch and return)
-- Predicts the most likely cluster containing the goal and records it in `robot_command.json`
-- Generates CLIP prompts for visual object localization
-- Runs interactively with real-time feedback and timing information
+Takes a natural language prompt from the user (e.g., "Go to the black truck", "Bring me the red chair") and generates a `robot_command.json` file containing:
+
+1. **Single class goal** - The target object class extracted from the prompt (e.g., "truck", "chair")
+2. **Goal objects** - All instances of that class already present in the semantic map (`config/map.json`), with their IDs and 3D coordinates
+3. **Cluster prediction** - The most likely cluster (spatial grouping) where the object can be found, including:
+   - Cluster ID
+   - List of object classes in that cluster
+   - LLM-generated reasoning for cluster selection
+   - Centroid coordinates of the cluster
+4. **CLIP prompts** - Multiple text variations for visual object localization (e.g., "a red chair", "photo of a red chair", "chair with red cushion")
+5. **Action type** - Classification of robot behavior: `go_to_object` (navigate and stay) or `bring_back_object` (fetch and return)
+
+**Processing Pipeline:**
+1. **Goal extraction** - LLM extracts the target object class from user prompt with synonym mapping (e.g., "fridge" → "refrigerator")
+2. **Map lookup** - Queries `config/map.json` to find all existing instances of the goal class
+3. **Cluster prediction** - LLM analyzes the semantic map structure to predict which spatial cluster contains the target
+4. **CLIP prompt generation** - Creates 3 text variations incorporating visual features from the user prompt
+5. **Action classification** - Determines robot behavior (navigate vs. fetch-and-return)
+6. **Output generation** - Saves structured command to `config/robot_command.json`
 
 **Key Features:**
-- Three-stage LLM pipeline: Goal extraction → Map lookup → Action classification
-- Synonym handling with household object dictionary (40+ items)
-- Semantic fallback reasoning when exact match not found
+- Multi-stage LLM reasoning with household object dictionary (40+ items)
+- Cluster-based spatial reasoning for efficient navigation
+- Handles missing objects with semantic fallback to similar clusters
 - Per-step computation timing for optimization
-- Real-time user interaction with formatted output
+- Interactive terminal interface with real-time feedback
 
-**Output Format (Console):**
+**Example Input/Output:**
+
+**User Input:**
 ```
-============================================================
-RESULTS
-============================================================
+Navigation Instruction: go to the black chair
+```
 
-Goal: television
-Action: go_to_object
-CLIP Prompt: red television
-
-Found in map (2 instance(s)):
-    • tv at {'x': 1.2, 'y': 2.3, 'z': 0.5}
-    • tv at {'x': 3.4, 'y': 1.2, 'z': 0.8}
-
-Cluster Information:
-    Cluster ID: 0
-    Objects in cluster: tv, sofa, coffee table
-    Reasoning: Matches living room context with tv and seating
-
-Total processing time: 2.45s
-============================================================
+**Generated `robot_command.json`:**
+```json
+{
+    "timestamp": 1767796783.111627,
+    "prompt": "go to the black chair",
+    "goal": "chair",
+    "goal_objects": [
+        {
+            "id": "chair_inst24_308_492000000",
+            "coords": {"x": -5.37, "y": 6.31, "z": 0.60}
+        },
+        {
+            "id": "chair_inst24_309_526000000",
+            "coords": {"x": -6.70, "y": 6.42, "z": 1.11}
+        }
+    ],
+    "cluster_info": {
+        "cluster_id": 0,
+        "objects": ["chair", "chair", "table", "fridge", "cup"],
+        "reasoning": "Black chair is likely in cluster 0, since there are other chairs and it looks like a dining room",
+        "coords": {"x": -7.12, "y": 6.36, "z": 0.99}
+    },
+    "clip_prompt": [
+        "a black chair",
+        "photo of a black chair",
+        "chair of color black"
+    ],
+    "action": "go_to_object",
+    "valid": true
+}
 ```
 
 **How to run it:**
@@ -94,7 +118,6 @@ python scripts/llm_interpreter.py
 # 3) Enter navigation instructions (interactive loop)
 Navigation Instruction: Go to the kitchen
 Navigation Instruction: Bring me the remote control
-Navigation Instruction: Where is the bathroom?
 
 # 4) Press Ctrl+C to exit, then stop the container
 docker stop robot_brain
@@ -146,6 +169,46 @@ python scripts/llm_interpreter.py
 # 3) Stop to free RAM
 docker stop robot_brain
 ```
+
+---
+
+### `map_preproc.py` - Semantic Map Clustering Preprocessor
+
+**Purpose:** Offline preprocessing script that spatially clusters objects in the semantic map to enable efficient room-based reasoning for the LLM interpreter.
+
+**What it does:**
+- Loads the raw semantic map from `config/map.json`
+- Applies DBSCAN clustering algorithm to group spatially nearby objects
+- Assigns outlier objects to unique individual clusters (no object left unclustered)
+- Computes cluster centroids for navigation planning
+- Outputs structured `config/clustered_map.json` with cluster assignments
+
+**Output Format:**
+Each object in the clustered map contains:
+- `id` - Unique object identifier
+- `cluster` - Cluster ID (spatial grouping)
+- `class` - Object class name (e.g., "chair", "table")
+- `coords` - Object's 3D position {x, y, z}
+- `cluster_centroid` - Centroid of the cluster {x, y, z}
+
+**Clustering Parameters:**
+- `eps` (default: 1.5m) - Maximum distance between objects in the same cluster
+- `min_samples` (default: 2) - Minimum objects to form a dense cluster
+
+**How to run:**
+```bash
+cd ~/ros2_ws/src/yolo11_seg_bringup
+python scripts/map_preproc.py
+```
+
+**When to run:**
+- After building a new semantic map with the mapper node
+- When the environment layout changes significantly
+- Before using `llm_interpreter.py` for the first time
+
+**Note:** This is a preprocessing step. The LLM interpreter reads the clustered map but does not require this script to run each time.
+
+---
 
 ## Nodes
 
