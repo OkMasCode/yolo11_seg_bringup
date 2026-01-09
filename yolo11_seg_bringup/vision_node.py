@@ -151,8 +151,6 @@ class VisionNode(Node):
         self._load_clip_prompt()
         self.command_timer = self.create_timer(self.prompt_check_interval, self._load_clip_prompt)
 
-
-
         # Services
         self.candidates_srv = self.create_service(
             CheckCandidates,

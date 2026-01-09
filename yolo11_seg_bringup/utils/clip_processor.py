@@ -137,5 +137,5 @@ class CLIPProcessor:
             logit_bias = self.model.logit_bias.item()
         
         logits = (dot_product * logit_scale) + logit_bias
-        probs = 1 / (1 + np.exp(-logits))
+        probs = float(1.0 / (1.0 + np.exp(-logits))*100.0)
         return float(probs)

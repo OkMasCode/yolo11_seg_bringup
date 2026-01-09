@@ -52,9 +52,9 @@
         }
     },
     "clip_prompt": [
-        "the black truck",
-        "black truck",
-        "a black truck"
+        "a red chair",
+        "photo of a red chair",
+        "chair with red cuschion"
     ],
     "action": "go_to_object",
     "valid": true
