@@ -441,37 +441,6 @@ ros2 run yolo11_seg_bringup clip_reader
 
 ---
 
-## Visualization
-
-### RViz Configuration
-
-To visualize the outputs in RViz:
-
-1. Add display for `/yolo/pointcloud` (PointCloud2)
-   - Set Color Transformer to "RGB8"
-   - Adjust point size for better visibility
-
-2. Add display for `/yolo/centroids` (MarkerArray)
-   - Shows object centroids as colored spheres
-
-3. (Optional) Add displays for `/yolo/annotated` and `/yolo/clip_boxes` (Image)
-   - Enable by setting `publish_annotated:=true` and `publish_clip_boxes_vis:=true`
-
-### Topic Monitoring
-
-```bash
-# Monitor detection rate
-ros2 topic hz /yolo/detections
-
-# Echo semantic map updates
-ros2 topic echo /yolo/semantic_map
-
-# Check pointcloud output
-ros2 topic echo /yolo/pointcloud --no-arr
-```
-
----
-
 ## Configuration
 
 ### Key Parameters
