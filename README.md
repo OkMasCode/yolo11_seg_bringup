@@ -212,72 +212,142 @@ python scripts/map_preproc.py
 
 ## Nodes
 
-### 1. YOLO Segmentation Node (`yolo11_seg_node_main.py`)
+### 1. Vision Node (`vision_node.py`)
 
-**Purpose:** Performs real-time object detection and instance segmentation on RGB-D camera streams using YOLOv11, computes CLIP embeddings for each detection, and generates colored 3D pointclouds.
+**Purpose:** Primary RGB-D vision node that performs real-time object detection, instance segmentation, CLIP embedding generation, and 3D pointcloud creation. Supports dynamic CLIP prompt updates and candidate object ranking via service calls.
 
 **Subscribed Topics:**
-- `/camera/camera/color/image_raw` (sensor_msgs/Image) - RGB image stream
-- `/camera/camera/aligned_depth_to_color/image_raw` (sensor_msgs/Image) - Aligned depth image
-- `/camera/camera/color/camera_info` (sensor_msgs/CameraInfo) - Camera intrinsic parameters
+- `/camera_color/image_raw` (sensor_msgs/Image) - RGB image stream
+- `/camera_color/depth/image_raw` (sensor_msgs/Image) - Aligned depth image
+- `/camera_color/camera_info` (sensor_msgs/CameraInfo) - Camera intrinsic parameters
 
 **Published Topics:**
-- `/yolo/detections` (yolo11_seg_interfaces/DetectedObject) - Per-detection messages with centroid, embeddings, and metadata
-- `/yolo/pointcloud` (sensor_msgs/PointCloud2) - Colored 3D pointcloud with class and instance IDs
-- `/yolo/centroids` (visualization_msgs/MarkerArray) - Centroid markers for visualization
-- `/yolo/annotated` (sensor_msgs/Image) - Annotated RGB image (optional)
-- `/yolo/clip_boxes` (sensor_msgs/Image) - CLIP crop visualization (optional)
+- `/vision/detections` (yolo11_seg_interfaces/DetectedObject) - Per-detection messages with 3D centroid, CLIP embeddings, and similarity scores
+- `/vision/pointcloud` (sensor_msgs/PointCloud2) - Colored 3D pointcloud with per-instance RGB colors
+- `/vision/centroid_markers` (visualization_msgs/MarkerArray) - Centroid and label markers for RViz
+- `/vision/annotated_image` (sensor_msgs/Image) - Annotated RGB image with bounding boxes and masks
+
+**Services:**
+- `/check_candidates` (yolo11_seg_interfaces/CheckCandidates) - Ranks candidate objects from map by CLIP similarity to current goal
 
 **Key Features:**
-- YOLOv11 instance segmentation with tracking
-- CLIP embedding generation for semantic similarity
-- GPU-accelerated pointcloud generation
+- YOLOv11 instance segmentation with BoT-SORT tracking
+- SigLIP (CLIP) embedding generation with masked object crops
+- GPU-accelerated pointcloud generation with instance coloring
+- Dynamic CLIP prompt loading from `robot_command.json` (periodic reload)
+- Batch CLIP inference for efficiency
+- 3D centroid computation from segmentation masks and depth
+
+**Parameters:**
+- `model_path` - YOLO model file path
+- `conf` (0.45) - Detection confidence threshold
+- `iou` (0.45) - NMS IoU threshold
+- `robot_command_file` - Path to robot command JSON for CLIP prompts
+- `map_file_path` - Path to semantic map for candidate checking
+- `square_crop_scale` (1.2) - Crop expansion factor for CLIP
+- `depth_scale` (1000.0) - Depth units to meters
+- `pc_downsample` (2) - Pointcloud downsampling factor
 
 ---
 
+### 2. Flat Vision Node (`flat_vision_node.py`)
 
-
-### 2. Semantic Mapper Node (`mapper_node2.py`)
-
-**Purpose:** Builds and maintains a semantic map by aggregating detections over time, merging nearby detections into single objects, and transforming coordinates to a fixed reference frame.
+**Purpose:** Lightweight RGB-only vision node for testing and debugging. Runs YOLO segmentation and CLIP embedding without depth processing. Logs similarity scores to terminal without ROS publishers (except annotated image).
 
 **Subscribed Topics:**
-- `/yolo/detections` (yolo11_seg_interfaces/DetectedObject) - Incoming detections from YOLO node
+- `/image_raw` (sensor_msgs/Image) - RGB image stream
 
 **Published Topics:**
-- `/yolo/semantic_map` (yolo11_seg_interfaces/SemanticObjectArray) - Complete semantic map snapshot (all stored objects)
+- `/flat/annotated_image` (sensor_msgs/Image) - Annotated RGB image with detections
+
+**Key Features:**
+- RGB-only processing (no depth required)
+- YOLO segmentation with tracking
+- CLIP embedding and similarity computation
+- Terminal logging of detection results
+- Useful for debugging CLIP prompts and vision pipeline
+
+**Parameters:**
+- `image_topic` - RGB image topic
+- `model_path` - YOLO model path
+- `robot_command_file` - CLIP prompt source
+- `frame_skip` (1) - CLIP inference frequency
+
+---
+
+### 3. Semantic Mapper Node (`mapper_node.py`)
+
+**Purpose:** Builds and maintains a persistent semantic map by aggregating detections over time, performing spatial deduplication, and transforming coordinates to a fixed reference frame using TF2.
+
+**Subscribed Topics:**
+- `/vision/detections` (yolo11_seg_interfaces/DetectedObject) - Incoming detections from vision node
+
+**Published Topics:**
+- `/vision/semantic_map` (yolo11_seg_interfaces/SemanticObjectArray) - Complete semantic map (all stored objects)
 
 **Exported Files:**
-- `detections.csv` - Periodic export of semantic map (every 5 seconds)
-- `detections_final.csv` - Final export on node shutdown
-- `config/map.json` - JSON format semantic map
+- `config/map.json` - Periodic export (every 5 seconds by default)
+- `config/map_final.json` - Final export on node shutdown
 
 **Key Features:**
-- Spatial deduplication (merges detections within 20cm threshold)
-- TF2-based coordinate transformation to fixed frame
+- Spatial deduplication (merges detections within 0.8m threshold)
+- TF2-based coordinate transformation from camera to map frame
 - Occurrence counting for detection confidence
-- CLIP similarity scoring
-- Automatic periodic export
+- CLIP embedding storage and similarity tracking
+- Automatic periodic export to JSON
+- Optional map loading on startup
+
+**Parameters:**
+- `detection_message` - Input detection topic
+- `map_frame` ("odom") - Fixed reference frame for map
+- `camera_frame` - Camera frame ID
+- `output_dir` - Directory for map exports
+- `export_interval` (5.0) - Export frequency in seconds
+- `load_map_on_start` (false) - Load existing map on startup
+- `input_map_file` ("map.json") - File to load if enabled
 
 ---
 
-### 3. Semantic Map Reader (`clip_reader.py`)
+### Map.json Structure
 
-**Purpose:** Subscribes to the semantic map topic and prints all detected objects with their names, 3D coordinates, and similarity scores for debugging and monitoring.
+The semantic map is exported as a JSON file with the following structure:
 
-**Subscribed Topics:**
-- `/yolo/semantic_map` (yolo11_seg_interfaces/SemanticObjectArray) - Semantic map updates
-
-**Output:**
-Logs each object in the format:
+```json
+{
+    "<object_id>": {
+        "name": "chair",
+        "frame": "camera_color_optical_frame",
+        "timestamp": {
+            "sec": 43,
+            "nanosec": 534000000
+        },
+        "pose_map": {
+            "x": 3.827,
+            "y": 4.962,
+            "z": 0.466
+        },
+        "occurrences": 29,
+        "similarity": 0.0000014,
+        "image_embedding": [0.026, -0.004, ...]
+    }
+}
 ```
-name=<class_name>, coords=(<x>, <y>, <z>), similarity=<score>
-```
 
-**Key Features:**
-- Real-time semantic map monitoring
-- Human-readable output format
-- Useful for debugging and verification
+**Field Descriptions:**
+- `object_id` (key) - Unique identifier: `<class>_inst<id>_<sec>_<nanosec>`
+- `name` - Object class name (e.g., "chair", "bottle", "person")
+- `frame` - Source camera frame ID
+- `timestamp` - ROS timestamp when first detected
+- `pose_map` - 3D position in map frame (meters)
+- `occurrences` - Number of times this object was detected and merged
+- `similarity` - Latest CLIP similarity score to goal prompt (0.0-1.0)
+- `image_embedding` - 768-dim SigLIP image embedding (float32 array)
+
+**Usage Notes:**
+- Objects within 0.8m are merged, positions averaged by occurrence count
+- Embeddings are updated on each merge (latest detection overwrites)
+- Similarity scores are recomputed when goal prompt changes
+- The LLM interpreter and map preprocessor read this file for navigation planning
 
 ---
 
