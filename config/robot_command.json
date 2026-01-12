@@ -1,60 +1,33 @@
 {
-    "timestamp": 1767796783.111627,
-    "prompt": "go to the black truck",
-    "goal": "truck",
+    "timestamp": 1768209919.5245073,
+    "prompt": "Go to the fridge",
+    "goal": "refrigerator",
     "goal_objects": [
         {
-            "id": "truck_inst24_308_492000000",
+            "id": "refrigerator_inst0_218_233000000",
             "coords": {
-                "x": -5.3699419289742,
-                "y": 6.313528931285155,
-                "z": 0.6033205729126941
-            }
-        },
-        {
-            "id": "truck_inst24_309_526000000",
-            "coords": {
-                "x": -6.701090198562144,
-                "y": 6.41509676584138,
-                "z": 1.109857042604023
-            }
-        },
-        {
-            "id": "truck_inst24_314_347000000",
-            "coords": {
-                "x": -7.7881658642545055,
-                "y": 6.3789452563494065,
-                "z": 1.165642695267996
-            }
-        },
-        {
-            "id": "truck_inst24_316_251000000",
-            "coords": {
-                "x": -8.615963584207483,
-                "y": 6.3484147372578335,
-                "z": 1.0752959317366286
+                "x": -4.956019839779635,
+                "y": -5.3254000897237495,
+                "z": 0.9566133286952975
             }
         }
     ],
     "cluster_info": {
-        "cluster_id": 0,
+        "cluster_id": 1,
         "objects": [
-            "truck",
-            "truck",
-            "truck",
-            "truck"
+            "refrigerator"
         ],
-        "reasoning": "Black truck is in Cluster 0 with multiple trucks, which is likely a common area such as a garage or parking lot.",
+        "reasoning": "Fridge is in Cluster 1, which contains typical kitchen objects like refrigerator and oven.",
         "coords": {
-            "x": -7.118790393999584,
-            "y": 6.363996422683444,
-            "z": 0.9885290606303354
+            "x": -4.956019839779635,
+            "y": -5.3254000897237495,
+            "z": 0.9566133286952975
         }
     },
     "clip_prompt": [
-        "a red chair",
-        "photo of a red chair",
-        "chair with red cuschion"
+        "go to the refrigerator",
+        "navigate to the refrigerator unit",
+        "enter the refrigerator compartment"
     ],
     "action": "go_to_object",
     "valid": true

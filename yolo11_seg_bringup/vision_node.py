@@ -530,7 +530,7 @@ class VisionNode(Node):
                 msg.similarity = 0.0
 
             self.get_logger().info(
-                f"ID {det['instance_id']} ({det['object_name']}): Goal={prob_goal:.1%} | Distractor={prob_distractor:.1%}"
+                f"ID {det['instance_id']} ({det['object_name']}): Goal={prob_goal}"
             )
 
             # Add text embedding for mapper convenience
