@@ -69,6 +69,7 @@ class VisionNode(Node):
 
         self.CLIP_model_name = self.get_parameter('CLIP_model_name').value
         self.robot_command_file = self.get_parameter('robot_command_file').value
+        self.map_file_path = self.get_parameter('map_file_path').value
         self.square_crop_scale = float(self.get_parameter('square_crop_scale').value)
 
         # =========== Initialization =========== #
@@ -200,7 +201,7 @@ class VisionNode(Node):
         response.position.y = 0.0
 
         try:
-            candidates = list(request.candidate_ids or [])
+            candidates = list(request.candidates_ids or [])
 
             if not os.path.exists(self.map_file_path):
                 self.get_logger().warn(f"Map file not found: {self.map_file_path}")

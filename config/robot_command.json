@@ -1,6 +1,6 @@
 {
-    "timestamp": 1768209919.5245073,
-    "prompt": "Go to the fridge",
+    "timestamp": 1768233625.3366048,
+    "prompt": "go to the fridge",
     "goal": "refrigerator",
     "goal_objects": [
         {
@@ -17,7 +17,7 @@
         "objects": [
             "refrigerator"
         ],
-        "reasoning": "Fridge is in Cluster 1, which contains typical kitchen objects like refrigerator and oven.",
+        "reasoning": "Fridge is directly mentioned in the user prompt, strongly preferring this cluster.",
         "coords": {
             "x": -4.956019839779635,
             "y": -5.3254000897237495,
@@ -25,9 +25,9 @@
         }
     },
     "clip_prompt": [
-        "go to the refrigerator",
-        "navigate to the refrigerator unit",
-        "enter the refrigerator compartment"
+        "Navigate to the refrigerator",
+        "Go to the appliance that keeps food cold",
+        "Visit the kitchen's temperature-controlled storage"
     ],
     "action": "go_to_object",
     "valid": true
