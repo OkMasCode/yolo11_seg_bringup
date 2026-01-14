@@ -1,10 +1,11 @@
 {
-    "timestamp": 1768233625.3366048,
-    "prompt": "go to the fridge",
+    "timestamp": 1768324591.7035966,
+    "prompt": "go to the refrigerator",
     "goal": "refrigerator",
     "goal_objects": [
         {
             "id": "refrigerator_inst0_218_233000000",
+            "similarity_score": 5.620932102203369,
             "coords": {
                 "x": -4.956019839779635,
                 "y": -5.3254000897237495,
@@ -17,17 +18,17 @@
         "objects": [
             "refrigerator"
         ],
-        "reasoning": "Fridge is directly mentioned in the user prompt, strongly preferring this cluster.",
+        "reasoning": "Refrigerator is directly mentioned in the user's prompt, making it a strong candidate for the goal location. Therefore, I select Cluster 1, which represents the refrigerator.",
         "coords": {
             "x": -4.956019839779635,
             "y": -5.3254000897237495,
             "z": 0.9566133286952975
         }
     },
-    "clip_prompt": [
-        "Navigate to the refrigerator",
-        "Go to the appliance that keeps food cold",
-        "Visit the kitchen's temperature-controlled storage"
+    "clip_prompts": [
+        "go to the refrigerator",
+        "go to a refrigerator",
+        "get into the refrigerator"
     ],
     "action": "go_to_object",
     "valid": true

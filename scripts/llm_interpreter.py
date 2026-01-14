@@ -11,9 +11,9 @@ CHAT_MODEL = "llama3.2:3b"
 
 OLLAMA_HOST = "http://localhost:11435"
 
-MAP_FILE = "/home/sensor/ros2_ws/src/yolo11_seg_bringup/config/map.json"
-CLUSTERED_MAP_FILE = "/home/sensor/ros2_ws/src/yolo11_seg_bringup/config/clustered_map.json"
-ROBOT_COMMAND_FILE = "/home/sensor/ros2_ws/src/yolo11_seg_bringup/config/robot_command.json"
+MAP_FILE = "/home/orin_nano/francesco-masin/ros2_ws/src/yolo11_seg_bringup/config/map.json"
+CLUSTERED_MAP_FILE = "/home/orin_nano/francesco-masin/ros2_ws/src/yolo11_seg_bringup/config/clustered_map.json"
+ROBOT_COMMAND_FILE = "/home/orin_nano/francesco-masin/ros2_ws/src/yolo11_seg_bringup/config/robot_command.json"
 
 DICTIONARY = [
     "sink", "refrigerator", "oven", "microwave", "toaster", "dishwasher",

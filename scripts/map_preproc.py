@@ -2,8 +2,8 @@ import json
 import numpy as np
 from sklearn.cluster import DBSCAN
 
-MAP_FILE = "/home/sensor/ros2_ws/src/yolo11_seg_bringup/config/map.json"
-OUTPUT_FILE = "/home/sensor/ros2_ws/src/yolo11_seg_bringup/config/clustered_map.json"
+MAP_FILE = "/home/orin_nano/francesco-masin/ros2_ws/src/yolo11_seg_bringup/config/map.json"
+OUTPUT_FILE = "/home/orin_nano/francesco-masin/ros2_ws/src/yolo11_seg_bringup/config/clustered_map.json"
 
 def load_house_map(file_path):
     print(f"[DEBUG] Loading map from: {file_path}")

@@ -49,7 +49,7 @@ class VisionNode(Node):
         self.enable_vis = bool(self.get_parameter('enable_visualization').value)
 
         # yolo parameters
-        self.declare_parameter('model_path', '/home/sensor/yolov8n-seg.engine')
+        self.declare_parameter('model_path', '/home/orin_nano/francesco-masin/yolo11s-seg.engine')
         self.declare_parameter('imgsz', 640)
         self.declare_parameter('conf', 0.45)
         self.declare_parameter('iou', 0.45)
@@ -63,8 +63,8 @@ class VisionNode(Node):
 
         # CLIP parameters
         self.declare_parameter('CLIP_model_name', 'ViT-B-16-SigLIP')
-        self.declare_parameter('robot_command_file', '/home/sensor/ros2_ws/src/yolo11_seg_bringup/config/robot_command.json')
-        self.declare_parameter('map_file_path', '/home/sensor/ros2_ws/src/yolo11_seg_bringup/config/map.json')
+        self.declare_parameter('robot_command_file', '/home/orin_nano/francesco-masin/ros2_ws/src/yolo11_seg_bringup/config/robot_command.json')
+        self.declare_parameter('map_file_path', '/home/orin_nano/francesco-masin/ros2_ws/src/yolo11_seg_bringup/config/map.json')
         self.declare_parameter('square_crop_scale', 1.2)
 
         self.CLIP_model_name = self.get_parameter('CLIP_model_name').value
@@ -95,7 +95,7 @@ class VisionNode(Node):
         self.get_logger().info(f"Loading CLIP model on device: {self.device}\n")
         self.clip = CLIPProcessor(
             device=self.device, 
-            model_name="ViT-B-16-SigLIP", 
+            model_name=self.CLIP_model_name, 
             pretrained="webli"
         )
 
