@@ -13,38 +13,38 @@ import numpy as np
 from cv_bridge import CvBridge
 import threading
 import json
+import sensor_msgs_py.point_cloud2 as pc2
 
 from ultralytics import YOLO
 
 from yolo11_seg_interfaces.msg import DetectedObject
 from yolo11_seg_interfaces.srv import CheckCandidates
-from .utils.pointcloud_processor import PointCloudProcessor
 from .utils.clip_processor import CLIPProcessor
 
 
 # -------------------- CLASS ------------------- #
 
-class VisionNode(Node):
+class NoPCVisionNode(Node):
     """
-    ROS2 Node that handles Vision computation
+    ROS2 Node that handles Vision computation using camera's pointcloud
     """
 
     # ------------- Initialization ------------- #
 
     def __init__(self):
-        super().__init__('vision_node')
-        self.get_logger().info("VisionNode initialized\n")
+        super().__init__('no_pc_vision_node')
+        self.get_logger().info("NoPCVisionNode initialized\n")
 
         # ============= Parameters ============= #
 
         # Comunication parameters
         self.declare_parameter('image_topic', '/camera_color/image_raw')
-        self.declare_parameter('depth_topic', '/camera_color/depth/image_raw')
+        self.declare_parameter('pointcloud_topic', '/camera_color/points')
         self.declare_parameter('camera_info_topic', '/camera_color/camera_info')
         self.declare_parameter('enable_visualization', True)
 
         self.image_topic = self.get_parameter('image_topic').value
-        self.depth_topic = self.get_parameter('depth_topic').value
+        self.pointcloud_topic = self.get_parameter('pointcloud_topic').value
         self.camera_info_topic = self.get_parameter('camera_info_topic').value
         self.enable_vis = bool(self.get_parameter('enable_visualization').value)
 
@@ -74,14 +74,9 @@ class VisionNode(Node):
 
         # =========== Initialization =========== #
 
-        self.pc_topic = '/vision/pointcloud'
         self.anno_topic = '/vision/annotated_image'
         self.markers_topic = '/vision/centroid_markers'
         self.detection_topic = '/vision/detections'
-
-        self.depth_scale = 1000.0
-        self.pc_downsample = 2
-        self.pc_max_range = 8.0
 
         self.frame_skip = 1
         self.prompt_check_interval = 10
@@ -100,7 +95,8 @@ class VisionNode(Node):
         )
 
         self.bridge = CvBridge()
-        self.pc_processor = None
+        self.fx = self.fy = self.cx = self.cy = None
+        self.current_pointcloud = None
 
         qos_sensor = QoSProfile(
             depth=1,
@@ -112,17 +108,18 @@ class VisionNode(Node):
         # Subscribers
         self.camera_info_sub = self.create_subscription(CameraInfo, self.camera_info_topic, self.camera_info_cb, qos_profile=qos_sensor)
         self.rgb_sub = message_filters.Subscriber(self, Image, self.image_topic, qos_profile=qos_sensor)
-        self.depth_sub = message_filters.Subscriber(self, Image, self.depth_topic, qos_profile=qos_sensor)
+        self.pc_sub = message_filters.Subscriber(self, PointCloud2, self.pointcloud_topic, qos_profile=qos_sensor)
 
         self.ts = message_filters.ApproximateTimeSynchronizer(
-            [self.rgb_sub, self.depth_sub], 
-            queue_size=10, 
-            slop=0.05
+            [self.rgb_sub, self.pc_sub], 
+            queue_size=50, 
+            slop=0.5
         )
         self.ts.registerCallback(self.sync_callback)
+        
+        self.get_logger().info(f"Subscribed to: {self.image_topic} and {self.pointcloud_topic}")
 
         # Publishers    
-        self.pc_pub = self.create_publisher(PointCloud2, self.pc_topic, 10)
         self.marker_pub = self.create_publisher(MarkerArray, self.markers_topic, 10)
         self.detections_pub = self.create_publisher(DetectedObject, self.detection_topic, 10)
         if self.enable_vis:
@@ -133,8 +130,6 @@ class VisionNode(Node):
         self.class_colors = {}
         self.current_clip_prompt = None
         self.goal_text_embedding = None
-        self.fx = self.fy = self.cx = self.cy = None
-        self.warned_missing_intrinsics = False
         self.sync_lock = threading.Lock()
 
         self.CLASS_NAMES = [
@@ -159,7 +154,7 @@ class VisionNode(Node):
             self.check_candidates_callback
         )
 
-        self.get_logger().info("RGB Vision Node Ready.")
+        self.get_logger().info("No PC Vision Node Ready.")
 
     # ---------------- Callbacks --------------- #
 
@@ -174,20 +169,14 @@ class VisionNode(Node):
             self.cy = msg.k[5]
             self.get_logger().info(f"Camera intrinsics received: fx={self.fx}, fy={self.fy}, cx={self.cx}, cy={self.cy}")
 
-            self.pc_processor = PointCloudProcessor(
-                self.fx, self.fy, self.cx, self.cy,
-                device = self.device,
-                depth_scale = self.depth_scale,
-                pc_downsample = self.pc_downsample,
-                pc_max_range = self.pc_max_range,
-                )
-
-    def sync_callback(self, rgb_msg: Image, depth_msg: Image):
+    def sync_callback(self, rgb_msg: Image, pc_msg: PointCloud2):
         """
-        Synchronized RGB-D callback.
+        Synchronized RGB-PointCloud callback.
         """
+        self.get_logger().info("Synchronized callback triggered", throttle_duration_sec=5.0)
         with self.sync_lock:
-            self.process_frame(rgb_msg, depth_msg)
+            self.current_pointcloud = pc_msg
+            self.process_frame(rgb_msg, pc_msg)
 
     def check_candidates_callback(self, request, response):
         """
@@ -280,63 +269,78 @@ class VisionNode(Node):
         
     # --------------- Main Methods ------------- #
 
-    def process_frame(self, rgb_msg: Image, depth_msg: Image):
+    def process_frame(self, rgb_msg: Image, pc_msg: PointCloud2):
         """
-        Process a single RGB-D frame.
+        Process a single RGB frame with pointcloud.
         """
-        if self.pc_processor is None:
-            if not self.warned_missing_intrinsics:
-                self.get_logger().warn("Waiting for Camera Info (intrinsics)... ignoring frames.")
-                self.warned_missing_intrinsics = True
-            return
-        self.frame_count += 1
-
-        cv_bgr = self.bridge.imgmsg_to_cv2(rgb_msg, desired_encoding='bgr8')
-        cv_depth = self.bridge.imgmsg_to_cv2(depth_msg, desired_encoding='passthrough')
-        height, width = cv_depth.shape
-
-        results = self.model.track(
-            source=cv_bgr,
-            imgsz=self.imgsz,
-            conf=self.conf,
-            iou=self.iou,
-            retina_masks=self.retina_masks,
-            stream=False,
-            verbose=False,
-            persist=True,
-            tracker="botsort.yaml",
-        )
-        res = results[0]
-        if not hasattr(res, 'masks') or len(res.boxes) == 0:
+        if self.fx is None:
+            self.get_logger().warn("Waiting for camera intrinsics...", throttle_duration_sec=5.0)
             return
         
-        self._process_detections(res, cv_bgr, cv_depth, depth_msg, rgb_msg, height, width)
+        self.frame_count += 1
 
-        if self.enable_vis:
-            # result.plot() draws boxes, masks, and IDs on the image
-            annotated_frame = res.plot()
-            vis_msg = self.bridge.cv2_to_imgmsg(annotated_frame, encoding="bgr8")
-            vis_msg.header = rgb_msg.header
-            self.vis_pub.publish(vis_msg)
+        try:
+            cv_bgr = self.bridge.imgmsg_to_cv2(rgb_msg, desired_encoding='bgr8')
+            height, width = cv_bgr.shape[:2]
 
-    def _process_detections(self, res, cv_bgr, cv_depth, depth_msg, rgb_msg, height, width):
+            results = self.model.track(
+                source=cv_bgr,
+                imgsz=self.imgsz,
+                conf=self.conf,
+                iou=self.iou,
+                retina_masks=self.retina_masks,
+                stream=False,
+                verbose=False,
+                persist=True,
+                tracker="botsort.yaml",
+            )
+            res = results[0]
+            if not hasattr(res, 'masks') or len(res.boxes) == 0:
+                self.get_logger().info("No detections in this frame", throttle_duration_sec=2.0)
+                return
+            
+            self._process_detections(res, cv_bgr, pc_msg, rgb_msg, height, width)
+
+            if self.enable_vis:
+                # result.plot() draws boxes, masks, and IDs on the image
+                annotated_frame = res.plot()
+                vis_msg = self.bridge.cv2_to_imgmsg(annotated_frame, encoding="bgr8")
+                vis_msg.header = rgb_msg.header
+                self.vis_pub.publish(vis_msg)
+                self.get_logger().info(f"Published annotated image (frame {self.frame_count})", throttle_duration_sec=2.0)
+        
+        except Exception as e:
+            self.get_logger().error(f"Error processing frame: {e}")
+
+    def _process_detections(self, res, cv_bgr, pc_msg, rgb_msg, height, width):
         """ 
-        Unified pipeline: 
-        1. Calculate Geometry (Centroids/PCs) for all objects.
-        2. Publish PointCloud immediately.
-        3. Batch Process CLIP for all objects.
-        4. Publish Custom Messages with coupled Geometry + Embeddings.
+        Unified pipeline using camera's pointcloud
         """
         xyxy = res.boxes.xyxy.cpu().numpy()
         clss = res.boxes.cls.cpu().numpy().astype(int)
         ids = res.boxes.id.cpu().numpy().astype(int) if res.boxes.id is not None else np.arange(len(clss))
         masks_t = res.masks.data if hasattr(res, 'masks') and res.masks is not None else None
 
-        is_uint16 = (depth_msg.encoding == '16UC1')
-        scale_factor = (1.0 / self.depth_scale) if is_uint16 else 1.0
-        depth_t, valid_mask_t = self.pc_processor.prepare_depth_tensor(cv_depth, depth_msg.encoding, scale_factor)
+        # Convert pointcloud to numpy array
+        try:
+            pc_data = list(pc2.read_points(pc_msg, field_names=("x", "y", "z"), skip_nans=False))
+            # Handle structured array properly - extract x, y, z fields
+            pc_array_structured = np.array(pc_data)
+            if pc_array_structured.dtype.names:
+                # Structured array with named fields
+                pc_array = np.zeros((len(pc_array_structured), 3), dtype=np.float32)
+                pc_array[:, 0] = pc_array_structured['x']
+                pc_array[:, 1] = pc_array_structured['y']
+                pc_array[:, 2] = pc_array_structured['z']
+            else:
+                # Already a regular array
+                pc_array = pc_array_structured.astype(np.float32)
+            
+            pc_array = pc_array.reshape(height, width, 3)
+        except Exception as e:
+            self.get_logger().error(f"Failed to convert pointcloud: {e}")
+            return
 
-        all_points_list = []
         frame_detections = []
         batch_queue = []
 
@@ -345,27 +349,18 @@ class VisionNode(Node):
         for i in range(len(xyxy)):
             result = self.process_single_detection(
                 i, xyxy[i], clss[i], ids[i], masks_t,
-                cv_bgr, depth_t, valid_mask_t, scale_factor,
+                cv_bgr, pc_array,
                 height, width, rgb_msg, do_clip_frame
             )
 
             if result is None:
                 continue
 
-            instance_cloud, det_entry = result
-            all_points_list.append(instance_cloud)
+            det_entry = result
             frame_detections.append(det_entry)
             if det_entry.get("crop") is not None:
                 batch_queue.append(det_entry)
             
-        if all_points_list:
-            final_points_t = torch.cat(all_points_list, dim=0)
-            final_points = final_points_t.cpu().numpy().astype(np.float32)
-            PointCloudProcessor.publish_pointcloud(final_points, depth_msg.header, self.pc_pub)
-            self.get_logger().info(
-                f"Published pointcloud with {final_points.shape[0]} points from {len(all_points_list)} instances."
-            )
-
         if batch_queue:
             try:
                 # Extract just the images for the batch
@@ -382,22 +377,22 @@ class VisionNode(Node):
             except Exception as e:
                 self.get_logger().error(f"Batch CLIP inference failed: {e}")
 
-        self.publish_custom_detections(frame_detections, depth_msg.header, rgb_msg.header.stamp)
-        self.publish_centroid_markers(frame_detections, depth_msg.header)
+        self.publish_custom_detections(frame_detections, pc_msg.header, rgb_msg.header.stamp)
+        self.publish_centroid_markers(frame_detections, pc_msg.header)
 
     def process_single_detection(self, idx, bbox, class_id, instance_id, masks_t,
-                                 cv_bgr, depth_t, valid_mask_t, scale_factor,
+                                 cv_bgr, pc_array,
                                  height, width, rgb_msg, do_clip_frame):
         """ 
-        Process geometry and prepare data container. 
-        Returns (pointcloud_tensor, detection_dictionary)
+        Process geometry using camera's pointcloud and prepare data container. 
+        Returns detection_dictionary
         """
         x1, y1, x2, y2 = bbox
 
-        x1 = max(0, min(x1, width - 1))
-        y1 = max(0, min(y1, height - 1))
-        x2 = max(0, min(x2, width - 1))
-        y2 = max(0, min(y2, height - 1))
+        x1 = max(0, min(int(x1), width - 1))
+        y1 = max(0, min(int(y1), height - 1))
+        x2 = max(0, min(int(x2), width - 1))
+        y2 = max(0, min(int(y2), height - 1))
 
         if x2 <= x1 or y2 <= y1:
             return None
@@ -405,17 +400,27 @@ class VisionNode(Node):
         if masks_t is None or idx >= masks_t.shape[0]:
             return None
 
-        rgb_color = self.get_color_for_class(str(class_id), self.class_colors)
-        instance_cloud_t, centroid = self.pc_processor.process_detection(
-            masks_t[idx], depth_t, valid_mask_t,
-            int(class_id), int(instance_id),
-            rgb_color, scale_factor
-        )
+        # Get mask for this instance
+        m = masks_t[idx].detach().cpu().numpy()
+        if m.shape[0] != height or m.shape[1] != width:
+            m = cv2.resize(m, (width, height), interpolation=cv2.INTER_NEAREST)
+        binary_mask = (m > 0.5)
 
-        if instance_cloud_t is None:
+        # Extract points from the pointcloud using the mask
+        masked_points = pc_array[binary_mask]
+        
+        # Filter out invalid points (NaN or zero)
+        valid_mask = ~np.isnan(masked_points).any(axis=1)
+        valid_points = masked_points[valid_mask]
+        
+        if len(valid_points) == 0:
             return None
         
-        # --- Create Shared Object (The "Box") ---
+        # Compute centroid
+        centroid = np.mean(valid_points, axis=0)
+        centroid = (float(centroid[0]), float(centroid[1]), float(centroid[2]))
+
+        # --- Create Shared Object ---
         class_name = self.class_id_to_name(int(class_id))
 
         detection_entry = {
@@ -433,14 +438,10 @@ class VisionNode(Node):
                 x1, y1, x2, y2, width, height, self.square_crop_scale
             )
             if sx2 > sx1 and sy2 > sy1:
-                # Build binary mask for this instance
-                m = masks_t[idx].detach().cpu().numpy()
-                if m.shape[0] != height or m.shape[1] != width:
-                    m = cv2.resize(m, (width, height), interpolation=cv2.INTER_NEAREST)
-                binary_mask = (m > 0.5).astype(np.uint8) * 255
+                binary_mask_uint8 = (binary_mask * 255).astype(np.uint8)
 
                 img_crop = cv_bgr[sy1:sy2, sx1:sx2]
-                mask_crop = binary_mask[sy1:sy2, sx1:sx2]
+                mask_crop = binary_mask_uint8[sy1:sy2, sx1:sx2]
 
                 if img_crop.size > 0 and mask_crop.size > 0:
                     # Gray masking
@@ -451,7 +452,7 @@ class VisionNode(Node):
                     final_crop = cv2.add(fg, bg)
                     detection_entry["crop"] = final_crop
 
-        return instance_cloud_t, detection_entry
+        return detection_entry
     
     # ----------- Secondary Methods ------------ #
 
@@ -473,7 +474,7 @@ class VisionNode(Node):
 
     def _load_clip_prompt(self):
         """
-        Load clip_prompt and distractor from robot_command.json and update text embedding if changed.
+        Load clip_prompt from robot_command.json and update text embedding if changed.
         """
         try:
             if not os.path.exists(self.robot_command_file):
@@ -523,7 +524,6 @@ class VisionNode(Node):
 
             # Only compute similarity if embedding is available
             prob_goal = 0.0
-            prob_distractor = 0.0
             if current_emb is not None and self.goal_text_embedding is not None:
                 prob_goal = self.clip.compute_sigmoid_probs(current_emb, self.goal_text_embedding)
                 msg.similarity = float(prob_goal) if prob_goal is not None else 0.0
@@ -582,13 +582,15 @@ class VisionNode(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-    node = VisionNode()
+    node = NoPCVisionNode()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
-    node.destroy_node()
-    rclpy.shutdown()
+    finally:
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 if __name__ == "__main__":
     main()
