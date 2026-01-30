@@ -15,7 +15,7 @@ from typing import Tuple
 
 _EPS = np.finfo(float).eps * 4.0 # Small epsilon value to avoid division by zero in quaternion normalization
 
-ObjectEntry = namedtuple('ObjectEntry', ['frame', 'timestamp', 'pose_cam', 'pose_map', 'occurrences', 'name', 'similarity', 'image_embedding'])
+ObjectEntry = namedtuple('ObjectEntry', ['frame', 'timestamp', 'pose_cam', 'pose_map', 'occurrences', 'name', 'similarity', 'image_embedding', 'box_size'])
 
 # ----------------- FUNCTIONS ------------------ #
 
@@ -68,7 +68,7 @@ class SemanticObjectMap:
         self.tf_buffer = tf_buffer
         self.node = node
     
-    def add_detection(self, object_name: str, object_id: str, pose_in_camera, detection_stamp, camera_frame='camera3_color_optical_frame', fixed_frame='camera3_color_optical_frame', distance_threshold=0.8, embeddings=None, goal_embedding=None, similarity=0.0):
+    def add_detection(self, object_name: str, object_id: str, pose_in_camera, detection_stamp, camera_frame='camera3_color_optical_frame', fixed_frame='camera3_color_optical_frame', distance_threshold=0.8, embeddings=None, goal_embedding=None, similarity=0.0, box_min=None, box_max=None):
         """
         Add a new detection to the semantic map.
         Transforms the pose to the fixed frame and merges with existing objects if close enough.
@@ -90,10 +90,22 @@ class SemanticObjectMap:
             # Prepare embeddings
             img_vec = np.array(embeddings, dtype=np.float32)
 
+            new_size = (
+                    abs(box_max[0] - box_min[0]),
+                    abs(box_max[1] - box_min[1]),
+                    abs(box_max[2] - box_min[2])
+                )
             # Iterate over stored objects and check if this detection is close to any.
             for existing_id, entry in self.objects.items():
                 dist = self.euclidean_distance(pose_in_map, entry.pose_map)
-                if dist < distance_threshold:
+
+                overlap = False
+                if entry.box_size is not None:
+                    overlap = self.check_aabb_intersection(
+                        center_a=pose_in_map,   size_a=new_size,
+                        center_b=entry.pose_map, size_b=entry.box_size
+                    )
+                if dist < distance_threshold or overlap:
                     avg_pose = tuple(
                         (entry.pose_map[i] * entry.occurrences + pose_in_map[i]) / (entry.occurrences + 1)
                         for i in range(3)
@@ -110,7 +122,8 @@ class SemanticObjectMap:
                 occurrences = 1,
                 name = object_name,
                 similarity = similarity,
-                image_embedding = img_vec
+                image_embedding = img_vec,
+                box_size= new_size
             )
             return True
 
@@ -270,3 +283,28 @@ class SemanticObjectMap:
         with open(path, 'w') as json_file:
             json.dump(export_data, json_file, indent=4)
         return
+    
+    def check_aabb_intersection(self, center_a, size_a, center_b, size_b):
+        """
+        Manual AABB Intersection check.
+        center: (x, y, z)
+        size: (width, height, depth) aka (dx, dy, dz)
+        """
+        # Calculate half-sizes
+        ha = np.array(size_a) / 2.0
+        hb = np.array(size_b) / 2.0
+        
+        # Calculate min/max for A
+        min_a = np.array(center_a) - ha
+        max_a = np.array(center_a) + ha
+        
+        # Calculate min/max for B
+        min_b = np.array(center_b) - hb
+        max_b = np.array(center_b) + hb
+        
+        # Check overlap in all 3 axes
+        overlap_x = (min_a[0] <= max_b[0]) and (max_a[0] >= min_b[0])
+        overlap_y = (min_a[1] <= max_b[1]) and (max_a[1] >= min_b[1])
+        overlap_z = (min_a[2] <= max_b[2]) and (max_a[2] >= min_b[2])
+        
+        return overlap_x and overlap_y and overlap_z
