@@ -4,25 +4,50 @@
     "goal": "refrigerator",
     "goal_objects": [
         {
-            "id": "refrigerator_inst0_218_233000000",
-            "similarity_score": 5.620932102203369,
+            "id": "refrigerator_inst0_634_567000000",
+            "similarity_score": 8.0,
             "coords": {
-                "x": -4.956019839779635,
-                "y": -5.3254000897237495,
-                "z": 0.9566133286952975
+                "x": 8.702731,
+                "y": -1.032031,
+                "z": 0.0
             }
         }
     ],
     "cluster_info": {
-        "cluster_id": 1,
+        "cluster_id": 2,
         "objects": [
-            "refrigerator"
+            "kitchentable",
+            "refrigerator",
+            "cookingbench",
+            "kitchencabinet",
+            "sink",
+            "fitnessEquipment",
+            "chair",
+            "chair",
+            "chair",
+            "chair"
         ],
-        "reasoning": "Refrigerator is directly mentioned in the user's prompt, making it a strong candidate for the goal location. Therefore, I select Cluster 1, which represents the refrigerator.",
+        "reasoning": "Refrigerator is directly mentioned in the user's prompt, making it a strong candidate for the goal location. Therefore, I select Cluster 2, which represents the kitchen area containing the refrigerator.",
         "coords": {
-            "x": -4.956019839779635,
-            "y": -5.3254000897237495,
-            "z": 0.9566133286952975
+            "x": 7.0720303000000015,
+            "y": -0.3819417
+        },
+        "dimensions": {
+            "bounding_box": {
+                "min": {
+                    "x": 3.48472,
+                    "y": -3.836509
+                },
+                "max": {
+                    "x": 9.038383,
+                    "y": 3.169104
+                },
+                "dimensions": {
+                    "width": 5.553663,
+                    "length": 7.005613
+                }
+            },
+            "radius": 5.047645069928609
         }
     },
     "clip_prompts": [

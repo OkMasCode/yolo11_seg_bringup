@@ -329,6 +329,7 @@ class VisionNode(Node):
         """
         xyxy = res.boxes.xyxy.cpu().numpy()
         clss = res.boxes.cls.cpu().numpy().astype(int)
+        confs = res.boxes.conf.cpu().numpy() if res.boxes.conf is not None else np.zeros(len(clss), dtype=float)
         ids = res.boxes.id.cpu().numpy().astype(int) if res.boxes.id is not None else np.arange(len(clss))
         masks_t = res.masks.data if hasattr(res, 'masks') and res.masks is not None else None
 
@@ -344,7 +345,7 @@ class VisionNode(Node):
 
         for i in range(len(xyxy)):
             result = self.process_single_detection(
-                i, xyxy[i], clss[i], ids[i], masks_t,
+                i, xyxy[i], clss[i], ids[i], confs[i], masks_t,
                 cv_bgr, depth_t, valid_mask_t, scale_factor,
                 height, width, rgb_msg, do_clip_frame
             )
@@ -385,7 +386,7 @@ class VisionNode(Node):
         self.publish_custom_detections(frame_detections, depth_msg.header, rgb_msg.header.stamp)
         self.publish_centroid_markers(frame_detections, depth_msg.header)
 
-    def process_single_detection(self, idx, bbox, class_id, instance_id, masks_t,
+    def process_single_detection(self, idx, bbox, class_id, instance_id, confidence, masks_t,
                                  cv_bgr, depth_t, valid_mask_t, scale_factor,
                                  height, width, rgb_msg, do_clip_frame):
         """ 
@@ -424,7 +425,8 @@ class VisionNode(Node):
             "object_name": class_name,
             "centroid": centroid, # (x, y, z) tuple
             "embedding": None,    # Placeholder
-            "crop": None          # Placeholder
+            "crop": None,          # Placeholder
+            "confidence": float(confidence)
         }
 
         # --- Prepare CLIP Crop (If enabled) ---

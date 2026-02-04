@@ -140,6 +140,20 @@ def compute_cluster_coords(cluster_id: int) -> Dict | None:
     
     return None
 
+def get_cluster_dimensions(cluster_id: int) -> Dict | None:
+    """
+    Extract cluster dimensions (bounding_box and radius) for a given cluster_id
+    from the cluster_dimensions field in clustered_map. Returns None if not found.
+    """
+    for entry in clustered_map:
+        if entry.get("cluster") != cluster_id:
+            continue
+        dimensions = entry.get("cluster_dimensions")
+        if isinstance(dimensions, dict):
+            return dimensions
+    
+    return None
+
 def get_map_objects():
     """Returns all unique object classes from the map."""
     return sorted(list(set(obj.get("name", "") for obj in house_map if obj.get("name"))))
@@ -554,11 +568,13 @@ def process_nav_instruction(prompt : str) -> NavResult:
     # 3. Determine most likely cluster using LLM
     cluster_prediction = determine_most_likely_cluster(prompt, goal.goal)
     cluster_coords = compute_cluster_coords(cluster_prediction.cluster_id)
+    cluster_dimensions = get_cluster_dimensions(cluster_prediction.cluster_id)
     cluster_info = {
         "cluster_id": cluster_prediction.cluster_id,
         "objects": cluster_summaries[cluster_prediction.cluster_id],
         "reasoning": cluster_prediction.reasoning,
-        "coords": cluster_coords
+        "coords": cluster_coords,
+        "dimensions": cluster_dimensions
     }
     
     # 4. Determine action plan
@@ -606,39 +622,6 @@ def _objects_with_similarity(objects: List[Dict]) -> List[Dict]:
     
     return out
 
-def _build_alternatives(cluster_id: int, goal_class: str) -> List[Dict]:
-    """Pick up to 3 alternative objects from the selected cluster."""
-    candidates: List[Dict] = []
-    # Prefer clustered_map entries to keep cluster context
-    for entry in clustered_map:
-        if entry.get("cluster") != cluster_id:
-            continue
-        cls = entry.get("class", "")
-        if not cls or cls == goal_class:
-            continue
-        alt = {"class": cls}
-        coords = entry.get("coords") or entry.get("pose_map")
-        if not coords:
-            continue
-        
-        if isinstance(coords, dict):
-            alt["coords"] = coords
-        
-        candidates.append(alt)
-
-    # Deduplicate by class and cap to 3
-    seen = set()
-    unique: List[Dict] = []
-    for alt in candidates:
-        cls = alt.get("class", "")
-        if cls and cls not in seen:
-            seen.add(cls)
-            unique.append(alt)
-        if len(unique) >= 3:
-            break
-    
-    return unique
-
 def save_robot_command(output_path: str, prompt: str, result: NavResult) -> None:
     """Serialize navigation result into robot_command.json schema and save."""
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -651,6 +634,7 @@ def save_robot_command(output_path: str, prompt: str, result: NavResult) -> None
             "objects": result.cluster_info.get("objects", []),
             "reasoning": result.cluster_info.get("reasoning", ""),
             "coords": result.cluster_info.get("coords"),
+            "dimensions": result.cluster_info.get("dimensions")
         }
 
     payload = {
@@ -709,7 +693,6 @@ def main():
         
         # Persist the result to the configured output JSON
         save_robot_command(ROBOT_COMMAND_FILE, user_prompt, result)
-
 
 if __name__ == "__main__":
     main()

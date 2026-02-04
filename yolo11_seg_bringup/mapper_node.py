@@ -100,6 +100,7 @@ class PointCloudMapperNode(Node):
                     embeddings = embedding,
                     goal_embedding = text_embedding,
                     similarity = similarity,
+                    confidence = msg.confidence,
                     box_min = (msg.box_min.x, msg.box_min.y, msg.box_min.z), # <--- Pass this
                     box_max = (msg.box_max.x, msg.box_max.y, msg.box_max.z), # <--- Pass this
                 )
@@ -138,6 +139,7 @@ class PointCloudMapperNode(Node):
             )
             obj.occurrences = int(entry.occurrences)
             obj.similarity = float(entry.similarity) if entry.similarity is not None else 0.0
+            obj.confidence = float(entry.confidence) if entry.confidence is not None else 0.0
             # Publish image_embedding if field exists in SemanticObject
             if hasattr(obj, 'image_embedding'):
                 obj.image_embedding = entry.image_embedding.tolist() if entry.image_embedding is not None else []

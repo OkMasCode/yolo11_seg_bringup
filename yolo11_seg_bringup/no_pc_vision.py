@@ -37,7 +37,7 @@ class NoPCVisionNode(Node):
 
         # ============= Parameters ============= #
 
-        # Comunication parameters
+        # Communication parameters
         self.declare_parameter('image_topic', '/camera_color/image_raw')
         self.declare_parameter('pointcloud_topic', '/camera_color/points')
         self.declare_parameter('camera_info_topic', '/camera_color/camera_info')
@@ -48,7 +48,7 @@ class NoPCVisionNode(Node):
         self.camera_info_topic = self.get_parameter('camera_info_topic').value
         self.enable_vis = bool(self.get_parameter('enable_visualization').value)
 
-        # yolo parameters
+        # YOLO parameters
         self.declare_parameter('model_path', '/home/sensor/yolo11n-seg.engine')
         self.declare_parameter('imgsz', 640)
         self.declare_parameter('conf', 0.45)
@@ -147,14 +147,7 @@ class NoPCVisionNode(Node):
         self._load_clip_prompt()
         self.command_timer = self.create_timer(self.prompt_check_interval, self._load_clip_prompt)
 
-        # Services
-        self.candidates_srv = self.create_service(
-            CheckCandidates,
-            'check_candidates',
-            self.check_candidates_callback
-        )
-
-        self.get_logger().info("No PC Vision Node Ready.")
+        self.get_logger().info("Vision Node Ready.")
 
     # ---------------- Callbacks --------------- #
 
@@ -177,96 +170,7 @@ class NoPCVisionNode(Node):
         with self.sync_lock:
             self.current_pointcloud = pc_msg
             self.process_frame(rgb_msg, pc_msg)
-
-    def check_candidates_callback(self, request, response):
-        """
-        Filter map entries by candidate IDs, build an ID->embedding vocabulary,
-        and rank candidates by CLIP text-image similarity.
-        """
-        response.match_found = False
-        response.best_candidate_id = ""
-        response.max_score = 0.0
-        response.position.x = 0.0
-        response.position.y = 0.0
-
-        try:
-            candidates = list(request.candidates_ids or [])
-
-            if not os.path.exists(self.map_file_path):
-                self.get_logger().warn(f"Map file not found: {self.map_file_path}")
-                return response
-
-            if self.goal_text_embedding is None:
-                self.get_logger().warn("Prompt is empty; cannot compute text embedding.")
-                return response
-            self.get_logger().info(f"Updated goal embedding for prompt: {self.current_clip_prompt}")
-
-            with open(self.map_file_path, 'r') as f:
-                data = json.load(f)
-
-            vocabulary = {}
-            for cid in candidates:
-                obj = data.get(cid)
-                if not obj:
-                    continue
-
-                embedding = obj.get("image_embedding")
-                # Use pose information when available to return coordinates with the response.
-                pose = obj.get("pose_map")
-
-                if embedding is None:
-                    continue
-
-                vocabulary[cid] = {
-                    "embedding": embedding,
-                    "pose": pose,
-                }
-
-            if not vocabulary:
-                self.get_logger().warn("No candidate embeddings found in map for provided IDs.")
-                return response
-
-            best_id = ""
-            best_score = float("-inf")
-            best_pose = None
-
-            for cid, info in vocabulary.items():
-                embedding = info["embedding"]
-                score = self.clip.compute_sigmoid_probs(embedding, self.goal_text_embedding)
-                if score is None:
-                    continue
-                if score > best_score and score >= 5.0:
-                    best_score = score
-                    best_id = cid
-                    best_pose = info.get("pose")
-
-            if best_id:
-                response.match_found = True
-                response.best_candidate_id = best_id
-                response.max_score = float(best_score)
-                if isinstance(best_pose, dict):
-                    px = best_pose.get("x")
-                    py = best_pose.get("y")
-                    if px is not None and py is not None:
-                        response.position.x = float(px)
-                        response.position.y = float(py)
-                    else:
-                        self.get_logger().warn(
-                            f"Pose for {best_id} missing x/y fields; leaving default coordinates."
-                        )
-                elif best_pose is not None:
-                    self.get_logger().warn(
-                        f"Pose for {best_id} is not a dict; leaving default coordinates."
-                    )
-                self.get_logger().info(f"Best candidate: {best_id} (score={best_score:.4f})")
-            else:
-                self.get_logger().warn("Unable to compute similarity scores for candidates.")
-
-        except Exception as e:
-            self.get_logger().error(f"Error processing candidates: {e}")
-
-        return response
-        
+   
     # --------------- Main Methods ------------- #
 
     def process_frame(self, rgb_msg: Image, pc_msg: PointCloud2):
@@ -318,6 +222,7 @@ class NoPCVisionNode(Node):
         """
         xyxy = res.boxes.xyxy.cpu().numpy()
         clss = res.boxes.cls.cpu().numpy().astype(int)
+        confs = res.boxes.conf.cpu().numpy() if res.boxes.conf is not None else np.zeros(len(clss), dtype=float)
         ids = res.boxes.id.cpu().numpy().astype(int) if res.boxes.id is not None else np.arange(len(clss))
         masks_t = res.masks.data if hasattr(res, 'masks') and res.masks is not None else None
 
@@ -348,7 +253,7 @@ class NoPCVisionNode(Node):
 
         for i in range(len(xyxy)):
             result = self.process_single_detection(
-                i, xyxy[i], clss[i], ids[i], masks_t,
+                i, xyxy[i], clss[i], ids[i],confs[i], masks_t,
                 cv_bgr, pc_array,
                 height, width, rgb_msg, do_clip_frame
             )
@@ -379,8 +284,10 @@ class NoPCVisionNode(Node):
 
         self.publish_custom_detections(frame_detections, pc_msg.header, rgb_msg.header.stamp)
         self.publish_centroid_markers(frame_detections, pc_msg.header)
+        if self.enable_vis:
+            self.publish_centroid_markers(frame_detections, pc_msg.header)
 
-    def process_single_detection(self, idx, bbox, class_id, instance_id, masks_t,
+    def process_single_detection(self, idx, bbox, class_id, instance_id, confidence, masks_t,
                                  cv_bgr, pc_array,
                                  height, width, rgb_msg, do_clip_frame):
         """ 
@@ -430,6 +337,7 @@ class NoPCVisionNode(Node):
             "class_id": int(class_id),
             "instance_id": int(instance_id),
             "object_name": class_name,
+            "confidence": float(confidence),
             "centroid": centroid, # (x, y, z) tuple
             "embedding": None,    # Placeholder
             "crop": None,         # Placeholder
@@ -516,6 +424,7 @@ class NoPCVisionNode(Node):
             # Basic Info
             msg.object_name = det["object_name"]
             msg.object_id = det["instance_id"]
+            msg.confidence = float(det.get("confidence", 0.0))
             
             # Centroid
             cx, cy, cz = det["centroid"]

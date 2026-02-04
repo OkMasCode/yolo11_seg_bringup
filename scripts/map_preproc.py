@@ -55,23 +55,52 @@ def cluster_map(object_dict, eps=1.5, min_samples=2):
             labels[outlier_idx] = next_cluster_id + i
             print(f"[DEBUG] Reassigned outlier at index {outlier_idx} to cluster {next_cluster_id + i}")
 
-    # 3. Compute centroids for each cluster (including single-object clusters)
+    # 3. Compute centroids, bounding boxes, and radii for each cluster (2D only)
     unique_labels = sorted(set(labels))
     centroid_by_label = {}
+    dimensions_by_label = {}
+
     for lbl in unique_labels:
         indices = np.where(labels == lbl)[0]
-        centroid = X[indices].mean(axis=0)
+        cluster_points = X[indices]
+        centroid = cluster_points.mean(axis=0)
         centroid_by_label[int(lbl)] = (float(centroid[0]), float(centroid[1]), float(centroid[2]))
         print(f"[DEBUG] Centroid for cluster {lbl}: {centroid_by_label[int(lbl)]}")
+
+        # Calculate bounding box (2D: x, y only)
+        min_coords = cluster_points.min(axis=0)
+        max_coords = cluster_points.max(axis=0)
+        
+        # Calculate dimensions (width, length in 2D)
+        width = float(max_coords[0] - min_coords[0])
+        length = float(max_coords[1] - min_coords[1])
+        
+        # Calculate radius (distance from centroid to farthest point in 2D)
+        cluster_points_2d = cluster_points[:, :2]  # Only x, y
+        centroid_2d = centroid[:2]
+        distances = np.linalg.norm(cluster_points_2d - centroid_2d, axis=1)
+        radius = float(np.max(distances))
+        
+        dimensions_by_label[int(lbl)] = {
+            "bounding_box": {
+                "min": {"x": float(min_coords[0]), "y": float(min_coords[1])},
+                "max": {"x": float(max_coords[0]), "y": float(max_coords[1])},
+                "dimensions": {"width": width, "length": length}
+            },
+            "radius": radius
+        }
+        print(f"[DEBUG] Cluster {lbl} dimensions - BBox: {width:.2f}x{length:.2f}m, Radius: {radius:.2f}m")
 
     # 4. Create output list with all objects
     final_output = []
 
-    # 5. Create object entries with id, cluster, class, coords, and cluster centroid
+    # 5. Create object entries with id, cluster, class, coords, and cluster dimensions
     for obj_id, name, coord, label in zip(obj_ids, names, coords, labels):
         # Determine centroid for the object's cluster
         cx, cy, cz = centroid_by_label[int(label)]
         centroid_obj = {"x": cx, "y": cy, "z": cz}
+        # Get cluster dimensions
+        cluster_dims = dimensions_by_label[int(label)]
 
         obj_data = {
             "id": obj_id,
@@ -82,7 +111,8 @@ def cluster_map(object_dict, eps=1.5, min_samples=2):
                 "y": float(coord[1]),
                 "z": float(coord[2])
             },
-            "cluster_centroid": centroid_obj
+            "cluster_centroid": centroid_obj,
+            "cluster_dimensions": cluster_dims
         }
         
         print(f"[DEBUG] Object '{obj_id}' (class: {name}) assigned to cluster {label}")
@@ -101,7 +131,7 @@ def write_map_to_file(clustered_map, file_path):
 def main():
     print("[DEBUG] Starting map preprocessing...")
     clean_map = load_house_map(MAP_FILE)
-    clustered_map = cluster_map(clean_map)
+    clustered_map = cluster_map(clean_map, eps=3.5, min_samples=2)
     write_map_to_file(clustered_map, OUTPUT_FILE)
     print("[DEBUG] Map preprocessing complete!")
 

@@ -15,7 +15,7 @@ from typing import Tuple
 
 _EPS = np.finfo(float).eps * 4.0 # Small epsilon value to avoid division by zero in quaternion normalization
 
-ObjectEntry = namedtuple('ObjectEntry', ['frame', 'timestamp', 'pose_cam', 'pose_map', 'occurrences', 'name', 'similarity', 'image_embedding', 'box_size'])
+ObjectEntry = namedtuple('ObjectEntry', ['frame', 'timestamp', 'pose_cam', 'pose_map', 'occurrences', 'name', 'similarity', 'image_embedding', 'confidence', 'box_size'])
 
 # ----------------- FUNCTIONS ------------------ #
 
@@ -68,7 +68,7 @@ class SemanticObjectMap:
         self.tf_buffer = tf_buffer
         self.node = node
     
-    def add_detection(self, object_name: str, object_id: str, pose_in_camera, detection_stamp, camera_frame='camera3_color_optical_frame', fixed_frame='camera3_color_optical_frame', distance_threshold=0.8, embeddings=None, goal_embedding=None, similarity=0.0, box_min=None, box_max=None):
+    def add_detection(self, object_name: str, object_id: str, pose_in_camera, detection_stamp, camera_frame='camera3_color_optical_frame', fixed_frame='camera3_color_optical_frame', distance_threshold=0.8, embeddings=None, goal_embedding=None, similarity=0.0, confidence=0.0, box_min=None, box_max=None):
         """
         Add a new detection to the semantic map.
         Transforms the pose to the fixed frame and merges with existing objects if close enough.
@@ -111,7 +111,9 @@ class SemanticObjectMap:
                         for i in range(3)
                     )
                     new_similarity = (entry.similarity + similarity) / 2
-                    self.objects[existing_id] = entry._replace(pose_map=avg_pose, occurrences=entry.occurrences+1, similarity=new_similarity, image_embedding=img_vec)
+                    # Update confidence only if new one is higher
+                    updated_confidence = max(entry.confidence, confidence)
+                    self.objects[existing_id] = entry._replace(pose_map=avg_pose, occurrences=entry.occurrences+1, similarity=new_similarity, image_embedding=img_vec, confidence=updated_confidence)
                     return False
 
             self.objects[object_id] = ObjectEntry(
@@ -123,6 +125,7 @@ class SemanticObjectMap:
                 name = object_name,
                 similarity = similarity,
                 image_embedding = img_vec,
+                confidence= confidence,
                 box_size= new_size
             )
             return True
@@ -241,7 +244,9 @@ class SemanticObjectMap:
                     occurrences=obj_data['occurrences'],
                     name=obj_data['name'],
                     similarity=obj_data.get('similarity', 0.0),
-                    image_embedding=image_embedding
+                    image_embedding=image_embedding,
+                    confidence=obj_data.get('confidence', 0.0)
+
                 )
             
             self.node.get_logger().info(f"Loaded {len(self.objects)} objects from {path}")
@@ -277,7 +282,8 @@ class SemanticObjectMap:
                 },
                 'occurrences': int(entry.occurrences),
                 'similarity': similarity_value,
-                'image_embedding': entry.image_embedding.tolist() if entry.image_embedding is not None else None
+                'image_embedding': entry.image_embedding.tolist() if entry.image_embedding is not None else None,
+                'confidence': float(entry.confidence) if entry.confidence is not None else 0.0
             }
 
         with open(path, 'w') as json_file:
