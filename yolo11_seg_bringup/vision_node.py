@@ -38,9 +38,9 @@ class VisionNode(Node):
         # ============= Parameters ============= #
 
         # Comunication parameters
-        self.declare_parameter('image_topic', '/camera_color/image_raw')
-        self.declare_parameter('depth_topic', '/camera_color/depth/image_raw')
-        self.declare_parameter('camera_info_topic', '/camera_color/camera_info')
+        self.declare_parameter('image_topic', '/camera/camera/color/image_raw')
+        self.declare_parameter('depth_topic', '/camera/camera/aligned_depth_to_color/image_raw')
+        self.declare_parameter('camera_info_topic', '/camera/camera/color/camera_info')
         self.declare_parameter('enable_visualization', True)
 
         self.image_topic = self.get_parameter('image_topic').value
@@ -49,7 +49,7 @@ class VisionNode(Node):
         self.enable_vis = bool(self.get_parameter('enable_visualization').value)
 
         # yolo parameters
-        self.declare_parameter('model_path', '/workspaces/yolo_models/yolo26n-seg.onnx')
+        self.declare_parameter('model_path', '/home/workspace/yolo26m-seg.pt')
         self.declare_parameter('imgsz', 640)
         self.declare_parameter('conf', 0.45)
         self.declare_parameter('iou', 0.45)
@@ -63,8 +63,8 @@ class VisionNode(Node):
 
         # CLIP parameters
         self.declare_parameter('CLIP_model_name', 'ViT-B-16-SigLIP')
-        self.declare_parameter('robot_command_file', '/workspaces/ros2_ws/src/yolo11_seg_bringup/config/robot_command.json')
-        self.declare_parameter('map_file_path', '/workspaces/ros2_ws/src/yolo11_seg_bringup/config/map.json')
+        self.declare_parameter('robot_command_file', '/home/workspace/ros2_ws/src/yolo11_seg_bringup/config/robot_command.json')
+        self.declare_parameter('map_file_path', '/home/workspace/ros2_ws/src/yolo11_seg_bringup/config/map.json')
         self.declare_parameter('square_crop_scale', 1.2)
 
         self.CLIP_model_name = self.get_parameter('CLIP_model_name').value
@@ -416,6 +416,11 @@ class VisionNode(Node):
         if instance_cloud_t is None:
             return None
         
+        # --- Calculate bounding box from pointcloud ---
+        points = instance_cloud_t.cpu().numpy()
+        min_box = np.min(points, axis=0)  # [min_x, min_y, min_z]
+        max_box = np.max(points, axis=0)  # [max_x, max_y, max_z]
+        
         # --- Create Shared Object (The "Box") ---
         class_name = self.class_id_to_name(int(class_id))
 
@@ -426,7 +431,9 @@ class VisionNode(Node):
             "centroid": centroid, # (x, y, z) tuple
             "embedding": None,    # Placeholder
             "crop": None,          # Placeholder
-            "confidence": float(confidence)
+            "confidence": float(confidence),
+            "box_min": (float(min_box[0]), float(min_box[1]), float(min_box[2])),
+            "box_max": (float(max_box[0]), float(max_box[1]), float(max_box[2])),
         }
 
         # --- Prepare CLIP Crop (If enabled) ---
@@ -512,6 +519,7 @@ class VisionNode(Node):
             # Basic Info
             msg.object_name = det["object_name"]
             msg.object_id = det["instance_id"]
+            msg.confidence = float(det.get("confidence", 0.0))
             
             # Centroid
             cx, cy, cz = det["centroid"]
@@ -535,6 +543,15 @@ class VisionNode(Node):
             self.get_logger().info(
                 f"ID {det['instance_id']} ({det['object_name']}): Goal={prob_goal}"
             )
+
+            # --- NEW: Assign Box ---
+            msg.box_min.x = det["box_min"][0]
+            msg.box_min.y = det["box_min"][1]
+            msg.box_min.z = det["box_min"][2]
+            
+            msg.box_max.x = det["box_max"][0]
+            msg.box_max.y = det["box_max"][1]
+            msg.box_max.z = det["box_max"][2]
 
             # Add text embedding for mapper convenience
             msg.text_embedding = self.goal_text_embedding.tolist() if self.goal_text_embedding is not None else []

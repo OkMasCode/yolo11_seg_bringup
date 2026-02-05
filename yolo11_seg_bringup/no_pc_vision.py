@@ -49,7 +49,7 @@ class NoPCVisionNode(Node):
         self.enable_vis = bool(self.get_parameter('enable_visualization').value)
 
         # YOLO parameters
-        self.declare_parameter('model_path', '/home/sensor/yolo11n-seg.engine')
+        self.declare_parameter('model_path', '/home/workspace/yolo26m_seg.pt')
         self.declare_parameter('imgsz', 640)
         self.declare_parameter('conf', 0.45)
         self.declare_parameter('iou', 0.45)
@@ -63,8 +63,8 @@ class NoPCVisionNode(Node):
 
         # CLIP parameters
         self.declare_parameter('CLIP_model_name', 'ViT-B-16-SigLIP')
-        self.declare_parameter('robot_command_file', '/home/sensor/ros2_ws/src/yolo11_seg_bringup/config/robot_command.json')
-        self.declare_parameter('map_file_path', '/home/sensor/ros2_ws/src/yolo11_seg_bringup/config/map.json')
+        self.declare_parameter('robot_command_file', '/home/workspace/ros2_ws/src/yolo11_seg_bringup/config/robot_command.json')
+        self.declare_parameter('map_file_path', '/home/workspace/ros2_ws/src/yolo11_seg_bringup/config/map.json')
         self.declare_parameter('square_crop_scale', 1.2)
 
         self.CLIP_model_name = self.get_parameter('CLIP_model_name').value
