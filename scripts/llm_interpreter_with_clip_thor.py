@@ -13,13 +13,14 @@ import gc
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from yolo11_seg_bringup.utils.clip_processor import CLIPProcessor
 
-CHAT_MODEL = "llama3.2:8b"
+CHAT_MODEL = "llama3.1"
 
+# Configure Ollama host
 OLLAMA_HOST = "http://localhost:11434"
 
-MAP_FILE = "/home/orin_nano/francesco-masin/ros2_ws/src/yolo11_seg_bringup/config/map.json"
-CLUSTERED_MAP_FILE = "/home/orin_nano/francesco-masin/ros2_ws/src/yolo11_seg_bringup/config/clustered_map.json"
-ROBOT_COMMAND_FILE = "/home/orin_nano/francesco-masin/ros2_ws/src/yolo11_seg_bringup/config/robot_command.json"
+MAP_FILE = "/home/workspace/ros2_ws/src/yolo11_seg_bringup/config/map.json"
+CLUSTERED_MAP_FILE = "/home/workspace/ros2_ws/src/yolo11_seg_bringup/config/clustered_map.json"
+ROBOT_COMMAND_FILE = "/home/workspace/ros2_ws/src/yolo11_seg_bringup/config/robot_command.json"
 
 DICTIONARY = [
     "sink", "refrigerator", "oven", "microwave", "toaster", "dishwasher",
@@ -67,7 +68,7 @@ def wait_for_server():
     retries = 0
     while True:
         try:
-            ollama.Client(host=OLLAMA_HOST).list()
+            client.list()
             print("Successfully connected to Ollama!\n")
             break
         except Exception:
@@ -325,12 +326,21 @@ def extract_goal(prompt : str) -> Goal:
     ]
 
     start_time = time.time()
-    # LLM call
-    respose = client.chat(
-        model = CHAT_MODEL,
-        messages= msgs,
-        format = Goal.model_json_schema()
-    )
+    # LLM call with error handling
+    try:
+        print(f"   Sending request to Ollama at {OLLAMA_HOST}...")
+        print(f"   Using model: {CHAT_MODEL}")
+        print(f"   Prompt length: {sum(len(msg['content']) for msg in msgs)} characters\n")
+        
+        respose = client.chat(
+            model = CHAT_MODEL,
+            messages= msgs,
+            format = Goal.model_json_schema()
+        )
+    except Exception as e:
+        print(f"ERROR during LLM call: {type(e).__name__}")
+        print(f"Error message: {str(e)}\n")
+        raise
     end_time = time.time()
     elapsed = end_time - start_time
  
@@ -424,11 +434,18 @@ def determine_most_likely_cluster(prompt: str, goal: str) -> ClusterPrediction:
     ]
     
     start_time = time.time()
-    response = client.chat(
-        model=CHAT_MODEL,
-        messages=msgs,
-        format=ClusterPrediction.model_json_schema()
-    )
+    try:
+        print(f"   Sending cluster prediction request to Ollama...")
+        print(f"   Prompt length: {sum(len(msg['content']) for msg in msgs)} characters\n")
+        response = client.chat(
+            model=CHAT_MODEL,
+            messages=msgs,
+            format=ClusterPrediction.model_json_schema()
+        )
+    except Exception as e:
+        print(f"ERROR during cluster prediction: {type(e).__name__}")
+        print(f"Error: {str(e)}\n")
+        raise
     end_time = time.time()
     elapsed = end_time - start_time
     

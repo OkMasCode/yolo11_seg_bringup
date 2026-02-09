@@ -7,13 +7,15 @@ import os
 from pydantic import BaseModel
 from typing import List, Dict
 
-CHAT_MODEL = "llama3.2:3b"
 
-OLLAMA_HOST = "http://localhost:11435"
+CHAT_MODEL = "llama3.1"
 
-MAP_FILE = "/home/orin_nano/francesco-masin/ros2_ws/src/yolo11_seg_bringup/config/map.json"
-CLUSTERED_MAP_FILE = "/home/orin_nano/francesco-masin/ros2_ws/src/yolo11_seg_bringup/config/clustered_map.json"
-ROBOT_COMMAND_FILE = "/home/orin_nano/francesco-masin/ros2_ws/src/yolo11_seg_bringup/config/robot_command.json"
+# Configure Ollama host
+OLLAMA_HOST = "http://localhost:11434"
+
+MAP_FILE = "/home/workspace/ros2_ws/src/yolo11_seg_bringup/config/map.json"
+CLUSTERED_MAP_FILE = "/home/workspace/ros2_ws/src/yolo11_seg_bringup/config/clustered_map.json"
+ROBOT_COMMAND_FILE = "/home/workspace/ros2_ws/src/yolo11_seg_bringup/config/robot_command.json"
 
 DICTIONARY = [
     "sink", "refrigerator", "oven", "microwave", "toaster", "dishwasher",
