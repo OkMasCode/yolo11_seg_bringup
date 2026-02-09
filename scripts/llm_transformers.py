@@ -17,10 +17,10 @@ logging.getLogger('transformers').setLevel(logging.ERROR)
 
 # Configure Hugging Face model
 # Using Mistral-7B for Jetson Thor - excellent performance, no authentication required
-CHAT_MODEL = "mistralai/Mistral-7B-Instruct-v0.3"
+CHAT_MODEL = "meta-llama/Llama-3.1-8B-Instruct" #"mistralai/Mistral-7B-Instruct-v0.3"
 MODEL_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 MODEL_MAX_LENGTH = 8192  # Mistral supports longer context
-OFFLINE_MODE = True  # Set to True for offline operation (uses cached model)
+OFFLINE_MODE = False  # Set to True for offline operation (uses cached model)
 
 MAP_FILE = "/home/workspace/ros2_ws/src/yolo11_seg_bringup/config/map.json"
 CLUSTERED_MAP_FILE = "/home/workspace/ros2_ws/src/yolo11_seg_bringup/config/clustered_map.json"
