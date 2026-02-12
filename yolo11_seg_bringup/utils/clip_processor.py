@@ -1,6 +1,7 @@
 import torch
 import cv2
 import numpy as np
+from time import perf_counter
 
 import open_clip
 from PIL import Image as PILImage
@@ -98,20 +99,65 @@ class CLIPProcessor:
         Encode a batch of image crops to SigLIP embeddings.
         """
         if not crops_bgr: return []
+        
+        total_start = perf_counter()
 
+        # ===== BGR to RGB + PIL conversion =====
+        convert_start = perf_counter()
         processed_crops = []
         for c in crops_bgr:
-            enhanced_c = self.preproc_image(c)
-            rgb_c = cv2.cvtColor(enhanced_c, cv2.COLOR_BGR2RGB)
+            rgb_c = cv2.cvtColor(c, cv2.COLOR_BGR2RGB)
             processed_crops.append(PILImage.fromarray(rgb_c))
+        convert_time = (perf_counter() - convert_start) * 1000
+        print(f"[CLIP] BGR→RGB + PIL ({len(crops_bgr)} images): {convert_time:.2f}ms")
 
-        image_input = torch.stack([self.preprocess(img) for img in processed_crops]).to(self.device)
+        # ===== Preprocessing (resize, normalize, to tensor) =====
+        preprocess_start = perf_counter()
+        preprocessed = [self.preprocess(img) for img in processed_crops]
+        preprocess_time = (perf_counter() - preprocess_start) * 1000
+        print(f"[CLIP] Preprocess (resize, normalize): {preprocess_time:.2f}ms")
 
+        # ===== Stack tensors =====
+        stack_start = perf_counter()
+        image_input = torch.stack(preprocessed)
+        stack_time = (perf_counter() - stack_start) * 1000
+        print(f"[CLIP] Stack tensors: {stack_time:.2f}ms")
+
+        # ===== Move to GPU =====
+        to_device_start = perf_counter()
+        image_input = image_input.to(self.device)
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        to_device_time = (perf_counter() - to_device_start) * 1000
+        print(f"[CLIP] Transfer to {self.device}: {to_device_time:.2f}ms")
+
+        # ===== Model inference =====
+        inference_start = perf_counter()
         with torch.no_grad():
             features = self.model.encode_image(image_input)
-            features = features / features.norm(dim=-1, keepdim=True)
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+        inference_time = (perf_counter() - inference_start) * 1000
+        print(f"[CLIP] Model inference: {inference_time:.2f}ms")
+
+        # ===== Normalization =====
+        norm_start = perf_counter()
+        features = features / features.norm(dim=-1, keepdim=True)
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        norm_time = (perf_counter() - norm_start) * 1000
+        print(f"[CLIP] Normalization: {norm_time:.2f}ms")
+
+        # ===== Transfer to CPU =====
+        cpu_start = perf_counter()
+        result = features.cpu().numpy()
+        cpu_time = (perf_counter() - cpu_start) * 1000
+        print(f"[CLIP] Transfer to CPU: {cpu_time:.2f}ms")
         
-        return features.cpu().numpy()
+        total_time = (perf_counter() - total_start) * 1000
+        print(f"[CLIP] === TOTAL: {total_time:.2f}ms ===\n")
+        
+        return result
     
     def compute_sigmoid_probs(self, image_embedding, text_embedding):
         """

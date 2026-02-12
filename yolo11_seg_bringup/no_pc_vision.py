@@ -42,7 +42,7 @@ class NoPCVisionNode(Node):
         self.declare_parameter('image_topic', '/camera_color/image_raw')
         self.declare_parameter('pointcloud_topic', '/camera_color/points')
         self.declare_parameter('camera_info_topic', '/camera_color/camera_info')
-        self.declare_parameter('enable_visualization', True)
+        self.declare_parameter('enable_visualization', False)
 
         self.image_topic = self.get_parameter('image_topic').value
         self.pointcloud_topic = self.get_parameter('pointcloud_topic').value
@@ -79,7 +79,7 @@ class NoPCVisionNode(Node):
         self.markers_topic = '/vision/centroid_markers'
         self.detection_topic = '/vision/detections'
 
-        self.frame_skip = 1
+        self.frame_skip = 10
         self.prompt_check_interval = 10
 
         # Load YOLO model
@@ -252,7 +252,13 @@ class NoPCVisionNode(Node):
         clss = res.boxes.cls.cpu().numpy().astype(int)
         confs = res.boxes.conf.cpu().numpy() if res.boxes.conf is not None else np.zeros(len(clss), dtype=float)
         ids = res.boxes.id.cpu().numpy().astype(int) if res.boxes.id is not None else np.arange(len(clss))
-        masks_t = res.masks.data if hasattr(res, 'masks') and res.masks is not None else None
+        
+        # Transfer ALL masks at once (more efficient than per-detection)
+        if hasattr(res, 'masks') and res.masks is not None:
+            masks_np = res.masks.data.detach().cpu().numpy()
+        else:
+            masks_np = None
+        
         gpu_transfer_time = (perf_counter() - gpu_transfer_start) * 1000
         self.get_logger().debug(f"GPU-to-CPU transfer: {gpu_transfer_time:.2f}ms")
 
@@ -301,7 +307,7 @@ class NoPCVisionNode(Node):
         det_process_start = perf_counter()
         for i in range(len(xyxy)):
             result = self.process_single_detection(
-                i, xyxy[i], clss[i], ids[i],confs[i], masks_t,
+                i, xyxy[i], clss[i], ids[i],confs[i], masks_np,
                 cv_bgr, pc_array,
                 height, width, rgb_msg, do_clip_frame
             )
@@ -351,7 +357,7 @@ class NoPCVisionNode(Node):
         self.timing_stats['publishing'].append(pub_time)
         self.get_logger().debug(f"Publishing: {pub_time:.2f}ms")
 
-    def process_single_detection(self, idx, bbox, class_id, instance_id, confidence, masks_t,
+    def process_single_detection(self, idx, bbox, class_id, instance_id, confidence, masks_np,
                                  cv_bgr, pc_array,
                                  height, width, rgb_msg, do_clip_frame):
         """ 
@@ -368,11 +374,11 @@ class NoPCVisionNode(Node):
         if x2 <= x1 or y2 <= y1:
             return None
         
-        if masks_t is None or idx >= masks_t.shape[0]:
+        if masks_np is None or idx >= masks_np.shape[0]:
             return None
 
-        # Get mask for this instance
-        m = masks_t[idx].detach().cpu().numpy()
+        # Get mask for this instance (already on CPU)
+        m = masks_np[idx]
         if m.shape[0] != height or m.shape[1] != width:
             m = cv2.resize(m, (width, height), interpolation=cv2.INTER_NEAREST)
         binary_mask = (m > 0.5)
