@@ -14,6 +14,7 @@ from cv_bridge import CvBridge
 import threading
 import json
 import sensor_msgs_py.point_cloud2 as pc2
+from time import perf_counter
 
 from ultralytics import YOLO
 
@@ -49,7 +50,7 @@ class NoPCVisionNode(Node):
         self.enable_vis = bool(self.get_parameter('enable_visualization').value)
 
         # YOLO parameters
-        self.declare_parameter('model_path', '/home/workspace/yolo26m_seg.pt')
+        self.declare_parameter('model_path', '/workspaces/yolo_models/yolo26m-seg.pt')
         self.declare_parameter('imgsz', 640)
         self.declare_parameter('conf', 0.45)
         self.declare_parameter('iou', 0.45)
@@ -63,8 +64,8 @@ class NoPCVisionNode(Node):
 
         # CLIP parameters
         self.declare_parameter('CLIP_model_name', 'ViT-B-16-SigLIP')
-        self.declare_parameter('robot_command_file', '/home/workspace/ros2_ws/src/yolo11_seg_bringup/config/robot_command.json')
-        self.declare_parameter('map_file_path', '/home/workspace/ros2_ws/src/yolo11_seg_bringup/config/map.json')
+        self.declare_parameter('robot_command_file', '/workspaces/ros2_ws/src/yolo11_seg_bringup/config/robot_command.json')
+        self.declare_parameter('map_file_path', '/workspaces/ros2_ws/src/yolo11_seg_bringup/config/map.json')
         self.declare_parameter('square_crop_scale', 1.2)
 
         self.CLIP_model_name = self.get_parameter('CLIP_model_name').value
@@ -131,6 +132,17 @@ class NoPCVisionNode(Node):
         self.current_clip_prompt = None
         self.goal_text_embedding = None
         self.sync_lock = threading.Lock()
+        
+        # Timing instrumentation
+        self.timing_stats = {
+            'yolo_inference': [],
+            'pointcloud_conversion': [],
+            'detections_processing': [],
+            'clip_encoding': [],
+            'publishing': [],
+            'total_frame': []
+        }
+        self.timing_window = 30  # Print stats every N frames
 
         self.CLASS_NAMES = [
             "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat", "traffic light",
@@ -182,11 +194,14 @@ class NoPCVisionNode(Node):
             return
         
         self.frame_count += 1
+        frame_start = perf_counter()
 
         try:
             cv_bgr = self.bridge.imgmsg_to_cv2(rgb_msg, desired_encoding='bgr8')
             height, width = cv_bgr.shape[:2]
 
+            # ===== YOLO INFERENCE TIMING =====
+            yolo_start = perf_counter()
             results = self.model.track(
                 source=cv_bgr,
                 imgsz=self.imgsz,
@@ -198,6 +213,9 @@ class NoPCVisionNode(Node):
                 persist=True,
                 tracker="botsort.yaml",
             )
+            yolo_time = (perf_counter() - yolo_start) * 1000
+            self.timing_stats['yolo_inference'].append(yolo_time)
+            
             res = results[0]
             if not hasattr(res, 'masks') or len(res.boxes) == 0:
                 self.get_logger().info("No detections in this frame", throttle_duration_sec=2.0)
@@ -212,6 +230,14 @@ class NoPCVisionNode(Node):
                 vis_msg.header = rgb_msg.header
                 self.vis_pub.publish(vis_msg)
                 self.get_logger().info(f"Published annotated image (frame {self.frame_count})", throttle_duration_sec=2.0)
+            
+            # ===== TOTAL FRAME TIMING =====
+            total_time = (perf_counter() - frame_start) * 1000
+            self.timing_stats['total_frame'].append(total_time)
+            
+            # Print timing stats every N frames
+            if self.frame_count % self.timing_window == 0:
+                self._print_timing_stats()
         
         except Exception as e:
             self.get_logger().error(f"Error processing frame: {e}")
@@ -220,28 +246,48 @@ class NoPCVisionNode(Node):
         """ 
         Unified pipeline using camera's pointcloud
         """
+        # ===== GPU-to-CPU TRANSFER TIMING =====
+        gpu_transfer_start = perf_counter()
         xyxy = res.boxes.xyxy.cpu().numpy()
         clss = res.boxes.cls.cpu().numpy().astype(int)
         confs = res.boxes.conf.cpu().numpy() if res.boxes.conf is not None else np.zeros(len(clss), dtype=float)
         ids = res.boxes.id.cpu().numpy().astype(int) if res.boxes.id is not None else np.arange(len(clss))
         masks_t = res.masks.data if hasattr(res, 'masks') and res.masks is not None else None
+        gpu_transfer_time = (perf_counter() - gpu_transfer_start) * 1000
+        self.get_logger().debug(f"GPU-to-CPU transfer: {gpu_transfer_time:.2f}ms")
 
-        # Convert pointcloud to numpy array
+        # ===== POINTCLOUD CONVERSION TIMING =====
+        pc_start = perf_counter()
         try:
-            pc_data = list(pc2.read_points(pc_msg, field_names=("x", "y", "z"), skip_nans=False))
-            # Handle structured array properly - extract x, y, z fields
-            pc_array_structured = np.array(pc_data)
-            if pc_array_structured.dtype.names:
-                # Structured array with named fields
-                pc_array = np.zeros((len(pc_array_structured), 3), dtype=np.float32)
-                pc_array[:, 0] = pc_array_structured['x']
-                pc_array[:, 1] = pc_array_structured['y']
-                pc_array[:, 2] = pc_array_structured['z']
-            else:
-                # Already a regular array
-                pc_array = pc_array_structured.astype(np.float32)
-            
+            # Create a structured NumPy data type to define the memory layout
+            # This tells NumPy to look for x, y, z (floats) at specific offsets
+            # 'itemsize' ensures we skip any extra fields (like intensity/color) correctly
+            dtype_struct = np.dtype({
+                'names': ['x', 'y', 'z'],
+                'formats': ['<f4', '<f4', '<f4'],  # <f4 means Little Endian Float32
+                'offsets': [0, 4, 8],              # Standard offsets for x, y, z
+                'itemsize': pc_msg.point_step      # Step size helps jump over other data
+            })
+
+            # Read the raw bytes directly into a structured array (Zero-Copy usually)
+            pc_array_structured = np.frombuffer(pc_msg.data, dtype=dtype_struct)
+
+            # Stack them into a standard (N, 3) float array
+            # This is the only "heavy" copy operation, but it's vectorized and fast
+            pc_array = np.stack([
+                pc_array_structured['x'], 
+                pc_array_structured['y'], 
+                pc_array_structured['z']
+            ], axis=-1)
+
+            # Reshape to image dimensions
             pc_array = pc_array.reshape(height, width, 3)
+
+            pc_total_time = (perf_counter() - pc_start) * 1000
+            
+            self.timing_stats['pointcloud_conversion'].append(pc_total_time)
+            self.get_logger().debug(f"PC Conversion Total: {pc_total_time:.2f}ms")
+
         except Exception as e:
             self.get_logger().error(f"Failed to convert pointcloud: {e}")
             return
@@ -251,6 +297,8 @@ class NoPCVisionNode(Node):
 
         do_clip_frame = (self.frame_count % max(1, self.frame_skip) == 0)
 
+        # ===== DETECTION PROCESSING TIMING =====
+        det_process_start = perf_counter()
         for i in range(len(xyxy)):
             result = self.process_single_detection(
                 i, xyxy[i], clss[i], ids[i],confs[i], masks_t,
@@ -265,9 +313,15 @@ class NoPCVisionNode(Node):
             frame_detections.append(det_entry)
             if det_entry.get("crop") is not None:
                 batch_queue.append(det_entry)
+        
+        det_proc_time = (perf_counter() - det_process_start) * 1000
+        self.timing_stats['detections_processing'].append(det_proc_time)
+        self.get_logger().debug(f"Detection processing ({len(frame_detections)} detections): {det_proc_time:.2f}ms")
             
+        # ===== CLIP ENCODING TIMING =====
         if batch_queue:
             try:
+                clip_start = perf_counter()
                 # Extract just the images for the batch
                 images = [item["crop"] for item in batch_queue]
                 
@@ -279,13 +333,23 @@ class NoPCVisionNode(Node):
                     batch_queue[i]["embedding"] = emb
                     # Clear the image to free memory
                     batch_queue[i]["crop"] = None
+                
+                clip_time = (perf_counter() - clip_start) * 1000
+                self.timing_stats['clip_encoding'].append(clip_time)
+                self.get_logger().debug(f"CLIP encoding ({len(batch_queue)} crops): {clip_time:.2f}ms")
             except Exception as e:
                 self.get_logger().error(f"Batch CLIP inference failed: {e}")
 
+        # ===== PUBLISHING TIMING =====
+        pub_start = perf_counter()
         self.publish_custom_detections(frame_detections, pc_msg.header, rgb_msg.header.stamp)
         self.publish_centroid_markers(frame_detections, pc_msg.header)
         if self.enable_vis:
             self.publish_centroid_markers(frame_detections, pc_msg.header)
+        
+        pub_time = (perf_counter() - pub_start) * 1000
+        self.timing_stats['publishing'].append(pub_time)
+        self.get_logger().debug(f"Publishing: {pub_time:.2f}ms")
 
     def process_single_detection(self, idx, bbox, class_id, instance_id, confidence, masks_t,
                                  cv_bgr, pc_array,
@@ -413,6 +477,33 @@ class NoPCVisionNode(Node):
         if 0 <= class_id < len(self.CLASS_NAMES):
             return self.CLASS_NAMES[class_id]
         return f"class_{class_id}"
+    
+    def _print_timing_stats(self):
+        """
+        Print aggregated timing statistics for the last N frames.
+        """
+        if not self.timing_stats['total_frame']:
+            return
+        
+        def get_stats(timings):
+            if not timings:
+                return 0, 0, 0
+            return min(timings), np.mean(timings), max(timings)
+        
+        self.get_logger().info("\n" + "="*70)
+        self.get_logger().info(f"TIMING STATS (frames {self.frame_count - self.timing_window + 1}-{self.frame_count})")
+        self.get_logger().info("="*70)
+        
+        for stat_name, timings in self.timing_stats.items():
+            if timings:
+                min_t, avg_t, max_t = get_stats(timings)
+                self.get_logger().info(f"{stat_name:25s}: min={min_t:6.2f}ms | avg={avg_t:6.2f}ms | max={max_t:6.2f}ms")
+        
+        self.get_logger().info("="*70 + "\n")
+        
+        # Reset timing stats
+        for key in self.timing_stats:
+            self.timing_stats[key] = []
 
     # ---------------- Publishers -------------- #
 
