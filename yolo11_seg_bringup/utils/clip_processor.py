@@ -14,11 +14,13 @@ class CLIPProcessor:
     - Ecoding text and images for model input
     - Computing sigmoid probabilities
     """
-    def __init__(self, device='cpu', model_name='ViT-B-16-SigLIP', pretrained='webli'):
+    def __init__(self, device='cpu', model_name='ViT-B-16-SigLIP', pretrained='webli', image_size=224):
         """
         Iniialize CLIPProcessor
         """
         self.device = device
+        self.model_name = model_name
+        self.image_size = image_size
         print(f"Loading SigLIP model: {model_name} ({pretrained})...")
 
         self.model, _, self.preprocess = open_clip.create_model_and_transforms(
@@ -94,6 +96,64 @@ class CLIPProcessor:
         final = cv2.cvtColor(hsv_boosted, cv2.COLOR_HSV2BGR)
         return final
 
+    def _batch_preprocess_opencv(self, crops_bgr):
+        """
+        Vectorized batch preprocessing using OpenCV + NumPy.
+        Replaces PIL-based sequential preprocessing for massive speedup.
+        
+        Args:
+            crops_bgr: List of BGR images (NumPy arrays)
+            
+        Returns:
+            Tensor of shape (N, 3, H, W) ready for model input
+        """
+        if not crops_bgr:
+            return torch.empty(0, 3, self.image_size, self.image_size, device=self.device)
+        
+        # ===== Batch Resize (OpenCV) =====
+        resize_start = perf_counter()
+        resized = []
+        for crop in crops_bgr:
+            resized_img = cv2.resize(crop, (self.image_size, self.image_size), interpolation=cv2.INTER_LINEAR)
+            resized.append(resized_img)
+        resize_time = (perf_counter() - resize_start) * 1000
+        print(f"[CLIP] Batch resize to {self.image_size}x{self.image_size}: {resize_time:.2f}ms")
+        
+        # ===== Stack into NumPy batch =====
+        stack_start = perf_counter()
+        batch_bgr = np.stack(resized, axis=0).astype(np.float32)  # (N, H, W, 3)
+        stack_time = (perf_counter() - stack_start) * 1000
+        print(f"[CLIP] Stack batch: {stack_time:.2f}ms")
+        
+        # ===== BGR to RGB (vectorized) =====
+        convert_start = perf_counter()
+        batch_rgb = batch_bgr[..., ::-1]  # Flip RGB channels
+        convert_time = (perf_counter() - convert_start) * 1000
+        print(f"[CLIP] BGR→RGB conversion: {convert_time:.2f}ms")
+        
+        # ===== Normalize to [0, 1] =====
+        normalize_01_start = perf_counter()
+        batch_rgb = batch_rgb / 255.0
+        normalize_01_time = (perf_counter() - normalize_01_start) * 1000
+        print(f"[CLIP] Normalize to [0, 1]: {normalize_01_time:.2f}ms")
+        
+        # ===== ImageNet normalization (vectorized) =====
+        im_norm_start = perf_counter()
+        # Standard ImageNet mean/std used by open_clip
+        mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+        std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+        batch_rgb = (batch_rgb - mean) / std
+        im_norm_time = (perf_counter() - im_norm_start) * 1000
+        print(f"[CLIP] ImageNet normalization: {im_norm_time:.2f}ms")
+        
+        # ===== Convert to tensor and rearrange to (N, 3, H, W) =====
+        tensor_start = perf_counter()
+        batch_tensor = torch.from_numpy(batch_rgb).permute(0, 3, 1, 2)
+        tensor_time = (perf_counter() - tensor_start) * 1000
+        print(f"[CLIP] NumPy→Tensor+Permute: {tensor_time:.2f}ms")
+        
+        return batch_tensor
+
     def encode_images_batch(self, crops_bgr):
         """
         Encode a batch of image crops to SigLIP embeddings.
@@ -102,26 +162,8 @@ class CLIPProcessor:
         
         total_start = perf_counter()
 
-        # ===== BGR to RGB + PIL conversion =====
-        convert_start = perf_counter()
-        processed_crops = []
-        for c in crops_bgr:
-            rgb_c = cv2.cvtColor(c, cv2.COLOR_BGR2RGB)
-            processed_crops.append(PILImage.fromarray(rgb_c))
-        convert_time = (perf_counter() - convert_start) * 1000
-        print(f"[CLIP] BGR→RGB + PIL ({len(crops_bgr)} images): {convert_time:.2f}ms")
-
-        # ===== Preprocessing (resize, normalize, to tensor) =====
-        preprocess_start = perf_counter()
-        preprocessed = [self.preprocess(img) for img in processed_crops]
-        preprocess_time = (perf_counter() - preprocess_start) * 1000
-        print(f"[CLIP] Preprocess (resize, normalize): {preprocess_time:.2f}ms")
-
-        # ===== Stack tensors =====
-        stack_start = perf_counter()
-        image_input = torch.stack(preprocessed)
-        stack_time = (perf_counter() - stack_start) * 1000
-        print(f"[CLIP] Stack tensors: {stack_time:.2f}ms")
+        # ===== Fast Vectorized Preprocessing =====
+        image_input = self._batch_preprocess_opencv(crops_bgr)
 
         # ===== Move to GPU =====
         to_device_start = perf_counter()
