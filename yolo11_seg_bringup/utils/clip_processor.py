@@ -64,7 +64,26 @@ class CLIPProcessor:
                 return None
         
         with torch.no_grad():
-            tokens = self.tokenizer(text).to(self.device)
+            # Handle tokenization with compatibility for newer transformers versions
+            try:
+                tokens = self.tokenizer(text).to(self.device)
+            except AttributeError:
+                # Fallback for newer transformers where batch_encode_plus is not available
+                # Access the underlying tokenizer and use it directly
+                if hasattr(self.tokenizer, 'tokenizer'):
+                    # Get the underlying HuggingFace tokenizer
+                    hf_tokenizer = self.tokenizer.tokenizer
+                    # Use the standard __call__ method which works with newer transformers
+                    encoded = hf_tokenizer(
+                        text,
+                        padding='max_length',
+                        truncation=True,
+                        max_length=self.tokenizer.context_length,
+                        return_tensors='pt'
+                    )
+                    tokens = encoded['input_ids'].to(self.device)
+                else:
+                    raise
 
             feats = self.model.encode_text(tokens)
 

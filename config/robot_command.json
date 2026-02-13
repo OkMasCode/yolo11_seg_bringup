@@ -1,55 +1,60 @@
 {
-    "timestamp": 1770647056.6266305,
-    "prompt": "go and grab something fresh to eat",
-    "goal": "refrigerator",
+    "timestamp": 1770990381.4570923,
+    "prompt": "go to the sink",
+    "goal": "sink",
+    "clip_prompts": [
+        "sink",
+        "a sink",
+        "the sink"
+    ],
+    "text_embedding": null,
     "goal_objects": [
         {
-            "id": "refrigerator_inst0_634_567000000",
+            "id": "sink_inst2_4558_765000000",
+            "similarity_score": 8.829465590717943,
             "coords": {
-                "x": 8.702731,
-                "y": -1.032031,
-                "z": 0.0
+                "x": 8.28320117951592,
+                "y": -5.503347508346448,
+                "z": 0.836566787745389
             }
         }
     ],
+    "object_similarities": [
+        {
+            "object_id": "sink_inst2_4558_765000000",
+            "similarity": 8.829465590717943
+        }
+    ],
     "cluster_info": {
-        "cluster_id": 2,
+        "cluster_id": 3,
         "objects": [
-            "kitchentable",
-            "refrigerator",
-            "cookingbench",
-            "kitchencabinet",
-            "sink",
-            "fitnessEquipment",
-            "chair",
-            "chair",
-            "chair",
-            "chair"
+            "spoon",
+            "sink"
         ],
-        "reasoning": "The goal object'refrigerator' is likely where fresh food is stored, and it is present in Cluster 2, which contains kitchen-related objects.",
+        "reasoning": "The goal object is a sink, which is directly in Cluster 3.",
         "coords": {
-            "x": 7.0720303000000015,
-            "y": -0.3819417,
-            "z": 0.18148330000000001
+            "x": 8.840196552735945,
+            "y": -5.453928962829698,
+            "z": 1.02461073622103
         },
         "dimensions": {
             "bounding_box": {
                 "min": {
-                    "x": 3.48472,
-                    "y": -3.836509
+                    "x": 8.28320117951592,
+                    "y": -5.503347508346448
                 },
                 "max": {
-                    "x": 9.038383,
-                    "y": 3.169104
+                    "x": 9.397191925955969,
+                    "y": -5.404510417312948
                 },
                 "dimensions": {
-                    "width": 5.553663,
-                    "length": 7.005613
+                    "width": 1.1139907464400487,
+                    "length": 0.09883709103350036
                 }
             },
-            "radius": 5.047645069928609
+            "radius": 0.559183367447124
         }
     },
-    "action": "bring_back_object",
+    "action": "go_to_object",
     "valid": true
 }
