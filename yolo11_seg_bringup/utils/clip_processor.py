@@ -4,7 +4,6 @@ import numpy as np
 from time import perf_counter
 
 import open_clip
-from PIL import Image as PILImage
 
 class CLIPProcessor:
     """

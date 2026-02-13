@@ -13,13 +13,11 @@ import numpy as np
 from cv_bridge import CvBridge
 import threading
 import json
-import sensor_msgs_py.point_cloud2 as pc2
 from time import perf_counter
 
 from ultralytics import YOLO
 
 from yolo11_seg_interfaces.msg import DetectedObject
-from yolo11_seg_interfaces.srv import CheckCandidates
 from .utils.clip_processor import CLIPProcessor
 
 
@@ -52,7 +50,7 @@ class NoPCVisionNode(Node):
         # YOLO parameters
         self.declare_parameter('model_path', '/workspaces/yolo_models/yolo26m-seg.pt')
         self.declare_parameter('imgsz', 640)
-        self.declare_parameter('conf', 0.45)
+        self.declare_parameter('conf', 0.55)
         self.declare_parameter('iou', 0.45)
         self.declare_parameter('retina_masks', True)
 
@@ -79,8 +77,8 @@ class NoPCVisionNode(Node):
         self.markers_topic = '/vision/centroid_markers'
         self.detection_topic = '/vision/detections'
 
-        self.frame_skip = 10
-        self.prompt_check_interval = 10
+        self.frame_skip = 5
+        self.prompt_check_interval = 760.0  # Check for new prompts every 760 seconds
 
         # Load YOLO model
         self.get_logger().info(f"Loading YOLO: {self.model_path}")

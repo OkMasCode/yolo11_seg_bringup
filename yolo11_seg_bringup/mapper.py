@@ -87,8 +87,12 @@ class SemanticObjectMap:
             
             self.node.get_logger().info(f"Centroid in map frame for {object_name}: x={pose_in_map[0]:.3f}, y={pose_in_map[1]:.3f}, z={pose_in_map[2]:.3f}")
 
-            # Prepare embeddings
-            img_vec = np.array(embeddings, dtype=np.float32)
+            # Prepare embeddings; keep existing if incoming is empty/None
+            img_vec = None
+            if embeddings is not None:
+                emb_arr = np.asarray(embeddings, dtype=np.float32)
+                if emb_arr.size > 0:
+                    img_vec = emb_arr
 
             new_size = (
                     abs(box_max[0] - box_min[0]),
@@ -113,7 +117,14 @@ class SemanticObjectMap:
                     new_similarity = (entry.similarity + similarity) / 2
                     # Update confidence only if new one is higher
                     updated_confidence = max(entry.confidence, confidence)
-                    self.objects[existing_id] = entry._replace(pose_map=avg_pose, occurrences=entry.occurrences+1, similarity=new_similarity, image_embedding=img_vec, confidence=updated_confidence)
+                    updated_embedding = entry.image_embedding if img_vec is None else img_vec
+                    self.objects[existing_id] = entry._replace(
+                        pose_map=avg_pose,
+                        occurrences=entry.occurrences + 1,
+                        similarity=new_similarity,
+                        image_embedding=updated_embedding,
+                        confidence=updated_confidence,
+                    )
                     return False
 
             self.objects[object_id] = ObjectEntry(
