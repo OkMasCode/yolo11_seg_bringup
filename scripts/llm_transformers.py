@@ -814,7 +814,6 @@ def save_robot_command(output_path: str, prompt: str, result: NavResult) -> None
         json.dump(payload, f, ensure_ascii=False, indent=4)
     print(f"Saved robot command to: {output_path}")
 
-
 # -------------------- MAIN -------------------- #
 
 def main():
