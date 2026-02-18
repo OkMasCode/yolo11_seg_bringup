@@ -1,6 +1,7 @@
 import threading
 import json
 import os
+from time import perf_counter
 
 import cv2
 import numpy as np
@@ -30,7 +31,7 @@ class ClipModelValidatorNode(Node):
 
         self.declare_parameter('image_topic', '/camera/camera/color/image_raw')
         self.declare_parameter('similarity_topic', '/clip/similarity')
-        self.declare_parameter('clip_model_name', 'ViT-SO400M-14-SigLIP2-378')
+        self.declare_parameter('clip_model_name', 'ViT-B-16-SigLIP')
         self.declare_parameter('clip_pretrained', 'webli')
         self.declare_parameter('prompt_file', '/home/workspace/ros2_ws/src/yolo11_seg_bringup/config/clip_prompt.json')
         self.declare_parameter('prompt_check_interval', 30.0)
@@ -64,6 +65,22 @@ class ClipModelValidatorNode(Node):
         self.state_lock = threading.Lock()
         self.current_prompt = None
         self.current_text_embedding = None
+        self.avg_window = 30
+        self.avg_prob_sum = 0.0
+        self.avg_prob_count = 0
+        self.timing_stats = {
+            'text_encoding': [],
+            'cv_bridge': [],
+            'image_preprocess': [],
+            'image_to_device': [],
+            'image_inference': [],
+            'image_normalization': [],
+            'image_to_cpu': [],
+            'image_encode_total': [],
+            'probability_compute': [],
+            'publishing': [],
+            'total_frame': [],
+        }
 
         qos_sensor = QoSProfile(
             depth=1,
@@ -98,6 +115,7 @@ class ClipModelValidatorNode(Node):
         if not text:
             return None
 
+        text_start = perf_counter()
         with torch.no_grad():
             try:
                 tokens = self.tokenizer(text).to(self.device)
@@ -121,21 +139,67 @@ class ClipModelValidatorNode(Node):
             ensemble_feature = features.mean(dim=0, keepdim=True)
             ensemble_feature = ensemble_feature / ensemble_feature.norm(dim=-1, keepdim=True)
 
+        text_time = (perf_counter() - text_start) * 1000.0
+        self.timing_stats['text_encoding'].append(text_time)
+
         return ensemble_feature.squeeze(0).detach().cpu().numpy()
 
     def _encode_image(self, image_bgr):
         if image_bgr is None or image_bgr.size == 0:
-            return None
+            return None, None
 
+        timings = {}
+        total_start = perf_counter()
+
+        preprocess_start = perf_counter()
         image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
         pil_image = PILImage.fromarray(image_rgb)
+        timings['image_preprocess'] = (perf_counter() - preprocess_start) * 1000.0
 
         with torch.no_grad():
+            to_device_start = perf_counter()
             image_input = self.preprocess(pil_image).unsqueeze(0).to(self.device)
-            features = self.model.encode_image(image_input)
-            features = features / features.norm(dim=-1, keepdim=True)
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            timings['image_to_device'] = (perf_counter() - to_device_start) * 1000.0
 
-        return features.squeeze(0).detach().cpu().numpy()
+            inference_start = perf_counter()
+            features = self.model.encode_image(image_input)
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            timings['image_inference'] = (perf_counter() - inference_start) * 1000.0
+
+            norm_start = perf_counter()
+            features = features / features.norm(dim=-1, keepdim=True)
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            timings['image_normalization'] = (perf_counter() - norm_start) * 1000.0
+
+        cpu_start = perf_counter()
+        features_cpu = features.squeeze(0).detach().cpu().numpy()
+        timings['image_to_cpu'] = (perf_counter() - cpu_start) * 1000.0
+        timings['image_encode_total'] = (perf_counter() - total_start) * 1000.0
+
+        return features_cpu, timings
+
+    def _record_timing(self, timings_dict):
+        if not timings_dict:
+            return
+        for key, value in timings_dict.items():
+            if key in self.timing_stats:
+                self.timing_stats[key].append(float(value))
+
+    def _log_and_reset_timing_stats(self):
+        total_times = self.timing_stats.get('total_frame', [])
+        if total_times and self.avg_prob_count > 0:
+            avg_total = float(np.mean(np.asarray(total_times, dtype=np.float32)))
+            avg_similarity = self.avg_prob_sum / self.avg_prob_count
+            self.get_logger().info(
+                f'Average over {len(total_times)} frames: total_time={avg_total:.2f} ms, similarity={avg_similarity:.2f}%'
+            )
+
+        for key in self.timing_stats:
+            self.timing_stats[key] = []
 
     def _load_prompt_from_json(self):
         if not os.path.exists(self.prompt_file):
@@ -180,17 +244,41 @@ class ClipModelValidatorNode(Node):
             return
 
         try:
+            frame_start = perf_counter()
+
+            cv_bridge_start = perf_counter()
             cv_bgr = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
-            image_embedding = self._encode_image(cv_bgr)
+            cv_bridge_time = (perf_counter() - cv_bridge_start) * 1000.0
+            self.timing_stats['cv_bridge'].append(cv_bridge_time)
+
+            image_embedding, image_timings = self._encode_image(cv_bgr)
+            self._record_timing(image_timings)
             if image_embedding is None:
                 self.get_logger().warn('Image embedding failed.')
                 return
-            probability = self._compute_match_probability(image_embedding, text_embedding)
 
+            prob_start = perf_counter()
+            probability = self._compute_match_probability(image_embedding, text_embedding)
+            prob_time = (perf_counter() - prob_start) * 1000.0
+            self.timing_stats['probability_compute'].append(prob_time)
+
+            pub_start = perf_counter()
             sim_msg = Float32()
             sim_msg.data = float(probability)
             self.sim_pub.publish(sim_msg)
-            self.get_logger().info(f'Match probability ({current_prompt}): {probability:.2f}%')
+            pub_time = (perf_counter() - pub_start) * 1000.0
+            self.timing_stats['publishing'].append(pub_time)
+
+            total_frame_time = (perf_counter() - frame_start) * 1000.0
+            self.timing_stats['total_frame'].append(total_frame_time)
+
+            self.avg_prob_sum += probability
+            self.avg_prob_count += 1
+
+            if self.avg_prob_count >= self.avg_window:
+                self._log_and_reset_timing_stats()
+                self.avg_prob_sum = 0.0
+                self.avg_prob_count = 0
 
         except Exception as exc:
             self.get_logger().error(f'Failed to process image/prompt pair: {exc}')
