@@ -13,13 +13,12 @@ class CLIPProcessor:
     - Ecoding text and images for model input
     - Computing sigmoid probabilities
     """
-    def __init__(self, device='cpu', model_name='ViT-B-16-SigLIP', pretrained='webli', image_size=224):
+    def __init__(self, device='cpu', model_name='ViT-B-16-SigLIP', pretrained='webli', image_size=None):
         """
         Iniialize CLIPProcessor
         """
         self.device = device
         self.model_name = model_name
-        self.image_size = image_size
         print(f"Loading SigLIP model: {model_name} ({pretrained})...")
 
         self.model, _, self.preprocess = open_clip.create_model_and_transforms(
@@ -31,6 +30,19 @@ class CLIPProcessor:
         self.tokenizer = open_clip.get_tokenizer(model_name)
 
         self.model.eval()
+
+        if image_size is None:
+            model_image_size = getattr(getattr(self.model, 'visual', None), 'image_size', None)
+            if isinstance(model_image_size, (tuple, list)) and len(model_image_size) > 0:
+                self.image_size = int(model_image_size[0])
+            elif model_image_size is not None:
+                self.image_size = int(model_image_size)
+            else:
+                self.image_size = 224
+        else:
+            self.image_size = int(image_size)
+
+        print(f"[CLIP] Using input image size: {self.image_size}")
 
     @staticmethod
     def compute_square_crop(x1,y1,x2,y2, width, height, scale = 1.2):

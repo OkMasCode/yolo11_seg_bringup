@@ -37,9 +37,9 @@ class NoPCVisionNode(Node):
         # ============= Parameters ============= #
 
         # Communication parameters
-        self.declare_parameter('image_topic', '/camera_color/image_raw')
-        self.declare_parameter('pointcloud_topic', '/camera_color/points')
-        self.declare_parameter('camera_info_topic', '/camera_color/camera_info')
+        self.declare_parameter('image_topic', '/camera/camera/color/image_raw')
+        self.declare_parameter('pointcloud_topic', '/camera/camera/depth/color/points')
+        self.declare_parameter('camera_info_topic', '/camera/camera/color/camera_info')
         self.declare_parameter('enable_visualization', False)
 
         self.image_topic = self.get_parameter('image_topic').value
@@ -48,7 +48,7 @@ class NoPCVisionNode(Node):
         self.enable_vis = bool(self.get_parameter('enable_visualization').value)
 
         # YOLO parameters
-        self.declare_parameter('model_path', '/workspaces/yolo_models/yolo26m-seg.pt')
+        self.declare_parameter('model_path', '/home/workspace/yolo26m-seg.pt')
         self.declare_parameter('imgsz', 640)
         self.declare_parameter('conf', 0.55)
         self.declare_parameter('iou', 0.45)
@@ -60,10 +60,10 @@ class NoPCVisionNode(Node):
         self.iou = float(self.get_parameter('iou').value)
         self.retina_masks = bool(self.get_parameter('retina_masks').value)
 
-        # CLIP parameters
+        # CLIP parameterss
         self.declare_parameter('CLIP_model_name', 'ViT-B-16-SigLIP')
-        self.declare_parameter('robot_command_file', '/workspaces/ros2_ws/src/yolo11_seg_bringup/config/robot_command.json')
-        self.declare_parameter('map_file_path', '/workspaces/ros2_ws/src/yolo11_seg_bringup/config/map.json')
+        self.declare_parameter('robot_command_file', '/home/workspace/ros2_ws/src/yolo11_seg_bringup/config/robot_command.json')
+        self.declare_parameter('map_file_path', '/home/workspace/ros2_ws/src/yolo11_seg_bringup/config/map.json')
         self.declare_parameter('square_crop_scale', 1.2)
 
         self.CLIP_model_name = self.get_parameter('CLIP_model_name').value
