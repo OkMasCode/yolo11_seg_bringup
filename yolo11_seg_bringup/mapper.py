@@ -64,7 +64,15 @@ class SemanticObjectMap:
     """
 
     def __init__(self, tf_buffer: Buffer, node: Node):
+        # Confirmed semantic objects that are considered persistent.
         self.objects = {}
+        # Temporary detections that must be re-observed before promotion.
+        self.tentative_objects = {}
+        # Promotion policy: minimum repeated detections inside a short time window.
+        self.confirmation_min_hits = 3
+        self.confirmation_time_window_sec = 1.0
+        # Tentative entries are discarded if not refreshed for this duration.
+        self.tentative_max_stale_sec = 1.0
         self.tf_buffer = tf_buffer
         self.node = node
     
@@ -74,6 +82,7 @@ class SemanticObjectMap:
         Transforms the pose to the fixed frame and merges with existing objects if close enough.
         """
         try:
+            # Resolve transform at detection timestamp and project centroid into map frame.
             lookup_time = rclpy.time.Time.from_msg(detection_stamp)
             # Get the transform from camera frame to fixed frame
             transform = self.tf_buffer.lookup_transform(
@@ -94,6 +103,10 @@ class SemanticObjectMap:
                 if emb_arr.size > 0:
                     img_vec = emb_arr
 
+            # Housekeeping for tentative cache before processing this observation.
+            current_ns = self._stamp_to_ns(detection_stamp)
+            self._prune_tentative(current_ns)
+
             new_size = (
                     abs(box_max[0] - box_min[0]),
                     abs(box_max[1] - box_min[1]),
@@ -110,6 +123,7 @@ class SemanticObjectMap:
                         center_b=entry.pose_map, size_b=entry.box_size
                     )
                 if dist < distance_threshold or overlap:
+                    # Existing confirmed object matched: update running map estimate.
                     avg_pose = tuple(
                         (entry.pose_map[i] * entry.occurrences + pose_in_map[i]) / (entry.occurrences + 1)
                         for i in range(3)
@@ -127,23 +141,124 @@ class SemanticObjectMap:
                     )
                     return False
 
-            self.objects[object_id] = ObjectEntry(
-                frame = camera_frame,
-                timestamp = detection_stamp,
-                pose_cam = (pose_in_camera.x, pose_in_camera.y, pose_in_camera.z),
-                pose_map = pose_in_map,
-                occurrences = 1,
-                name = object_name,
-                similarity = similarity,
-                image_embedding = img_vec,
-                confidence= confidence,
-                box_size= new_size
+            # No confirmed match: update tentative track and promote only after repeated hits.
+            track_key = self._build_track_key(object_name, object_id)
+            tentative = self.tentative_objects.get(track_key)
+
+            if tentative is None:
+                # First observation for this tracker: initialize tentative evidence.
+                self.tentative_objects[track_key] = {
+                    'frame': camera_frame,
+                    'timestamp': detection_stamp,
+                    'pose_cam': (pose_in_camera.x, pose_in_camera.y, pose_in_camera.z),
+                    'pose_map': pose_in_map,
+                    'hits': 1,
+                    'first_seen_ns': current_ns,
+                    'last_seen_ns': current_ns,
+                    'name': object_name,
+                    'similarity': similarity,
+                    'image_embedding': img_vec,
+                    'confidence': confidence,
+                    'box_size': new_size,
+                }
+                return False
+
+            tent_dist = self.euclidean_distance(pose_in_map, tentative['pose_map'])
+            tent_overlap = False
+            if tentative['box_size'] is not None:
+                tent_overlap = self.check_aabb_intersection(
+                    center_a=pose_in_map, size_a=new_size,
+                    center_b=tentative['pose_map'], size_b=tentative['box_size']
+                )
+
+            # If the same tracker id jumps too far, restart tentative evidence.
+            if tent_dist >= distance_threshold and not tent_overlap:
+                self.tentative_objects[track_key] = {
+                    'frame': camera_frame,
+                    'timestamp': detection_stamp,
+                    'pose_cam': (pose_in_camera.x, pose_in_camera.y, pose_in_camera.z),
+                    'pose_map': pose_in_map,
+                    'hits': 1,
+                    'first_seen_ns': current_ns,
+                    'last_seen_ns': current_ns,
+                    'name': object_name,
+                    'similarity': similarity,
+                    'image_embedding': img_vec,
+                    'confidence': confidence,
+                    'box_size': new_size,
+                }
+                return False
+
+            # Same tentative target observed again: update running aggregates.
+            hits = tentative['hits'] + 1
+            avg_pose = tuple(
+                (tentative['pose_map'][i] * tentative['hits'] + pose_in_map[i]) / hits
+                for i in range(3)
             )
-            return True
+            updated_tentative = {
+                'frame': camera_frame,
+                'timestamp': detection_stamp,
+                'pose_cam': (pose_in_camera.x, pose_in_camera.y, pose_in_camera.z),
+                'pose_map': avg_pose,
+                'hits': hits,
+                'first_seen_ns': tentative['first_seen_ns'],
+                'last_seen_ns': current_ns,
+                'name': object_name,
+                'similarity': (tentative['similarity'] + similarity) / 2,
+                'image_embedding': tentative['image_embedding'] if img_vec is None else img_vec,
+                'confidence': max(tentative['confidence'], confidence),
+                'box_size': new_size,
+            }
+            self.tentative_objects[track_key] = updated_tentative
+
+            # Promote tentative -> confirmed only if evidence is strong and recent.
+            confirmation_window_ns = int(self.confirmation_time_window_sec * 1e9)
+            if hits >= self.confirmation_min_hits and (current_ns - updated_tentative['first_seen_ns']) <= confirmation_window_ns:
+                promoted_id = f"{track_key}_{detection_stamp.sec}_{detection_stamp.nanosec}"
+                self.objects[promoted_id] = ObjectEntry(
+                    frame=updated_tentative['frame'],
+                    timestamp=updated_tentative['timestamp'],
+                    pose_cam=updated_tentative['pose_cam'],
+                    pose_map=updated_tentative['pose_map'],
+                    occurrences=updated_tentative['hits'],
+                    name=updated_tentative['name'],
+                    similarity=updated_tentative['similarity'],
+                    image_embedding=updated_tentative['image_embedding'],
+                    confidence=updated_tentative['confidence'],
+                    box_size=updated_tentative['box_size']
+                )
+                del self.tentative_objects[track_key]
+                return True
+
+            # Tentative object not confirmed yet.
+            return False
 
         except TransformException as ex:
             self.node.get_logger().warning(f"Could not store {object_id}: {ex}")
             return False
+
+    def _stamp_to_ns(self, stamp) -> int:
+        # Convert ROS Time message to monotonic-friendly integer nanoseconds.
+        return int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec)
+
+    def _build_track_key(self, object_name: str, object_id: str) -> str:
+        # object_id format in mapper_node is: <class>_inst<id>_<sec>_<nsec>
+        # Strip trailing timestamp to recover stable tracker identity.
+        base_id = object_id
+        parts = object_id.rsplit('_', 2)
+        if len(parts) == 3:
+            base_id = parts[0]
+        return f"{object_name}::{base_id}"
+
+    def _prune_tentative(self, current_ns: int) -> None:
+        # Remove tentative entries that have not been seen recently.
+        stale_ns = int(self.tentative_max_stale_sec * 1e9)
+        stale_keys = [
+            key for key, value in self.tentative_objects.items()
+            if (current_ns - value['last_seen_ns']) > stale_ns
+        ]
+        for key in stale_keys:
+            del self.tentative_objects[key]
         
     def transform_point(self, point, transform: TransformStamped):
         """
@@ -180,6 +295,7 @@ class SemanticObjectMap:
         This method attempts to re-transform each object's stored camera-frame pose
         into the fixed_frame using the transform at the object's stored timestamp.
         """
+        # Recompute each confirmed object's pose_map using current tf availability.
         for object_id, entry in self.objects.items():
             try:
                 # Lookup the transform from the object's stored frame (entry.frame) to the fixed_frame
@@ -208,6 +324,7 @@ class SemanticObjectMap:
         """
         txt_vec = np.array(goal_embedding, dtype=np.float32)
         
+        # Re-score each confirmed object with the latest text goal embedding.
         for object_id, entry in self.objects.items():
             if entry.image_embedding is not None:
                 similarity = float(np.dot(entry.image_embedding, txt_vec))
@@ -231,6 +348,7 @@ class SemanticObjectMap:
             with open(path, 'r') as json_file:
                 data = json.load(json_file)
             
+            # Rehydrate confirmed map entries from persisted JSON payload.
             for object_id, obj_data in data.items():
                 # Reconstruct the ObjectEntry
                 timestamp = Time(
@@ -274,6 +392,7 @@ class SemanticObjectMap:
         path = os.path.join(directory_path, file)
 
 
+        # Serialize confirmed objects only (tentative entries are intentionally transient).
         export_data = {}
         for object_id, entry in self.objects.items():
             # Convert similarity to native Python float, handling None values
@@ -319,7 +438,7 @@ class SemanticObjectMap:
         min_b = np.array(center_b) - hb
         max_b = np.array(center_b) + hb
         
-        # Check overlap in all 3 axes
+        # Overlap must hold on all axes for intersection in 3D.
         overlap_x = (min_a[0] <= max_b[0]) and (max_a[0] >= min_b[0])
         overlap_y = (min_a[1] <= max_b[1]) and (max_a[1] >= min_b[1])
         overlap_z = (min_a[2] <= max_b[2]) and (max_a[2] >= min_b[2])

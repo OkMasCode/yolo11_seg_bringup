@@ -1,3 +1,8 @@
+"""
+ROS2 vision node for RGB + PointCloud segmentation, 3D centroid extraction,
+CLIP embedding, and detection publishing.
+"""
+
 import os
 import rclpy
 from rclpy.node import Node
@@ -31,6 +36,7 @@ class NoPCVisionNode(Node):
     # ------------- Initialization ------------- #
 
     def __init__(self):
+        # Node creation and startup log.
         super().__init__('no_pc_vision_node')
         self.get_logger().info("NoPCVisionNode initialized\n")
 
@@ -60,7 +66,7 @@ class NoPCVisionNode(Node):
         self.iou = float(self.get_parameter('iou').value)
         self.retina_masks = bool(self.get_parameter('retina_masks').value)
 
-        # CLIP parameterss
+        # CLIP parameters
         self.declare_parameter('CLIP_model_name', 'ViT-B-16-SigLIP')
         self.declare_parameter('robot_command_file', '/home/workspace/ros2_ws/src/yolo11_seg_bringup/config/robot_command.json')
         self.declare_parameter('map_file_path', '/home/workspace/ros2_ws/src/yolo11_seg_bringup/config/map.json')
@@ -68,10 +74,9 @@ class NoPCVisionNode(Node):
 
         self.CLIP_model_name = self.get_parameter('CLIP_model_name').value
         self.robot_command_file = self.get_parameter('robot_command_file').value
-        self.map_file_path = self.get_parameter('map_file_path').value
         self.square_crop_scale = float(self.get_parameter('square_crop_scale').value)
 
-        # =========== Initialization =========== #
+        # =========== Internal Topics / Runtime =========== #
 
         self.anno_topic = '/vision/annotated_image'
         self.markers_topic = '/vision/centroid_markers'
@@ -80,7 +85,7 @@ class NoPCVisionNode(Node):
         self.frame_skip = 5
         self.prompt_check_interval = 760.0  # Check for new prompts every 760 seconds
 
-        # Load YOLO model
+        # Load YOLO segmentation model.
         self.get_logger().info(f"Loading YOLO: {self.model_path}")
         self.model = YOLO(self.model_path, task='segment')    
 
@@ -93,6 +98,7 @@ class NoPCVisionNode(Node):
             pretrained="webli"
         )
 
+        # CV bridge and camera intrinsics placeholders.
         self.bridge = CvBridge()
         self.fx = self.fy = self.cx = self.cy = None
         self.current_pointcloud = None
@@ -142,6 +148,7 @@ class NoPCVisionNode(Node):
         }
         self.timing_window = 30  # Print stats every N frames
 
+        # COCO class labels expected by the YOLO model.
         self.CLASS_NAMES = [
             "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat", "traffic light",
             "fire hydrant", "stop sign", "parking meter", "bench", "bird", "cat", "dog", "horse", "sheep", "cow",
@@ -177,6 +184,7 @@ class NoPCVisionNode(Node):
         Synchronized RGB-PointCloud callback.
         """
         self.get_logger().info("Synchronized callback triggered", throttle_duration_sec=5.0)
+        # Use a lock to avoid overlapping heavy processing callbacks.
         with self.sync_lock:
             self.current_pointcloud = pc_msg
             self.process_frame(rgb_msg, pc_msg)
@@ -187,6 +195,7 @@ class NoPCVisionNode(Node):
         """
         Process a single RGB frame with pointcloud.
         """
+        # Wait until camera intrinsics are available.
         if self.fx is None:
             self.get_logger().warn("Waiting for camera intrinsics...", throttle_duration_sec=5.0)
             return
@@ -195,11 +204,13 @@ class NoPCVisionNode(Node):
         frame_start = perf_counter()
 
         try:
+            # Convert ROS Image to OpenCV BGR frame.
             cv_bgr = self.bridge.imgmsg_to_cv2(rgb_msg, desired_encoding='bgr8')
             height, width = cv_bgr.shape[:2]
 
             # ===== YOLO INFERENCE TIMING =====
             yolo_start = perf_counter()
+            # Run YOLO tracking + segmentation on current frame.
             results = self.model.track(
                 source=cv_bgr,
                 imgsz=self.imgsz,
@@ -214,11 +225,13 @@ class NoPCVisionNode(Node):
             yolo_time = (perf_counter() - yolo_start) * 1000
             self.timing_stats['yolo_inference'].append(yolo_time)
             
+            # Skip processing if no valid detections are returned.
             res = results[0]
             if not hasattr(res, 'masks') or len(res.boxes) == 0:
                 self.get_logger().info("No detections in this frame", throttle_duration_sec=2.0)
                 return
             
+            # Run geometry extraction, CLIP embedding, and message publishing.
             self._process_detections(res, cv_bgr, pc_msg, rgb_msg, height, width)
 
             if self.enable_vis:
@@ -230,6 +243,7 @@ class NoPCVisionNode(Node):
                 self.get_logger().info(f"Published annotated image (frame {self.frame_count})", throttle_duration_sec=2.0)
             
             # ===== TOTAL FRAME TIMING =====
+            # Record end-to-end latency for successful frames.
             total_time = (perf_counter() - frame_start) * 1000
             self.timing_stats['total_frame'].append(total_time)
             
@@ -245,13 +259,14 @@ class NoPCVisionNode(Node):
         Unified pipeline using camera's pointcloud
         """
         # ===== GPU-to-CPU TRANSFER TIMING =====
+        # Move detection tensors from GPU to CPU NumPy arrays for geometric processing.
         gpu_transfer_start = perf_counter()
         xyxy = res.boxes.xyxy.cpu().numpy()
         clss = res.boxes.cls.cpu().numpy().astype(int)
         confs = res.boxes.conf.cpu().numpy() if res.boxes.conf is not None else np.zeros(len(clss), dtype=float)
         ids = res.boxes.id.cpu().numpy().astype(int) if res.boxes.id is not None else np.arange(len(clss))
         
-        # Transfer ALL masks at once (more efficient than per-detection)
+        # Transfer all masks at once (faster than per-detection transfer).
         if hasattr(res, 'masks') and res.masks is not None:
             masks_np = res.masks.data.detach().cpu().numpy()
         else:
@@ -261,6 +276,7 @@ class NoPCVisionNode(Node):
         self.get_logger().debug(f"GPU-to-CPU transfer: {gpu_transfer_time:.2f}ms")
 
         # ===== POINTCLOUD CONVERSION TIMING =====
+        # Convert PointCloud2 raw byte buffer into HxWx3 XYZ array.
         pc_start = perf_counter()
         try:
             # Create a structured NumPy data type to define the memory layout
@@ -284,7 +300,7 @@ class NoPCVisionNode(Node):
                 pc_array_structured['z']
             ], axis=-1)
 
-            # Reshape to image dimensions
+            # Reshape flat cloud to image-aligned geometry.
             pc_array = pc_array.reshape(height, width, 3)
 
             pc_total_time = (perf_counter() - pc_start) * 1000
@@ -296,12 +312,15 @@ class NoPCVisionNode(Node):
             self.get_logger().error(f"Failed to convert pointcloud: {e}")
             return
 
+        # Per-frame containers: all detections and CLIP candidates for batch inference.
         frame_detections = []
         batch_queue = []
 
+        # Run CLIP every N frames to reduce compute load.
         do_clip_frame = (self.frame_count % max(1, self.frame_skip) == 0)
 
         # ===== DETECTION PROCESSING TIMING =====
+        # Process each instance: mask filtering, 3D centroid, crop prep.
         det_process_start = perf_counter()
         for i in range(len(xyxy)):
             result = self.process_single_detection(
@@ -323,6 +342,7 @@ class NoPCVisionNode(Node):
         self.get_logger().debug(f"Detection processing ({len(frame_detections)} detections): {det_proc_time:.2f}ms")
             
         # ===== CLIP ENCODING TIMING =====
+        # Batch CLIP image encoding for all prepared crops.
         if batch_queue:
             try:
                 clip_start = perf_counter()
@@ -332,7 +352,7 @@ class NoPCVisionNode(Node):
                 # Run inference on all at once
                 embeddings = self.clip.encode_images_batch(images)
                 
-                # Re-associate embeddings with metadata
+                # Re-associate embeddings with metadata and release image crops.
                 for i, emb in enumerate(embeddings):
                     batch_queue[i]["embedding"] = emb
                     # Clear the image to free memory
@@ -345,9 +365,9 @@ class NoPCVisionNode(Node):
                 self.get_logger().error(f"Batch CLIP inference failed: {e}")
 
         # ===== PUBLISHING TIMING =====
+        # Publish structured detections and visualization markers.
         pub_start = perf_counter()
         self.publish_custom_detections(frame_detections, pc_msg.header, rgb_msg.header.stamp)
-        self.publish_centroid_markers(frame_detections, pc_msg.header)
         if self.enable_vis:
             self.publish_centroid_markers(frame_detections, pc_msg.header)
         
@@ -362,6 +382,7 @@ class NoPCVisionNode(Node):
         Process geometry using camera's pointcloud and prepare data container. 
         Returns detection_dictionary
         """
+        # Clamp bounding box to image boundaries.
         x1, y1, x2, y2 = bbox
 
         x1 = max(0, min(int(x1), width - 1))
@@ -369,36 +390,39 @@ class NoPCVisionNode(Node):
         x2 = max(0, min(int(x2), width - 1))
         y2 = max(0, min(int(y2), height - 1))
 
+        # Reject invalid boxes and missing masks.
         if x2 <= x1 or y2 <= y1:
             return None
         
         if masks_np is None or idx >= masks_np.shape[0]:
             return None
 
-        # Get mask for this instance (already on CPU)
+        # Get mask for this instance (already on CPU).
         m = masks_np[idx]
         if m.shape[0] != height or m.shape[1] != width:
             m = cv2.resize(m, (width, height), interpolation=cv2.INTER_NEAREST)
         binary_mask = (m > 0.5)
 
-        # Extract points from the pointcloud using the mask
+        # Extract masked XYZ points from image-aligned pointcloud.
         masked_points = pc_array[binary_mask]
         
-        # Filter out invalid points (NaN or zero)
-        valid_mask = ~np.isnan(masked_points).any(axis=1)
+        # Filter out invalid points (NaN, Inf, or all-zero XYZ).
+        finite_mask = np.isfinite(masked_points).all(axis=1)
+        non_zero_mask = ~(np.all(masked_points == 0.0, axis=1))
+        valid_mask = finite_mask & non_zero_mask
         valid_points = masked_points[valid_mask]
         
         if len(valid_points) == 0:
             return None
         
-        # Compute centroid
+        # Compute centroid and 3D bounding extents from valid points.
         centroid = np.mean(valid_points, axis=0)
         centroid = (float(centroid[0]), float(centroid[1]), float(centroid[2]))
 
         min_box = np.min(valid_points, axis=0) # [min_x, min_y, min_z]
         max_box = np.max(valid_points, axis=0) # [max_x, max_y, max_z]
 
-        # --- Create Shared Object ---
+        # Create per-detection record shared across publishing stages.
         class_name = self.class_id_to_name(int(class_id))
 
         detection_entry = {
@@ -413,7 +437,7 @@ class NoPCVisionNode(Node):
             "box_max": (float(max_box[0]), float(max_box[1]), float(max_box[2])),
         }
 
-        # --- Prepare CLIP Crop (If enabled) ---
+        # Prepare CLIP crop (if current frame is scheduled for CLIP).
         if do_clip_frame:
             sx1, sy1, sx2, sy2 = CLIPProcessor.compute_square_crop(
                 x1, y1, x2, y2, width, height, self.square_crop_scale
@@ -442,6 +466,7 @@ class NoPCVisionNode(Node):
         """ 
         Deterministically generate a color for a given class ID. 
         """
+        # Cache deterministic class colors so marker colors stay consistent over time.
         if class_id not in class_colors:
             h = abs(hash(class_id))
             r = (h >> 0) & 0xFF
@@ -458,13 +483,14 @@ class NoPCVisionNode(Node):
         Load clip_prompt from robot_command.json and update text embedding if changed.
         """
         try:
+            # If command file does not exist yet, keep previous prompt.
             if not os.path.exists(self.robot_command_file):
                 return
             
             with open(self.robot_command_file, 'r') as f:
                 data = json.load(f)
             
-            # Update GOAL Prompt
+            # Update goal prompt and regenerate text embedding only when prompt changes.
             clip_prompt = data.get('clip_prompt', None)
             if clip_prompt != self.current_clip_prompt:
                 self.current_clip_prompt = clip_prompt
@@ -478,6 +504,7 @@ class NoPCVisionNode(Node):
         """
         Convert class ID to class name.
         """
+        # Safe class lookup with fallback label for out-of-range IDs.
         if 0 <= class_id < len(self.CLASS_NAMES):
             return self.CLASS_NAMES[class_id]
         return f"class_{class_id}"
@@ -513,6 +540,7 @@ class NoPCVisionNode(Node):
 
     def publish_custom_detections(self, detections, header, timestamp):
         """ Iterate through the unified list and publish messages. """
+        # Publish one DetectedObject message per detection entry.
         for det in detections:
             msg = DetectedObject()
             
@@ -525,13 +553,13 @@ class NoPCVisionNode(Node):
             cx, cy, cz = det["centroid"]
             msg.centroid = Vector3(x=cx, y=cy, z=cz)
             
-            # Timestamp (Extract directly from the header)
+            # Timestamp from synchronized pointcloud header.
             msg.timestamp = header.stamp
             
             current_emb = det["embedding"]
             msg.embedding = current_emb.tolist() if current_emb is not None else []
 
-            # Only compute similarity if embedding is available
+            # Compute goal similarity only when both embeddings are present.
             prob_goal = 0.0
             if current_emb is not None and self.goal_text_embedding is not None:
                 prob_goal = self.clip.compute_sigmoid_probs(current_emb, self.goal_text_embedding)
