@@ -55,6 +55,6 @@
             "radius": 0.559183367447124
         }
     },
-    "action": "go_to_object",
+    "action": "bring_back_object",
     "valid": true
 }

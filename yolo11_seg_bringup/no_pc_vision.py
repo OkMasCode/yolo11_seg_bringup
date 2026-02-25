@@ -43,9 +43,9 @@ class NoPCVisionNode(Node):
         # ============= Parameters ============= #
 
         # Communication parameters
-        self.declare_parameter('image_topic', '/camera/camera/color/image_raw')
-        self.declare_parameter('pointcloud_topic', '/camera/camera/depth/color/points')
-        self.declare_parameter('camera_info_topic', '/camera/camera/color/camera_info')
+        self.declare_parameter('image_topic', '/camera_color/image_raw') #/camera/camera/color/image_raw
+        self.declare_parameter('pointcloud_topic', '/camera_color/points') #/camera/camera/depth/color/points
+        self.declare_parameter('camera_info_topic', '/camera_color/depth/camera_info') #/camera/camera/color/camera_info
         self.declare_parameter('enable_visualization', False)
 
         self.image_topic = self.get_parameter('image_topic').value
@@ -54,9 +54,9 @@ class NoPCVisionNode(Node):
         self.enable_vis = bool(self.get_parameter('enable_visualization').value)
 
         # YOLO parameters
-        self.declare_parameter('model_path', '/home/workspace/yolo26m-seg.pt')
+        self.declare_parameter('model_path', '/workspaces/yolo26m-seg.pt') #/home/workspace/yolo26m-seg.pt
         self.declare_parameter('imgsz', 640)
-        self.declare_parameter('conf', 0.55)
+        self.declare_parameter('conf', 0.70)
         self.declare_parameter('iou', 0.45)
         self.declare_parameter('retina_masks', True)
 
@@ -68,8 +68,8 @@ class NoPCVisionNode(Node):
 
         # CLIP parameters
         self.declare_parameter('CLIP_model_name', 'ViT-B-16-SigLIP')
-        self.declare_parameter('robot_command_file', '/home/workspace/ros2_ws/src/yolo11_seg_bringup/config/robot_command.json')
-        self.declare_parameter('map_file_path', '/home/workspace/ros2_ws/src/yolo11_seg_bringup/config/map.json')
+        self.declare_parameter('robot_command_file', '/workspaces/ros2_ws/src/yolo11_seg_bringup/config/robot_command.json') #/home/workspace/ros2_ws/src/yolo11_seg_bringup/config/robot_command.json
+        self.declare_parameter('map_file_path', '/workspaces/ros2_ws/src/yolo11_seg_bringup/config/map.json') #/home/workspace/ros2_ws/src/yolo11_seg_bringup/config/map.json
         self.declare_parameter('square_crop_scale', 1.2)
 
         self.CLIP_model_name = self.get_parameter('CLIP_model_name').value
@@ -210,6 +210,11 @@ class NoPCVisionNode(Node):
 
             # ===== YOLO INFERENCE TIMING =====
             yolo_start = perf_counter()
+            # setting classes for yoloE
+            # self.model.set_classes([
+            # "sink", "refrigerator", "chair", "dining table", "spoon", "couch", "bed", 
+            # "nightstand", "wardrobe", "barbell", "sports ball", "desk", "tv"
+            # ])
             # Run YOLO tracking + segmentation on current frame.
             results = self.model.track(
                 source=cv_bgr,
@@ -266,6 +271,7 @@ class NoPCVisionNode(Node):
         confs = res.boxes.conf.cpu().numpy() if res.boxes.conf is not None else np.zeros(len(clss), dtype=float)
         ids = res.boxes.id.cpu().numpy().astype(int) if res.boxes.id is not None else np.arange(len(clss))
         
+        names = np.array([res.names[c] for c in clss])
         # Transfer all masks at once (faster than per-detection transfer).
         if hasattr(res, 'masks') and res.masks is not None:
             masks_np = res.masks.data.detach().cpu().numpy()
@@ -324,7 +330,7 @@ class NoPCVisionNode(Node):
         det_process_start = perf_counter()
         for i in range(len(xyxy)):
             result = self.process_single_detection(
-                i, xyxy[i], clss[i], ids[i],confs[i], masks_np,
+                i, xyxy[i], clss[i], names[i], ids[i], confs[i], masks_np,
                 cv_bgr, pc_array,
                 height, width, rgb_msg, do_clip_frame
             )
@@ -375,7 +381,7 @@ class NoPCVisionNode(Node):
         self.timing_stats['publishing'].append(pub_time)
         self.get_logger().debug(f"Publishing: {pub_time:.2f}ms")
 
-    def process_single_detection(self, idx, bbox, class_id, instance_id, confidence, masks_np,
+    def process_single_detection(self, idx, bbox, class_id, class_name, instance_id, confidence, masks_np,
                                  cv_bgr, pc_array,
                                  height, width, rgb_msg, do_clip_frame):
         """ 
@@ -423,7 +429,8 @@ class NoPCVisionNode(Node):
         max_box = np.max(valid_points, axis=0) # [max_x, max_y, max_z]
 
         # Create per-detection record shared across publishing stages.
-        class_name = self.class_id_to_name(int(class_id))
+        class_name = class_name #self.class_id_to_name(int(class_id))
+        
 
         detection_entry = {
             "class_id": int(class_id),
@@ -568,7 +575,7 @@ class NoPCVisionNode(Node):
                 msg.similarity = 0.0
 
             self.get_logger().info(
-                f"ID {det['instance_id']} ({det['object_name']}): Goal={prob_goal}"
+                f"ID {det['instance_id']} ({det['object_name']}): Confidence={det['confidence']:.3f}, Goal={prob_goal}"
             )
 
             # --- NEW: Assign Box ---
