@@ -43,9 +43,9 @@ class NoPCVisionNode(Node):
         # ============= Parameters ============= #
 
         # Communication parameters
-        self.declare_parameter('image_topic', '/camera_color/image_raw') #/camera/camera/color/image_raw
-        self.declare_parameter('pointcloud_topic', '/camera_color/points') #/camera/camera/depth/color/points
-        self.declare_parameter('camera_info_topic', '/camera_color/depth/camera_info') #/camera/camera/color/camera_info
+        self.declare_parameter('image_topic', '/camera/color/image_raw') #/camera/camera/color/image_raw
+        self.declare_parameter('pointcloud_topic', '/camera/depth/color/points') #/camera/camera/depth/color/points
+        self.declare_parameter('camera_info_topic', '/camera/depth/camera_info') #/camera/camera/color/camera_info
         self.declare_parameter('enable_visualization', False)
 
         self.image_topic = self.get_parameter('image_topic').value
@@ -54,7 +54,7 @@ class NoPCVisionNode(Node):
         self.enable_vis = bool(self.get_parameter('enable_visualization').value)
 
         # YOLO parameters
-        self.declare_parameter('model_path', '/workspaces/yolo26m-seg.pt') #/home/workspace/yolo26m-seg.pt
+        self.declare_parameter('model_path', '/workspaces/yolo26l-seg.pt') #/home/workspace/yolo26m-seg.pt
         self.declare_parameter('imgsz', 640)
         self.declare_parameter('conf', 0.55)
         self.declare_parameter('iou', 0.45)
@@ -307,7 +307,7 @@ class NoPCVisionNode(Node):
             ], axis=-1)
 
             # Reshape flat cloud to image-aligned geometry.
-            pc_array = pc_array.reshape(height, width, 3)
+            # pc_array = pc_array.reshape(height, width, 3)
 
             pc_total_time = (perf_counter() - pc_start) * 1000
             
@@ -410,8 +410,8 @@ class NoPCVisionNode(Node):
         binary_mask = (m > 0.5)
 
         # Extract masked XYZ points from image-aligned pointcloud.
-        masked_points = pc_array[binary_mask]
-        
+        # masked_points = pc_array[binary_mask]
+        masked_points = self.get_points_in_mask(pc_array, binary_mask, self.fx, self.fy, self.cx, self.cy)
         # Filter out invalid points (NaN, Inf, or all-zero XYZ).
         finite_mask = np.isfinite(masked_points).all(axis=1)
         non_zero_mask = ~(np.all(masked_points == 0.0, axis=1))
@@ -543,6 +543,34 @@ class NoPCVisionNode(Node):
         for key in self.timing_stats:
             self.timing_stats[key] = []
 
+    def get_points_in_mask(self, pc_array, binary_mask, fx, fy, cx, cy):
+        height, width = binary_mask.shape
+        x = pc_array[:, 0]
+        y = pc_array[:, 1]
+        z = pc_array[:, 2]
+        valid_z_mask = (z > 0) & np.isfinite(z)
+
+        points_clean = pc_array[valid_z_mask]
+        x_clean = x[valid_z_mask]
+        y_clean = y[valid_z_mask]
+        z_clean = z[valid_z_mask]
+
+        u = (x_clean * fx) / z_clean + cx
+        v = (y_clean * fy) / z_clean + cy
+
+        u = np.round(u).astype(int)
+        v = np.round(v).astype(int)
+
+        valid_uv_mask = (u >= 0) & (u < width) & (v >= 0) & (v < height)
+
+        u_valid = u[valid_uv_mask]
+        v_valid = v[valid_uv_mask]
+        points_valid = points_clean[valid_uv_mask]
+
+        is_in_mask = binary_mask[v_valid, u_valid]
+        object_points = points_valid[is_in_mask]
+        return object_points
+    
     # ---------------- Publishers -------------- #
 
     def publish_custom_detections(self, detections, header, timestamp):

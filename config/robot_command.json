@@ -3,9 +3,9 @@
     "prompt": "go to the sink",
     "goal": "sink",
     "clip_prompts": [
-        "fridge",
-        "a refrigerator",
-        "the gray fridge"
+        "black and green chair",
+        "a chair with green cushion",
+        "the green chair"
     ],
     "text_embedding": null,
     "goal_objects": [

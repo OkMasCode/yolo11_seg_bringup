@@ -12,7 +12,7 @@ class SimpleYoloAnnotatorNode(Node):
 
         self.declare_parameter('image_topic', '/camera/color/image_raw')
         self.declare_parameter('output_topic', '/vision/annotated_image')
-        self.declare_parameter('model_path', '/workspaces/yoloe-26m-seg.pt')
+        self.declare_parameter('model_path', '/workspaces/yoloe-26l-seg-pf.pt')
         self.declare_parameter('imgsz', 640)
         self.declare_parameter('conf', 0.5)
         self.declare_parameter('iou', 0.45)
@@ -48,7 +48,7 @@ class SimpleYoloAnnotatorNode(Node):
     def image_callback(self, msg: Image):
         try:
             cv_bgr = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
-            self.model.set_classes(["microwave"])
+            #self.model.set_classes(["microwave"])
             results = self.model.predict(
                 source=cv_bgr,
                 imgsz=self.imgsz,
