@@ -56,7 +56,7 @@ class NoPCVisionNode(Node):
         # YOLO parameters
         self.declare_parameter('model_path', '/workspaces/yolo26m-seg.pt') #/home/workspace/yolo26m-seg.pt
         self.declare_parameter('imgsz', 640)
-        self.declare_parameter('conf', 0.70)
+        self.declare_parameter('conf', 0.55)
         self.declare_parameter('iou', 0.45)
         self.declare_parameter('retina_masks', True)
 
@@ -498,7 +498,7 @@ class NoPCVisionNode(Node):
                 data = json.load(f)
             
             # Update goal prompt and regenerate text embedding only when prompt changes.
-            clip_prompt = data.get('clip_prompt', None)
+            clip_prompt = data.get('clip_prompts', None)
             if clip_prompt != self.current_clip_prompt:
                 self.current_clip_prompt = clip_prompt
                 self.goal_text_embedding = self.clip.encode_text(clip_prompt)
