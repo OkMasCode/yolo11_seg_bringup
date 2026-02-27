@@ -355,6 +355,7 @@ class ClipPromptsOutput(BaseModel):
 class ClusterPrediction(BaseModel):
     cluster_id: int  # ID of the most likely cluster
     reasoning: str  # Brief explanation of why this cluster was chosen
+    location_confidence: float = 0.0  # 0.0-1.0 confidence that location cues should be prioritized
 
 # ------------------ LLM CALLS ----------------- #
 
@@ -605,6 +606,16 @@ def determine_most_likely_cluster(prompt: str, goal: str) -> ClusterPrediction:
             response_text = call_llm(msgs, temperature=0.2)
             
             response_json = extract_json_from_response(response_text, expected_keys=["cluster_id", "reasoning"])
+            if "location_confidence" not in response_json:
+                response_json["location_confidence"] = 0.0
+
+            # Clamp to [0.0, 1.0] for robustness
+            try:
+                response_json["location_confidence"] = float(response_json["location_confidence"])
+            except (TypeError, ValueError):
+                response_json["location_confidence"] = 0.0
+            response_json["location_confidence"] = max(0.0, min(1.0, response_json["location_confidence"]))
+
             result = ClusterPrediction.model_validate(response_json)
             break
             
@@ -633,6 +644,7 @@ def determine_most_likely_cluster(prompt: str, goal: str) -> ClusterPrediction:
     
     print(f"Selected Cluster: {result.cluster_id}")
     print(f"Reasoning: {result.reasoning}")
+    print(f"Location confidence: {result.location_confidence:.2f}")
     print(f"Computation time: {elapsed:.2f} seconds\n")
     
     return result
@@ -736,6 +748,8 @@ def process_nav_instruction(prompt : str) -> NavResult:
         "cluster_id": cluster_prediction.cluster_id,
         "objects": cluster_summaries[cluster_prediction.cluster_id],
         "reasoning": cluster_prediction.reasoning,
+        "location_confidence": cluster_prediction.location_confidence,
+        "prioritize_location": cluster_prediction.location_confidence >= 0.5,
         "coords": cluster_coords,
         "dimensions": cluster_dimensions
     }
@@ -793,6 +807,8 @@ def save_robot_command(output_path: str, prompt: str, result: NavResult) -> None
             "cluster_id": result.cluster_info.get("cluster_id"),
             "objects": result.cluster_info.get("objects", []),
             "reasoning": result.cluster_info.get("reasoning", ""),
+            "location_confidence": float(result.cluster_info.get("location_confidence", 0.0)),
+            "prioritize_location": bool(result.cluster_info.get("prioritize_location", False)),
             "coords": result.cluster_info.get("coords"),
             "dimensions": result.cluster_info.get("dimensions")
         }

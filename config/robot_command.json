@@ -1,60 +1,48 @@
 {
-    "timestamp": 1770990381.4570923,
-    "prompt": "go to the sink",
-    "goal": "sink",
+    "timestamp": 1772205398.4682531,
+    "prompt": "go to the bed",
+    "goal": "bed",
     "clip_prompts": [
-        "black and green chair",
-        "a chair with green cushion",
-        "the green chair"
+        "bed",
+        "a bed",
+        "the bed"
     ],
     "text_embedding": null,
-    "goal_objects": [
-        {
-            "id": "sink_inst2_4558_765000000",
-            "similarity_score": 8.829465590717943,
-            "coords": {
-                "x": 8.28320117951592,
-                "y": -5.503347508346448,
-                "z": 0.836566787745389
-            }
-        }
-    ],
-    "object_similarities": [
-        {
-            "object_id": "sink_inst2_4558_765000000",
-            "similarity": 8.829465590717943
-        }
-    ],
+    "goal_objects": [],
+    "object_similarities": [],
     "cluster_info": {
-        "cluster_id": 3,
+        "cluster_id": 5,
         "objects": [
-            "spoon",
-            "sink"
+            "cup",
+            "chair",
+            "bed"
         ],
-        "reasoning": "The goal object is a sink, which is directly in Cluster 3.",
+        "reasoning": "The goal object 'bed' is directly in Cluster 5 which contains a bed.",
+        "location_confidence": 1.0,
+        "prioritize_location": true,
         "coords": {
-            "x": 8.840196552735945,
-            "y": -5.453928962829698,
-            "z": 1.02461073622103
+            "x": -7.490081777849302,
+            "y": 1.080593734527232,
+            "z": 0.38096412782364447
         },
         "dimensions": {
             "bounding_box": {
                 "min": {
-                    "x": 8.28320117951592,
-                    "y": -5.503347508346448
+                    "x": -8.618967226062626,
+                    "y": 0.5884713668833326
                 },
                 "max": {
-                    "x": 9.397191925955969,
-                    "y": -5.404510417312948
+                    "x": -5.741086299681294,
+                    "y": 1.491694981967015
                 },
                 "dimensions": {
-                    "width": 1.1139907464400487,
-                    "length": 0.09883709103350036
+                    "width": 2.877880926381332,
+                    "length": 0.9032236150836825
                 }
             },
-            "radius": 0.559183367447124
+            "radius": 1.7508710987880487
         }
     },
-    "action": "bring_back_object",
+    "action": "go_to_object",
     "valid": true
 }

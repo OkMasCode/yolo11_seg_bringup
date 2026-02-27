@@ -128,10 +128,13 @@ class SemanticObjectMap:
                         (entry.pose_map[i] * entry.occurrences + pose_in_map[i]) / (entry.occurrences + 1)
                         for i in range(3)
                     )
-                    new_similarity = (entry.similarity + similarity) / 2
-                    # Update confidence only if new one is higher
+                    new_similarity = max(entry.similarity, similarity)
+                    # Update confidence only if new one is higher.
                     updated_confidence = max(entry.confidence, confidence)
-                    updated_embedding = entry.image_embedding if img_vec is None else img_vec
+                    # Replace embedding only when incoming confidence is strictly higher.
+                    updated_embedding = entry.image_embedding
+                    if img_vec is not None and confidence > entry.confidence:
+                        updated_embedding = img_vec
                     self.objects[existing_id] = entry._replace(
                         pose_map=avg_pose,
                         occurrences=entry.occurrences + 1,
@@ -204,8 +207,12 @@ class SemanticObjectMap:
                 'first_seen_ns': tentative['first_seen_ns'],
                 'last_seen_ns': current_ns,
                 'name': object_name,
-                'similarity': (tentative['similarity'] + similarity) / 2,
-                'image_embedding': tentative['image_embedding'] if img_vec is None else img_vec,
+                'similarity': max(tentative['similarity'], similarity),
+                'image_embedding': (
+                    img_vec
+                    if img_vec is not None and confidence > tentative['confidence']
+                    else tentative['image_embedding']
+                ),
                 'confidence': max(tentative['confidence'], confidence),
                 'box_size': new_size,
             }

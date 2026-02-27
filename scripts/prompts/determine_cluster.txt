@@ -4,7 +4,7 @@ CRITICAL OUTPUT FORMAT:
 - You MUST respond with ONLY a valid JSON object
 - NO additional text before or after the JSON
 - NO markdown formatting or code blocks
-- EXACTLY this format: {{"cluster_id": <int>, "reasoning": "<string>"}}
+- EXACTLY this format: {{"cluster_id": <int>, "reasoning": "<string>", "location_confidence": <float 0.0-1.0>}}
 
 Your task: Analyze the user's navigation prompt and determine which cluster is MOST LIKELY to contain the goal object.
 
@@ -23,6 +23,10 @@ CLUSTER MATCHING STRATEGY:
      * Spatial references ("near the", "next to", "in the")
      * Activity context ("to watch TV" → cluster with TV)
      * Object associations ("bring me the remote" → cluster with TV/sofa)
+    - Also estimate how much location information should be prioritized as location_confidence:
+       * HIGH (0.7-1.0): explicit spatial relations/room constraints ("near the fridge", "in the kitchen")
+       * MEDIUM (0.4-0.7): weak or partial location hints
+       * LOW (0.0-0.3): mostly visual/appearance description ("red chair", "small chair")
 
 3. Semantic room groupings (for reference):
    - Kitchen: refrigerator, oven, microwave, stove, dishwasher, toaster, kitchen counter, cabinet, sink
@@ -53,20 +57,24 @@ CRITICAL RULES:
 - All clusters are valid choices (no outliers)
 - If goal not found in any cluster, select the cluster with most related objects
 - Reasoning should be concise (1-2 sentences)
+- location_confidence must be a numeric float between 0.0 and 1.0
 - Always consider the full context of the user's prompt
 - YOUR REASONING MUST MATCH YOUR SELECTED CLUSTER_ID - explain why this specific cluster is chosen
 - DO NOT recommend a different cluster in your reasoning than the one you select as cluster_id
 
 EXAMPLES:
 Prompt: "Go to the sofa in the living room" | Goal: "sofa" | Clusters: [Cluster 0: [sofa, tv, coffee table], Cluster 1: [bed, nightstand]]
-→ {{"cluster_id": 0, "reasoning": "Sofa is in Cluster 0 which represents the living room with TV and coffee table."}}
+→ {{"cluster_id": 0, "reasoning": "Sofa is in Cluster 0 which represents the living room with TV and coffee table.", "location_confidence": 0.85}}
 
 Prompt: "Bring me the remote from near the TV" | Goal: "remote" | Clusters: [Cluster 0: [tv, sofa], Cluster 1: [bed]]
-→ {{"cluster_id": 0, "reasoning": "Remote is likely near TV, which is in Cluster 0 with sofa."}}
+→ {{"cluster_id": 0, "reasoning": "Remote is likely near TV, which is in Cluster 0 with sofa.", "location_confidence": 0.9}}
+
+Prompt: "Go to the red chair" | Goal: "chair" | Clusters: [Cluster 0: [chair, table], Cluster 1: [chair, sofa]]
+→ {{"cluster_id": 0, "reasoning": "Prompt is appearance-focused and gives little location context, so I select a plausible chair cluster.", "location_confidence": 0.1}}
 
 RESPONSE FORMAT:
 Return ONLY valid JSON with no additional text:
-{{"cluster_id": <int>, "reasoning": "<brief explanation>"}}
+{{"cluster_id": <int>, "reasoning": "<brief explanation>", "location_confidence": <float 0.0-1.0>}}
 
 Example valid response:
-{{"cluster_id": 0, "reasoning": "This cluster contains the goal object."}}
+{{"cluster_id": 0, "reasoning": "This cluster contains the goal object.", "location_confidence": 0.6}}
