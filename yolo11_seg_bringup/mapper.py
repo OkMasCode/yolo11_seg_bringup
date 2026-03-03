@@ -73,6 +73,13 @@ class SemanticObjectMap:
         self.confirmation_time_window_sec = 1.0
         # Tentative entries are discarded if not refreshed for this duration.
         self.tentative_max_stale_sec = 1.0
+        # Class relabel policy for confirmed objects.
+        # Switch only when the new class is significantly more confident,
+        # and this happens repeatedly within a short time interval.
+        self.class_switch_margin = 0.15
+        self.class_switch_required_hits = 2
+        self.class_switch_window_sec = 1.0
+        self._pending_class_switch = {}
         self.tf_buffer = tf_buffer
         self.node = node
     
@@ -135,12 +142,43 @@ class SemanticObjectMap:
                     updated_embedding = entry.image_embedding
                     if img_vec is not None and confidence > entry.confidence:
                         updated_embedding = img_vec
+
+                    # Robust relabeling: require a significant confidence gain and repeated evidence.
+                    updated_name = entry.name
+                    if object_name == entry.name:
+                        # Stable same-class observation clears pending switch state.
+                        self._pending_class_switch.pop(existing_id, None)
+                    elif confidence >= (entry.confidence + self.class_switch_margin):
+                        pending = self._pending_class_switch.get(existing_id)
+                        if pending is None or pending['candidate'] != object_name:
+                            pending = {
+                                'candidate': object_name,
+                                'hits': 1,
+                                'first_seen_ns': current_ns,
+                            }
+                        else:
+                            window_ns = int(self.class_switch_window_sec * 1e9)
+                            if (current_ns - pending['first_seen_ns']) <= window_ns:
+                                pending['hits'] += 1
+                            else:
+                                pending = {
+                                    'candidate': object_name,
+                                    'hits': 1,
+                                    'first_seen_ns': current_ns,
+                                }
+
+                        if pending['hits'] >= self.class_switch_required_hits:
+                            updated_name = object_name
+                            self._pending_class_switch.pop(existing_id, None)
+                        else:
+                            self._pending_class_switch[existing_id] = pending
                     self.objects[existing_id] = entry._replace(
                         pose_map=avg_pose,
                         occurrences=entry.occurrences + 1,
                         similarity=new_similarity,
                         image_embedding=updated_embedding,
                         confidence=updated_confidence,
+                        name=updated_name,
                     )
                     return False
 
@@ -206,7 +244,11 @@ class SemanticObjectMap:
                 'hits': hits,
                 'first_seen_ns': tentative['first_seen_ns'],
                 'last_seen_ns': current_ns,
-                'name': object_name,
+                'name': (
+                    object_name
+                    if confidence >= (tentative['confidence'] + self.class_switch_margin)
+                    else tentative['name']
+                ),
                 'similarity': max(tentative['similarity'], similarity),
                 'image_embedding': (
                     img_vec
