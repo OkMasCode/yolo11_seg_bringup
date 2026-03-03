@@ -28,13 +28,14 @@ setup(
     entry_points={
         'console_scripts': [
             'simple_yolo_annotator_node = yolo11_seg_bringup.simple_yolo_annotator_node:main',
-            'flat_vision_node = yolo11_seg_bringup.flat_vision_node:main',
+            'pc_vision_node = yolo11_seg_bringup.pc_vision:main',
             'rgb_vision_node = yolo11_seg_bringup.rgb_vision_node:main',
             'vision_node = yolo11_seg_bringup.vision_node:main',
             'no_pc_vision_node = yolo11_seg_bringup.no_pc_vision:main',
             'clip_model_validator_node = yolo11_seg_bringup.clip_model_validator_node:main',
             'goal_detector = yolo11_seg_bringup.goal_detector:main',
             'mapper_node = yolo11_seg_bringup.mapper_node:main',
+            'map_points_node = yolo11_seg_bringup.map_points_node:main',
             'clip_reader = yolo11_seg_bringup.clip_reader:main',
             'goal_checker_node = yolo11_seg_bringup.goal_checker_node:main',
             'pointcloud_check_node = yolo11_seg_bringup.pointcloud_check:main',
