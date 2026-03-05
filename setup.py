@@ -35,6 +35,7 @@ setup(
             'clip_model_validator_node = yolo11_seg_bringup.clip_model_validator_node:main',
             'goal_detector = yolo11_seg_bringup.goal_detector:main',
             'mapper_node = yolo11_seg_bringup.mapper_node:main',
+            'mapper_node_v2 = yolo11_seg_bringup.mapper_node_v2:main',
             'map_points_node = yolo11_seg_bringup.map_points_node:main',
             'clip_reader = yolo11_seg_bringup.clip_reader:main',
             'goal_checker_node = yolo11_seg_bringup.goal_checker_node:main',

@@ -96,7 +96,7 @@ class PointCloudMapperNode(Node):
                     detection_stamp = timestamp,
                     camera_frame = self.camera_frame, # Camera frame ID
                     fixed_frame = self.map_frame, # Fixed map frame ID
-                    distance_threshold = 0.8, # Distance threshold for association
+                    distance_threshold = 0.4, # Distance threshold for association
                     embeddings = embedding,
                     goal_embedding = text_embedding,
                     similarity = similarity,
