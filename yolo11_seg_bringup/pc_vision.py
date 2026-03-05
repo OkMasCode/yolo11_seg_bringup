@@ -54,13 +54,17 @@ class NoPCVisionNode(Node):
         self.enable_vis = bool(self.get_parameter('enable_visualization').value)
 
         # YOLO parameters
-        self.declare_parameter('model_path', '/workspaces/yolo26l-seg.pt') #/home/workspace/yolo26m-seg.pt
+        self.declare_parameter('open_vocab', False)
+        self.declare_parameter('model_path', '/workspaces/yolo26l-seg.pt')
+        self.declare_parameter('open_vocab_model_path', '/workspaces/yoloe-26l-seg.pt')
         self.declare_parameter('imgsz', 640)
         self.declare_parameter('conf', 0.55)
         self.declare_parameter('iou', 0.45)
         self.declare_parameter('retina_masks', True)
 
+        self.open_vocab = bool(self.get_parameter('open_vocab').value)
         self.model_path = self.get_parameter('model_path').value
+        self.open_vocab_model_path = self.get_parameter('open_vocab_model_path').value
         self.imgsz = int(self.get_parameter('imgsz').value)
         self.conf = float(self.get_parameter('conf').value)
         self.iou = float(self.get_parameter('iou').value)
@@ -85,9 +89,20 @@ class NoPCVisionNode(Node):
         self.frame_skip = 5
         self.prompt_check_interval = 760.0  # Check for new prompts every 760 seconds
 
-        # Load YOLO segmentation model.
-        self.get_logger().info(f"Loading YOLO: {self.model_path}")
-        self.model = YOLO(self.model_path, task='segment')    
+        # Load YOLO segmentation model (closed vocab vs open vocab).
+        if self.open_vocab:
+            self.get_logger().info(f"Loading YOLO open-vocab model: {self.open_vocab_model_path}")
+            self.model = YOLO(self.open_vocab_model_path, task='segment')
+            goal_class = self._read_goal_from_command_file()
+            if goal_class:
+                classes = [goal_class]
+                self.model.set_classes(classes)
+                self.get_logger().info(f"Open-vocab classes set to: {classes}")
+            else:
+                self.get_logger().warn("Open-vocab enabled but no valid goal found in robot_command.json")
+        else:
+            self.get_logger().info(f"Loading YOLO standard model: {self.model_path}")
+            self.model = YOLO(self.model_path, task='segment')
 
         # Load CLIP model
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -495,6 +510,23 @@ class NoPCVisionNode(Node):
 
         except Exception as e:
             self.get_logger().error(f"Error loading robot_command.json: {e}")
+
+    def _read_goal_from_command_file(self):
+        """Read robot command JSON and return the goal string, if available."""
+        try:
+            if not os.path.exists(self.robot_command_file):
+                return None
+
+            with open(self.robot_command_file, 'r') as f:
+                data = json.load(f)
+
+            goal = data.get('goal', None)
+            if isinstance(goal, str):
+                goal = goal.strip()
+            return goal if goal else None
+        except Exception as e:
+            self.get_logger().error(f"Error reading goal from robot_command.json: {e}")
+            return None
 
     def class_id_to_name(self, class_id: int) -> str:
         """
