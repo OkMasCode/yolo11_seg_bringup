@@ -56,7 +56,6 @@ class NoPCVisionNode(Node):
         # YOLO parameters
         self.declare_parameter('open_vocab', False)
         self.declare_parameter('model_path', '/workspaces/yoloe-26l-seg.pt')
-        self.declare_parameter('open_vocab_model_path', '/workspaces/yoloe-26l-seg.pt')
         self.declare_parameter('imgsz', 640)
         self.declare_parameter('conf', 0.45)
         self.declare_parameter('iou', 0.35)
@@ -64,7 +63,6 @@ class NoPCVisionNode(Node):
 
         self.open_vocab = bool(self.get_parameter('open_vocab').value)
         self.model_path = self.get_parameter('model_path').value
-        self.open_vocab_model_path = self.get_parameter('open_vocab_model_path').value
         self.imgsz = int(self.get_parameter('imgsz').value)
         self.conf = float(self.get_parameter('conf').value)
         self.iou = float(self.get_parameter('iou').value)
@@ -89,22 +87,35 @@ class NoPCVisionNode(Node):
         self.frame_skip = 5
         self.prompt_check_interval = 760.0  # Check for new prompts every 760 seconds
 
-        # Load YOLO segmentation model (closed vocab vs open vocab).
-        if self.open_vocab:
-            self.get_logger().info(f"Loading YOLO open-vocab model: {self.open_vocab_model_path}")
-            self.model = YOLO(self.open_vocab_model_path, task='segment')
-            goal_class = self._read_goal_from_command_file()
-            if goal_class:
-                classes = [goal_class]
-                self.model.set_classes(classes)
-                self.get_logger().info(f"Open-vocab classes set to: {classes}")
+        self.CLASS_NAMES = ["oven", "fridge", "dining table", "sink", "toilet", "couch", "chair", "tv", "bed", 
+                            "nightstand","potted plant", "coffee machine", "toaster", "painting", "coffee table", "desk",  
+                            "microwave"]
+
+        # Load YOLO segmentation model and configure classes from command goal.
+        # Behavior:
+        # 1. Read goal from robot_command.json.
+        # 2. If goal is already in CLASS_NAMES, use CLASS_NAMES as-is.
+        # 3. If goal is new, append it to CLASS_NAMES, then use updated CLASS_NAMES.
+        goal_class = self._read_goal_from_command_file()
+        if goal_class:
+            if goal_class in self.CLASS_NAMES:
+                self.get_logger().info(
+                    f"Goal class '{goal_class}' already exists in CLASS_NAMES. Using existing class list."
+                )
             else:
-                self.model.set_classes(["oven", "fridge", "dining table", "sink", "toilet", "couch", "chair", "lamp", "tv", "bed", "nightstand","potted plant", "bathtub", "vase", "car" ])
-                self.get_logger().warn("Open-vocab enabled but no valid goal found in robot_command.json")
+                self.CLASS_NAMES.append(goal_class)
+                self.get_logger().info(
+                    f"Goal class '{goal_class}' not found in CLASS_NAMES. Appended to class list."
+                )
         else:
-            self.get_logger().info(f"Loading YOLO standard model: {self.model_path}")
-            self.model = YOLO(self.model_path, task='segment')
-            self.model.set_classes(["oven", "fridge", "dining table", "sink", "toilet", "couch", "chair", "lamp", "tv", "bed", "nightstand","potted plant", "bathtub", "vase", "car" ])
+            self.get_logger().warn(
+                "No valid goal found in robot_command.json. Using default CLASS_NAMES."
+            )
+
+        self.get_logger().info(f"Loading YOLO model: {self.model_path}")
+        self.model = YOLO(self.model_path, task='segment')
+        self.model.set_classes(self.CLASS_NAMES)
+        self.get_logger().info(f"YOLO classes set to: {self.CLASS_NAMES}")
 
         # Load CLIP model
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -164,19 +175,6 @@ class NoPCVisionNode(Node):
             'total_frame': []
         }
         self.timing_window = 30  # Print stats every N frames
-
-        # COCO class labels expected by the YOLO model.
-        self.CLASS_NAMES = [
-            "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat", "traffic light",
-            "fire hydrant", "stop sign", "parking meter", "bench", "bird", "cat", "dog", "horse", "sheep", "cow",
-            "elephant", "bear", "zebra", "giraffe", "backpack", "umbrella", "handbag", "tie", "suitcase", "frisbee",
-            "skis", "snowboard", "sports ball", "kite", "baseball bat", "baseball glove", "skateboard", "surfboard",
-            "tennis racket", "bottle", "wine glass", "cup", "fork", "knife", "spoon", "bowl", "banana", "apple",
-            "sandwich", "orange", "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair", "couch",
-            "potted plant", "bed", "dining table", "toilet", "tv", "laptop", "mouse", "remote", "keyboard", "cell phone",
-            "microwave", "oven", "toaster", "sink", "refrigerator", "book", "clock", "vase", "scissors", "teddy bear",
-            "hair drier", "toothbrush"
-        ]
 
         self._load_clip_prompt()
         self.command_timer = self.create_timer(self.prompt_check_interval, self._load_clip_prompt)
