@@ -41,6 +41,12 @@ class MapPointsNode(Node):
             f'MapPointsNode started. map_file={self.map_file}, frame={self.map_frame}, topic={self.marker_topic}'
         )
 
+    def compute_marker_z(self, pose_map: dict) -> float:
+        try:
+            return float(pose_map.get('z', 0.0))
+        except (TypeError, ValueError):
+            return 0.0
+
     @staticmethod
     def class_to_color(class_name: str) -> ColorRGBA:
         digest = hashlib.md5(class_name.encode('utf-8')).digest()
@@ -95,6 +101,7 @@ class MapPointsNode(Node):
         text_markers = []
         text_id = 1
 
+        valid_entries = []
         for entry in map_entries.values():
             if not isinstance(entry, dict):
                 continue
@@ -103,17 +110,25 @@ class MapPointsNode(Node):
             if not isinstance(pose_map, dict):
                 continue
 
-            if not all(k in pose_map for k in ('x', 'y', 'z')):
+            if not all(k in pose_map for k in ('x', 'y')):
                 continue
 
             try:
-                point = Point(
-                    x=float(pose_map['x']),
-                    y=float(pose_map['y']),
-                    z=0.0,
-                )
+                point_x = float(pose_map['x'])
+                point_y = float(pose_map['y'])
+                marker_z = self.compute_marker_z(pose_map)
             except (TypeError, ValueError):
                 continue
+
+            valid_entries.append((entry, point_x, point_y, marker_z))
+
+        for index, (entry, point_x, point_y, marker_z) in enumerate(valid_entries):
+            point_z = marker_z
+            point = Point(
+                x=point_x,
+                y=point_y,
+                z=point_z,
+            )
 
             points_marker.points.append(point)
 
@@ -133,7 +148,7 @@ class MapPointsNode(Node):
             text_marker.action = Marker.ADD
             text_marker.pose.position.x = point.x
             text_marker.pose.position.y = point.y
-            text_marker.pose.position.z = self.label_height_offset
+            text_marker.pose.position.z = point.z + self.label_height_offset
             text_marker.scale.z = 0.2
             text_marker.color = class_color
             text_marker.text = label
