@@ -54,11 +54,11 @@ class NoPCVisionNode(Node):
         self.enable_vis = bool(self.get_parameter('enable_visualization').value)
 
         # YOLO parameters
-        self.declare_parameter('open_vocab', False)
+        self.declare_parameter('open_vocab', True)
         self.declare_parameter('model_path', '/workspaces/yolo26l-seg.pt')
         self.declare_parameter('open_vocab_model_path', '/workspaces/yoloe-26l-seg.pt')
         self.declare_parameter('imgsz', 640)
-        self.declare_parameter('conf', 0.55)
+        self.declare_parameter('conf', 0.65)
         self.declare_parameter('iou', 0.45)
         self.declare_parameter('retina_masks', True)
 
