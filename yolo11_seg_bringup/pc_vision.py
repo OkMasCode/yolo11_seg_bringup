@@ -55,11 +55,11 @@ class NoPCVisionNode(Node):
 
         # YOLO parameters
         self.declare_parameter('open_vocab', False)
-        self.declare_parameter('model_path', '/workspaces/yolo26l-seg.pt')
+        self.declare_parameter('model_path', '/workspaces/yoloe-26l-seg.pt')
         self.declare_parameter('open_vocab_model_path', '/workspaces/yoloe-26l-seg.pt')
         self.declare_parameter('imgsz', 640)
-        self.declare_parameter('conf', 0.65)
-        self.declare_parameter('iou', 0.45)
+        self.declare_parameter('conf', 0.45)
+        self.declare_parameter('iou', 0.35)
         self.declare_parameter('retina_masks', True)
 
         self.open_vocab = bool(self.get_parameter('open_vocab').value)
@@ -99,10 +99,12 @@ class NoPCVisionNode(Node):
                 self.model.set_classes(classes)
                 self.get_logger().info(f"Open-vocab classes set to: {classes}")
             else:
+                self.model.set_classes(["oven", "fridge", "dining table", "sink", "toilet", "couch", "chair", "lamp", "tv", "bed", "nightstand","potted plant", "bathtub", "vase", "car" ])
                 self.get_logger().warn("Open-vocab enabled but no valid goal found in robot_command.json")
         else:
             self.get_logger().info(f"Loading YOLO standard model: {self.model_path}")
             self.model = YOLO(self.model_path, task='segment')
+            self.model.set_classes(["oven", "fridge", "dining table", "sink", "toilet", "couch", "chair", "lamp", "tv", "bed", "nightstand","potted plant", "bathtub", "vase", "car" ])
 
         # Load CLIP model
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
