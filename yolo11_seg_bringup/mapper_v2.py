@@ -122,7 +122,7 @@ class SemanticObjectMapV2:
         self.size_distance_gain = 0.30
         self.max_distance_gate = 1.20
         self.min_association_iou = 0.12
-        self.class_mismatch_penalty = 0.25
+        self.class_mismatch_penalty = 0.15
         self.min_cross_class_iou = 0.20
 
         # Large object containment merge.
@@ -139,8 +139,8 @@ class SemanticObjectMapV2:
         self.confirmation_min_hits = 6
         self.confirmation_time_window_sec = 2.5
         self.confirmation_min_age_sec = 0.8
-        self.min_confidence_for_promotion = 0.60
-        self.min_avg_confidence_for_promotion = 0.65
+        self.min_confidence_for_promotion = 0.50
+        self.min_avg_confidence_for_promotion = 0.55
         self.tentative_max_stale_sec = 2.0
 
         # Binding lifecycle.
@@ -172,6 +172,7 @@ class SemanticObjectMapV2:
         box_max=None,
     ) -> bool:
         try:
+            # Convert raw detection into camera-frame point and transform it into map frame.
             pose_cam = self._select_pose_cam(pose_in_camera, box_min, box_max)
             lookup_time = rclpy.time.Time.from_msg(detection_stamp)
             transform = self.tf_buffer.lookup_transform(
@@ -185,6 +186,7 @@ class SemanticObjectMapV2:
             self.node.get_logger().warning(f"[mapper_v2] Could not transform detection: {ex}")
             return False
 
+        # Keep state fresh before any association decisions.
         current_ns = self._stamp_to_ns(detection_stamp)
         self._prune_stale_state(current_ns)
 
@@ -194,6 +196,7 @@ class SemanticObjectMapV2:
         if not self._passes_detection_quality_gate(confidence, pose_cam.z, new_size):
             return False
 
+        # First try the tracker's previous map binding (fast path, preserves identity).
         bound_map_id = self.track_to_map.get(tracker_id)
         if bound_map_id in self.objects:
             obj = self.objects[bound_map_id]
@@ -219,9 +222,11 @@ class SemanticObjectMapV2:
                 self.track_to_map[tracker_id] = target_id
                 self.track_last_seen_ns[tracker_id] = current_ns
                 return False
+            # Binding is stale/invalid for current geometry; force re-association.
             self.track_to_map.pop(tracker_id, None)
             self.track_last_seen_ns.pop(tracker_id, None)
 
+        # Optional merge for large detections that geometrically contain same-class objects.
         if self.enable_detection_bbox_merge:
             merged_id = self._merge_contained_same_class(object_name, pose_in_map, new_size)
             if merged_id is not None:
@@ -242,6 +247,7 @@ class SemanticObjectMapV2:
                 self.track_last_seen_ns[tracker_id] = current_ns
                 return False
 
+            # Global nearest-candidate lookup when no binding/merge match is available.
         candidate_id = self._find_best_candidate(object_name, pose_in_map, new_size)
         if candidate_id is not None:
             self._update_object(
@@ -261,6 +267,7 @@ class SemanticObjectMapV2:
             self.track_last_seen_ns[tracker_id] = current_ns
             return False
 
+        # No confirmed object matched; update or create a tentative track.
         created = self._update_tentative(
             object_name=object_name,
             tracker_id=tracker_id,
@@ -292,6 +299,7 @@ class SemanticObjectMapV2:
         track = self.tentative_tracks.get(tracker_id)
 
         if track is None:
+            # Start a new tentative track; require more evidence before map insertion.
             self.tentative_tracks[tracker_id] = TentativeTrack(
                 track_id=tracker_id,
                 frame=frame,
@@ -312,6 +320,7 @@ class SemanticObjectMapV2:
 
         # Keep tentative identity stable and simple.
         if object_name != track.class_name:
+            # Reset track if class flips while still tentative.
             self.tentative_tracks[tracker_id] = TentativeTrack(
                 track_id=tracker_id,
                 frame=frame,
@@ -330,6 +339,7 @@ class SemanticObjectMapV2:
             )
             return False
 
+        # Smooth tentative pose/size over time to reduce frame-to-frame jitter.
         merged_pose = self._ema_tuple(track.pose_map, pose_in_map, self.pose_ema_alpha)
         merged_cam = self._ema_tuple(track.pose_cam, pose_cam, self.pose_ema_alpha)
         merged_size = self._ema_tuple(track.box_size, box_size, self.size_ema_alpha)
@@ -338,6 +348,7 @@ class SemanticObjectMapV2:
 
         best_embedding = track.image_embedding
         best_embedding_conf = track.embedding_confidence_max
+        # Keep only the highest-confidence embedding snapshot.
         if image_embedding is not None and float(confidence) > best_embedding_conf:
             best_embedding = image_embedding
             best_embedding_conf = float(confidence)
@@ -364,6 +375,7 @@ class SemanticObjectMapV2:
         min_age_ns = int(self.confirmation_min_age_sec * 1e9)
         avg_conf = conf_sum / max(hits, 1)
 
+        # Promote tentative -> confirmed map object only with enough stable evidence.
         promote_ok = (
             hits >= self.confirmation_min_hits
             and age_ns >= min_age_ns
@@ -375,6 +387,7 @@ class SemanticObjectMapV2:
         if not promote_ok:
             return False
 
+        # Confirmation passed: convert tentative track into a persistent map object.
         promoted = self.tentative_tracks.pop(tracker_id)
         map_id = self._new_map_id()
         self.objects[map_id] = MapObject(
@@ -417,10 +430,12 @@ class SemanticObjectMapV2:
     ) -> None:
         entry = self.objects[map_id]
 
+        # Exponential moving average for stable map geometry.
         merged_pose = self._ema_tuple(entry.pose_map, pose_in_map, self.pose_ema_alpha)
         merged_cam = self._ema_tuple(entry.pose_cam, pose_in_camera, self.pose_ema_alpha)
         merged_size = self._ema_tuple(entry.box_size, box_size, self.size_ema_alpha)
 
+        # Accumulate label evidence by both count and confidence.
         class_votes = dict(entry.class_votes)
         class_votes[object_name] = class_votes.get(object_name, 0.0) + max(float(confidence), 0.01)
 
@@ -436,10 +451,12 @@ class SemanticObjectMapV2:
             current_name=entry.current_name,
         )
 
+        # Smooth confidence so downstream consumers see less noisy confidence traces.
         conf_ema = (1.0 - self.confidence_ema_alpha) * entry.confidence_ema + self.confidence_ema_alpha * float(confidence)
 
         embedding = entry.image_embedding
         embedding_confidence_max = float(entry.embedding_confidence_max)
+        # Update embedding only when a stronger-confidence sample arrives.
         if image_embedding is not None and float(confidence) > embedding_confidence_max:
             embedding = image_embedding
             embedding_confidence_max = float(confidence)
@@ -618,10 +635,12 @@ class SemanticObjectMapV2:
         stale_tentative_ns = int(self.tentative_max_stale_sec * 1e9)
         stale_binding_ns = int(self.binding_ttl_sec * 1e9)
 
+        # Drop tentative tracks that stopped receiving observations.
         for track_id, t in list(self.tentative_tracks.items()):
             if current_ns - t.last_seen_ns > stale_tentative_ns:
                 del self.tentative_tracks[track_id]
 
+        # Drop old tracker bindings to avoid reconnecting stale IDs to map objects.
         for track_id, last_seen in list(self.track_last_seen_ns.items()):
             if current_ns - last_seen > stale_binding_ns:
                 self.track_last_seen_ns.pop(track_id, None)
@@ -824,6 +843,7 @@ class SemanticObjectMapV2:
             return current_name
 
         def class_score(name: str) -> float:
+            # Weighted combination of frequency and mean confidence per class.
             count = float(class_counts.get(name, 0))
             conf_sum = float(class_conf_sums.get(name, 0.0))
             avg_conf = conf_sum / max(count, 1.0)

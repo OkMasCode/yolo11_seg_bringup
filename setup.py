@@ -27,6 +27,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
+            'clio_vision = yolo11_seg_bringup.clio_vision:main',
             'simple_yolo_annotator_node = yolo11_seg_bringup.simple_yolo_annotator_node:main',
             'pc_vision_node = yolo11_seg_bringup.pc_vision:main',
             'rgb_vision_node = yolo11_seg_bringup.rgb_vision_node:main',
