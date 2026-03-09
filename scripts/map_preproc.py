@@ -1,9 +1,10 @@
 import json
+import argparse
 import numpy as np
 from sklearn.cluster import DBSCAN
 
-MAP_FILE = "/home/workspace/ros2_ws/src/yolo11_seg_bringup/config/map.json"
-OUTPUT_FILE = "/home/workspace/ros2_ws/src/yolo11_seg_bringup/config/clustered_map.json"
+MAP_FILE = "/workspaces/ros2_ws/src/yolo11_seg_bringup/config/map_v2.json"
+OUTPUT_FILE = "/workspaces/ros2_ws/src/yolo11_seg_bringup/config/clustered_map_v2.json"
 
 def load_house_map(file_path):
     print(f"[DEBUG] Loading map from: {file_path}")
@@ -129,9 +130,14 @@ def write_map_to_file(clustered_map, file_path):
     print(f"[DEBUG] Successfully wrote clustered map to file")
 
 def main():
+    parser = argparse.ArgumentParser(description="Cluster map objects with DBSCAN")
+    parser.add_argument("--eps", type=float, default=2, help="DBSCAN eps distance in meters")
+    parser.add_argument("--min-samples", type=int, default=2, help="DBSCAN min_samples")
+    args = parser.parse_args()
+
     print("[DEBUG] Starting map preprocessing...")
     clean_map = load_house_map(MAP_FILE)
-    clustered_map = cluster_map(clean_map, eps=3.5, min_samples=2)
+    clustered_map = cluster_map(clean_map, eps=args.eps, min_samples=args.min_samples)
     write_map_to_file(clustered_map, OUTPUT_FILE)
     print("[DEBUG] Map preprocessing complete!")
 

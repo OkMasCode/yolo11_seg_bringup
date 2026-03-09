@@ -25,9 +25,9 @@ MODEL_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 MODEL_MAX_LENGTH = 8192  # Mistral supports longer context
 OFFLINE_MODE = False  # Set to True for offline operation (uses cached model)
 
-MAP_FILE = "/home/workspace/ros2_ws/src/yolo11_seg_bringup/config/map.json"
-CLUSTERED_MAP_FILE = "/home/workspace/ros2_ws/src/yolo11_seg_bringup/config/clustered_map.json"
-ROBOT_COMMAND_FILE = "/home/workspace/ros2_ws/src/yolo11_seg_bringup/config/robot_command.json"
+MAP_FILE = "/workspaces/ros2_ws/src/yolo11_seg_bringup/config/map_v2.json"
+CLUSTERED_MAP_FILE = "/workspaces/ros2_ws/src/yolo11_seg_bringup/config/clustered_map_v2.json"
+ROBOT_COMMAND_FILE = "/workspaces/ros2_ws/src/yolo11_seg_bringup/config/robot_command.json"
 PROMPTS_DIR = os.path.join(os.path.dirname(__file__), "prompts")
 
 DICTIONARY = [
@@ -340,6 +340,7 @@ class NavResult(BaseModel):
     object_similarities: List[Dict] = [] # similarity scores for each goal object
     action: str # high-level action plan to reach the goal
     cluster_info: Dict | None = None # information about the most likely cluster
+    selected_goal: Dict | None = None # final selected object, or None if no match
 
 class Goal(BaseModel):
     goal: str # class of the object to navigate to
@@ -356,6 +357,11 @@ class ClusterPrediction(BaseModel):
     cluster_id: int  # ID of the most likely cluster
     reasoning: str  # Brief explanation of why this cluster was chosen
     location_confidence: float = 0.0  # 0.0-1.0 confidence that location cues should be prioritized
+
+class GoalSelection(BaseModel):
+    selected_object_id: str = ""  # chosen object id, empty means no match
+    decision_basis: str  # "location", "similarity", "mixed", or "none"
+    reasoning: str  # brief explanation
 
 # ------------------ LLM CALLS ----------------- #
 
@@ -693,6 +699,122 @@ def extract_action(prompt : str) -> Action:
     print(f"Computation time: {elapsed:.2f} seconds\n")
     return result
 
+def _find_object_cluster(object_id: str) -> int | None:
+    """Return cluster id for a given object id from clustered_map."""
+    for entry in clustered_map:
+        if entry.get("id") == object_id:
+            try:
+                return int(entry.get("cluster"))
+            except (TypeError, ValueError):
+                return None
+    return None
+
+def _build_goal_candidates(goal_objects: List[Dict]) -> List[Dict]:
+    """Build compact candidate objects for final LLM goal selection."""
+    candidates = []
+    for obj in goal_objects:
+        obj_id = obj.get("id")
+        if not obj_id:
+            continue
+
+        pose = obj.get("pose_map") if isinstance(obj.get("pose_map"), dict) else {}
+        candidates.append({
+            "object_id": obj_id,
+            "class": obj.get("name", ""),
+            "similarity": float(obj.get("similarity_score", 0.0)),
+            "cluster": _find_object_cluster(obj_id),
+            "coords": {
+                "x": float(pose.get("x", 0.0)),
+                "y": float(pose.get("y", 0.0)),
+                "z": float(pose.get("z", 0.0)),
+            }
+        })
+    return candidates
+
+def select_final_goal(prompt: str, goal: str, goal_objects: List[Dict], cluster_info: Dict | None) -> GoalSelection:
+    """
+    Final LLM decision over extracted objects.
+    The model can prioritize location or similarity and can return no selection.
+    """
+    print("6. .......Selecting final goal object with LLM.........\n")
+
+    candidates = _build_goal_candidates(goal_objects)
+    if not candidates:
+        return GoalSelection(
+            selected_object_id="",
+            decision_basis="none",
+            reasoning="No candidate objects were found in the map."
+        )
+
+    cluster_context = {
+        "cluster_id": cluster_info.get("cluster_id") if cluster_info else None,
+        "location_confidence": float(cluster_info.get("location_confidence", 0.0)) if cluster_info else 0.0,
+        "prioritize_location": bool(cluster_info.get("prioritize_location", False)) if cluster_info else False,
+        "reasoning": cluster_info.get("reasoning", "") if cluster_info else ""
+    }
+
+    SYSTEM_PROMPT = load_prompt('select_goal.txt')
+    user_payload = {
+        "user_prompt": prompt,
+        "goal_class": goal,
+        "cluster_context": cluster_context,
+        "candidates": candidates
+    }
+
+    msgs = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False, indent=2)}
+    ]
+
+    start_time = time.time()
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            if attempt > 0:
+                print(f"   Retry attempt {attempt + 1}/{max_retries}")
+
+            response_text = call_llm(msgs, temperature=0.2)
+            response_json = extract_json_from_response(
+                response_text,
+                expected_keys=["selected_object_id", "decision_basis", "reasoning"]
+            )
+            result = GoalSelection.model_validate(response_json)
+
+            allowed_basis = {"location", "similarity", "mixed", "none"}
+            if result.decision_basis not in allowed_basis:
+                result.decision_basis = "mixed"
+
+            valid_ids = {c["object_id"] for c in candidates}
+            if result.selected_object_id and result.selected_object_id not in valid_ids:
+                print(f"Warning: LLM returned unknown object id {result.selected_object_id}, returning no match")
+                result.selected_object_id = ""
+                result.decision_basis = "none"
+
+            if not result.selected_object_id:
+                result.decision_basis = "none"
+
+            break
+        except (ValueError, json.JSONDecodeError):
+            if attempt < max_retries - 1:
+                print("   JSON parsing failed, retrying...")
+                time.sleep(1)
+                continue
+            print(f"ERROR: Failed to get valid JSON after {max_retries} attempts")
+            print(f"Last response: {response_text}\n")
+            raise
+        except Exception as e:
+            print(f"ERROR during final goal selection: {type(e).__name__}")
+            print(f"Error message: {str(e)}\n")
+            raise
+
+    end_time = time.time()
+    elapsed = end_time - start_time
+    print(f"Selected object id: {result.selected_object_id or 'NONE'}")
+    print(f"Decision basis: {result.decision_basis}")
+    print(f"Reasoning: {result.reasoning}")
+    print(f"Computation time: {elapsed:.2f} seconds\n")
+    return result
+
 # ---------------- MAIN PIPELINE --------------- #
 
 def process_nav_instruction(prompt : str) -> NavResult:
@@ -714,7 +836,8 @@ def process_nav_instruction(prompt : str) -> NavResult:
             text_embedding=None,
             object_similarities=[],
             action="",
-            cluster_info=None
+            cluster_info=None,
+            selected_goal=None
         )
     
     # 2. Read the map and find objects of the goal class (ranked by CLIP similarity)
@@ -757,14 +880,34 @@ def process_nav_instruction(prompt : str) -> NavResult:
     # 5. Determine action plan
     action = extract_action(prompt)
 
+    # 6. Final object-level goal selection (can return no match)
+    final_selection = select_final_goal(prompt, goal.goal, goal_objects, cluster_info)
+    selected_goal = None
+    if final_selection.selected_object_id:
+        selected_goal = next(
+            (obj for obj in goal_objects if obj.get("id") == final_selection.selected_object_id),
+            None
+        )
+
+    # If no object matches well enough, intentionally clear the final goal.
+    final_goal_class = goal.goal if selected_goal is not None else ""
+
     return NavResult(
-        goal=goal.goal,
+        goal=final_goal_class,
         goal_objects=goal_objects,
         clip_prompts=goal.clip_prompts,
         text_embedding=text_embedding_list,
         object_similarities=object_similarities,
         action=action.action,
-        cluster_info=cluster_info
+        cluster_info=cluster_info,
+        selected_goal={
+            "object_id": final_selection.selected_object_id,
+            "decision_basis": final_selection.decision_basis,
+            "reasoning": final_selection.reasoning,
+            "coords": selected_goal.get("pose_map") if selected_goal else None,
+            "similarity": float(selected_goal.get("similarity_score", 0.0)) if selected_goal else None,
+            "cluster": _find_object_cluster(final_selection.selected_object_id) if selected_goal else None
+        } if selected_goal else None
     )
 
 # ----------------- RESULT SAVING ----------------- #
@@ -820,6 +963,7 @@ def save_robot_command(output_path: str, prompt: str, result: NavResult) -> None
         "clip_prompts": result.clip_prompts,
         "text_embedding": result.text_embedding,
         "goal_objects": _objects_with_coords(result.goal_objects),
+        "selected_goal": result.selected_goal,
         "object_similarities": result.object_similarities,
         "cluster_info": cluster_info,
         "action": result.action,
