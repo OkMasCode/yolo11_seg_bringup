@@ -43,9 +43,9 @@ class NoPCVisionNode(Node):
         # ============= Parameters ============= #
 
         # Communication parameters
-        self.declare_parameter('image_topic', '/camera/rgb') #/camera/camera/color/image_raw
-        self.declare_parameter('depth_topic', '/camera/depth') #/camera/camera/aligned_depth_to_color/image_raw
-        self.declare_parameter('camera_info_topic', '/camera/depth/camera_info') #/camera/camera/color/camera_info
+        self.declare_parameter('image_topic', '/camera/color/image_raw') #/camera/camera/color/image_raw
+        self.declare_parameter('depth_topic', '/camera/aligned_depth_to_color/image_raw') #/camera/camera/aligned_depth_to_color/image_raw
+        self.declare_parameter('camera_info_topic', '/camera/color/camera_info') #/camera/camera/color/camera_info
         self.declare_parameter('enable_visualization', True)
 
         self.image_topic = self.get_parameter('image_topic').value
@@ -88,8 +88,8 @@ class NoPCVisionNode(Node):
         self.prompt_check_interval = 760.0  # Check for new prompts every 760 seconds
 
         self.CLASS_NAMES = ["oven", "fridge", "dining table", "sink", "toilet", "couch", "chair", "tv", "bed", 
-                            "nightstand","potted plant", "coffee machine", "toaster", "painting", "coffee table", "desk",  
-                            "microwave"]
+                            "nightstand", "dresser", "lamp", "stove", "fireplace", "potted plant", "coffee machine", "toaster", "painting", "coffee table", "desk",  
+                            "microwave", "kitchen island", "towel", "houseplant", "pillow"]
 
         # Load YOLO segmentation model and configure classes from command goal.
         # Behavior:

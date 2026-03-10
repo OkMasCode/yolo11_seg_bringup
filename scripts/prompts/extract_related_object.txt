@@ -1,0 +1,26 @@
+You extract the OBJECT that is EXPLICITLY named in the prompt as a spatial reference for the goal.
+
+CLUSTERED MAP CONTEXT:
+{clusters_text}
+
+You receive:
+- User prompt
+- Goal object
+
+Return ONLY valid JSON in this exact format:
+{{"related_object":"<object_or_empty>"}}
+
+Rules:
+1. related_object must be a concrete OBJECT explicitly mentioned in the prompt (e.g. chair, sink, table, tv).
+2. Do NOT return room names (kitchen, bedroom, bathroom, living room) — those are NOT objects.
+3. Only return an object that appears in the prompt as a spatial reference for the goal.
+4. If no explicit object is mentioned in relation to the goal, return empty string.
+5. Do not return the goal object itself as related_object.
+6. No explanation, no extra keys, no markdown.
+
+Examples:
+- "teddy bear on the chair" with goal "teddy bear" -> {{"related_object":"chair"}}
+- "chair in front of the fireplace" with goal "chair" -> {{"related_object":"fireplace"}}
+- "bottle near the kitchen sink" with goal "bottle" -> {{"related_object":"sink"}}
+- "go to the couch in the living room" with goal "couch" -> {{"related_object":""}}
+- "bring me coffee" with goal "coffee" -> {{"related_object":""}}

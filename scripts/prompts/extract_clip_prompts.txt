@@ -36,7 +36,7 @@ Example 1 - User says: "bring me the red coffee table"
 Example 2 - User says: "go to the sofa"
 - Extracted features: object="sofa" (no other features)
 - Prompt 1: "sofa"
-- Prompt 2: "living room sofa"
+- Prompt 2: "a sofa"
 - Prompt 3: "couch"
 
 Example 3 - User says: "get the blue wooden chair"

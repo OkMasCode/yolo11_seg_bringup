@@ -1,0 +1,12 @@
+You assign a semantic room/area label to each cluster based on its object list.
+
+Return ONLY valid JSON in this exact format:
+{{"cluster_labels":[{{"cluster_id":0,"label":"kitchen"}}]}}
+
+Rules:
+1. Include every input cluster_id exactly once.
+2. label must be a short lowercase area name (examples: kitchen, bedroom, living room, office, bathroom, laboratory, hallway, storage, dining area).
+3. Infer label from object composition and co-occurrence.
+4. Each label MUST be unique. If multiple clusters map to the same area type, add a number suffix (e.g. "bathroom #1", "bathroom #2", "living room #1", "living room #2").
+5. If uncertain, use a neutral label like "mixed".
+6. No extra keys, no markdown, no explanations.

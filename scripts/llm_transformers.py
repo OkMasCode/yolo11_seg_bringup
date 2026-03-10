@@ -36,6 +36,7 @@ clip_processor = None
 house_map = []
 clustered_map = []
 cluster_summaries = []
+cluster_labels = {}
 
 # ------------------ FUNCTIONS ----------------- #
 
@@ -250,6 +251,110 @@ def summarize_clusters(clustered_map_data):
     
     return cluster_objects
 
+def get_labeled_cluster_descriptions() -> List[str]:
+    """Build cluster descriptions with semantic labels for downstream LLM calls."""
+    descriptions = []
+    for cluster_id, objects in cluster_summaries.items():
+        label = cluster_labels.get(cluster_id, "unknown")
+        descriptions.append(f"Cluster {cluster_id} ({label}): {', '.join(objects)}")
+    return descriptions
+
+def assign_cluster_labels() -> None:
+    """
+    Use LLM once to assign semantic names (kitchen/bedroom/etc.) to clusters.
+    The labels are reused by all later LLM calls that consume cluster context.
+    """
+    global cluster_labels
+
+    if not cluster_summaries:
+        cluster_labels = {}
+        return
+
+    print("0. .......Assigning semantic labels to clusters.........\n")
+
+    raw_clusters = []
+    for cluster_id, objects in cluster_summaries.items():
+        raw_clusters.append({"cluster_id": cluster_id, "objects": objects})
+
+    SYSTEM_PROMPT = load_prompt('label_clusters.txt')
+    msgs = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": json.dumps({"clusters": raw_clusters}, ensure_ascii=False)}
+    ]
+
+    start_time = time.time()
+    max_retries = 3
+    assigned = {}
+    for attempt in range(max_retries):
+        try:
+            if attempt > 0:
+                print(f"   Retry attempt {attempt + 1}/{max_retries}")
+
+            response_text = call_llm(msgs, temperature=0.2)
+            response_json = extract_json_from_response(response_text, expected_keys=["cluster_labels"])
+            labels_payload = response_json.get("cluster_labels", [])
+
+            if not isinstance(labels_payload, list):
+                labels_payload = []
+
+            for entry in labels_payload:
+                if not isinstance(entry, dict):
+                    continue
+
+                raw_id = entry.get("cluster_id")
+                raw_label = entry.get("label", "")
+
+                try:
+                    cluster_id = int(raw_id)
+                except (TypeError, ValueError):
+                    continue
+
+                if cluster_id not in cluster_summaries:
+                    continue
+
+                label = str(raw_label).strip().lower()
+                if not label:
+                    continue
+                assigned[cluster_id] = label
+
+            break
+        except (ValueError, json.JSONDecodeError):
+            if attempt < max_retries - 1:
+                print("   JSON parsing failed, retrying...")
+                time.sleep(1)
+                continue
+            print(f"WARNING: Failed to assign labels via LLM after {max_retries} attempts. Using defaults.")
+        except Exception as e:
+            print(f"WARNING: Error during cluster labeling: {type(e).__name__}: {str(e)}")
+            break
+
+    # Ensure every cluster has a label, deduplicating with #1, #2, etc.
+    cluster_labels = {}
+    raw_labels = {}
+    for cluster_id in cluster_summaries.keys():
+        raw_labels[cluster_id] = assigned.get(cluster_id, f"cluster_{cluster_id}")
+
+    # Count occurrences of each label
+    label_counts = {}
+    for label in raw_labels.values():
+        label_counts[label] = label_counts.get(label, 0) + 1
+
+    # Assign numbered labels for duplicates
+    label_counters = {}
+    for cluster_id in sorted(raw_labels.keys()):
+        label = raw_labels[cluster_id]
+        if label_counts[label] > 1:
+            label_counters[label] = label_counters.get(label, 0) + 1
+            cluster_labels[cluster_id] = f"{label} #{label_counters[label]}"
+        else:
+            cluster_labels[cluster_id] = label
+
+    elapsed = time.time() - start_time
+    print("Cluster labels:")
+    for cluster_id in sorted(cluster_labels.keys()):
+        print(f"  Cluster {cluster_id} -> {cluster_labels[cluster_id]}")
+    print(f"Computation time: {elapsed:.2f} seconds\n")
+
 def compute_cluster_coords(cluster_id: int) -> Dict | None:
     """
     Extract centroid coordinates (x, y, z) for a given cluster_id
@@ -350,11 +455,9 @@ def find_goal_objects(goal: str, clip_prompts: List[str]):
 
     goal_objects = find_objects(goal)
 
-    # If lexical matching fails (e.g., goal uses different wording than map labels),
-    # score all mapped objects using CLIP and let visual similarity choose.
     if not goal_objects:
-        print(f"No direct class match for '{goal}'. Falling back to all objects in map for similarity ranking.")
-        goal_objects = list(house_map)
+        print(f"No map objects matched extracted goal '{goal}'. Skipping object-level map selection.\n")
+        return []
 
     if goal_objects:
         print(f"Evaluating {len(goal_objects)} candidate objects for goal '{goal}'")
@@ -388,6 +491,7 @@ def find_goal_objects(goal: str, clip_prompts: List[str]):
 
 class NavResult(BaseModel):
     goal: str # class of the object to navigate to
+    related_object: str = "" # object related to the goal location, empty if none
     goal_objects: List[Dict] # list of objects of that class in the map
     clip_prompts: List[str] # 3 CLIP prompts describing the object
     text_embedding: List[float] | None = None # CLIP text embedding for the prompts
@@ -398,6 +502,7 @@ class NavResult(BaseModel):
 
 class Goal(BaseModel):
     goal: str # class of the object to navigate to
+    related_object: str = "" # object related to the goal location, empty if none
     clip_prompts: List[str] # 3 CLIP prompts describing the object
     text_embedding: List[float] | None = None # CLIP text embedding for the prompts
 
@@ -407,8 +512,11 @@ class Action(BaseModel):
 class ClipPromptsOutput(BaseModel):
     clip_prompts: List[str]  # List of exactly 3 prompts
 
+class RelatedObjectOutput(BaseModel):
+    related_object: str = ""  # related object for location grounding
+
 class ClusterPrediction(BaseModel):
-    cluster_id: int  # ID of the most likely cluster
+    cluster_id: int | None = None  # ID of the most likely cluster, None when uncertain
     reasoning: str  # Brief explanation of why this cluster was chosen
     location_confidence: float = 0.0  # 0.0-1.0 confidence that location cues should be prioritized
 
@@ -573,10 +681,12 @@ def extract_goal(prompt : str) -> Goal:
     
     # Now generate CLIP prompts for this goal
     clip_prompts_result = extract_clip_prompts(prompt, goal_text)
+    related_object_result = extract_related_object(prompt, goal_text)
     
     # Combine goal and clip prompts into the result (text_embedding will be computed later in find_goal_objects)
     result = Goal(
         goal=goal_text, 
+        related_object=related_object_result.related_object,
         clip_prompts=clip_prompts_result.clip_prompts,
         text_embedding=None  # Will be computed when finding objects
     )
@@ -639,6 +749,59 @@ def extract_clip_prompts(prompt: str, goal: str) -> ClipPromptsOutput:
     
     return result
 
+def extract_related_object(prompt: str, goal: str) -> RelatedObjectOutput:
+    """
+    Uses LLM to extract the object that appears in relation with the goal.
+    Returns empty related_object when the prompt has no location relation.
+    """
+    print("1c. .......Extracting related object from prompt.........\n")
+
+    cluster_descriptions = get_labeled_cluster_descriptions()
+    clusters_text = "\n".join(cluster_descriptions) if cluster_descriptions else "No cluster data available."
+
+    SYSTEM_PROMPT = load_prompt('extract_related_object.txt', clusters_text=clusters_text)
+
+    msgs = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": f"User prompt: '{prompt}'\nGoal object: '{goal}'"}
+    ]
+
+    start_time = time.time()
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            if attempt > 0:
+                print(f"   Retry attempt {attempt + 1}/{max_retries}")
+
+            response_text = call_llm(msgs, temperature=0.2)
+            response_json = extract_json_from_response(response_text, expected_keys=["related_object"])
+            result = RelatedObjectOutput.model_validate(response_json)
+
+            related = result.related_object.strip()
+            if related and _normalize_object_label(related) == _normalize_object_label(goal):
+                related = ""
+            result.related_object = related
+            break
+
+        except (ValueError, json.JSONDecodeError):
+            if attempt < max_retries - 1:
+                print("   JSON parsing failed, retrying...")
+                time.sleep(1)
+                continue
+            print(f"ERROR: Failed to get valid JSON after {max_retries} attempts")
+            print(f"Last response: {response_text}\n")
+            raise
+        except Exception as e:
+            print(f"ERROR during related-object extraction: {type(e).__name__}")
+            print(f"Error message: {str(e)}\n")
+            raise
+
+    end_time = time.time()
+    elapsed = end_time - start_time
+    print(f"Related object: {result.related_object if result.related_object else 'NONE'}")
+    print(f"Computation time: {elapsed:.2f} seconds\n")
+    return result
+
 def determine_most_likely_cluster(prompt: str, goal: str) -> ClusterPrediction:
     """
     Uses LLM to analyze the user prompt and clustered map to determine
@@ -647,9 +810,7 @@ def determine_most_likely_cluster(prompt: str, goal: str) -> ClusterPrediction:
     print("3. .......Determining most likely cluster with LLM.........\n")
     
     # Format cluster information for the LLM
-    cluster_descriptions = []
-    for cluster_id, objects in cluster_summaries.items():
-        cluster_descriptions.append(f"Cluster {cluster_id}: {', '.join(objects)}")
+    cluster_descriptions = get_labeled_cluster_descriptions()
     
     clusters_text = "\n".join(cluster_descriptions)
     
@@ -670,9 +831,21 @@ def determine_most_likely_cluster(prompt: str, goal: str) -> ClusterPrediction:
             
             response_text = call_llm(msgs, temperature=0.2)
             
-            response_json = extract_json_from_response(response_text, expected_keys=["cluster_id", "reasoning"])
+            response_json = extract_json_from_response(response_text, expected_keys=["reasoning"])
             if "location_confidence" not in response_json:
                 response_json["location_confidence"] = 0.0
+
+            # cluster_id is optional: None means "no confident cluster".
+            raw_cluster_id = response_json.get("cluster_id", None)
+            if raw_cluster_id in ("", "null", "None"):
+                response_json["cluster_id"] = None
+            elif raw_cluster_id is None:
+                response_json["cluster_id"] = None
+            else:
+                try:
+                    response_json["cluster_id"] = int(raw_cluster_id)
+                except (TypeError, ValueError):
+                    response_json["cluster_id"] = None
 
             # Clamp to [0.0, 1.0] for robustness
             try:
@@ -700,14 +873,12 @@ def determine_most_likely_cluster(prompt: str, goal: str) -> ClusterPrediction:
     end_time = time.time()
     elapsed = end_time - start_time
     
-    # Validate cluster_id exists
-    if result.cluster_id not in cluster_summaries:
-        print(f"Warning: LLM returned invalid cluster_id {result.cluster_id}, using first available cluster")
-        original_cluster_id = result.cluster_id
-        result.cluster_id = list(cluster_summaries.keys())[0]
-        result.reasoning = f"Adjusted from invalid cluster {original_cluster_id}. {result.reasoning}"
-    
-    print(f"Selected Cluster: {result.cluster_id}")
+    # Validate cluster_id exists when provided
+    if result.cluster_id is not None and result.cluster_id not in cluster_summaries:
+        print(f"Warning: LLM returned invalid cluster_id {result.cluster_id}. Clearing cluster selection.")
+        result.cluster_id = None
+
+    print(f"Selected Cluster: {result.cluster_id if result.cluster_id is not None else 'NONE'}")
     print(f"Reasoning: {result.reasoning}")
     print(f"Location confidence: {result.location_confidence:.2f}")
     print(f"Computation time: {elapsed:.2f} seconds\n")
@@ -915,17 +1086,31 @@ def process_nav_instruction(prompt : str) -> NavResult:
 
     # 4. Determine most likely cluster using LLM
     cluster_prediction = determine_most_likely_cluster(prompt, effective_goal)
-    cluster_coords = compute_cluster_coords(cluster_prediction.cluster_id)
-    cluster_dimensions = get_cluster_dimensions(cluster_prediction.cluster_id)
-    cluster_info = {
-        "cluster_id": cluster_prediction.cluster_id,
-        "objects": cluster_summaries[cluster_prediction.cluster_id],
-        "reasoning": cluster_prediction.reasoning,
-        "location_confidence": cluster_prediction.location_confidence,
-        "prioritize_location": cluster_prediction.location_confidence >= 0.5,
-        "coords": cluster_coords,
-        "dimensions": cluster_dimensions
-    }
+    cluster_info = None
+    if cluster_prediction.cluster_id is not None and cluster_prediction.cluster_id in cluster_summaries:
+        cluster_coords = compute_cluster_coords(cluster_prediction.cluster_id)
+        cluster_dimensions = get_cluster_dimensions(cluster_prediction.cluster_id)
+        cluster_info = {
+            "cluster_id": cluster_prediction.cluster_id,
+            "cluster_label": cluster_labels.get(cluster_prediction.cluster_id, "unknown"),
+            "objects": cluster_summaries[cluster_prediction.cluster_id],
+            "reasoning": cluster_prediction.reasoning,
+            "location_confidence": cluster_prediction.location_confidence,
+            "prioritize_location": cluster_prediction.location_confidence >= 0.5,
+            "coords": cluster_coords,
+            "dimensions": cluster_dimensions
+        }
+    else:
+        cluster_info = {
+            "cluster_id": None,
+            "cluster_label": "",
+            "objects": [],
+            "reasoning": cluster_prediction.reasoning,
+            "location_confidence": cluster_prediction.location_confidence,
+            "prioritize_location": False,
+            "coords": None,
+            "dimensions": None
+        }
     
     # 5. Determine action plan
     action = extract_action(prompt)
@@ -939,11 +1124,12 @@ def process_nav_instruction(prompt : str) -> NavResult:
             None
         )
 
-    # If no object matches well enough, intentionally clear the final goal.
-    final_goal_class = selected_goal.get("name", "") if selected_goal is not None else ""
+    # Preserve the extracted user-intent goal even if no mapped object is selected.
+    final_goal_class = effective_goal
 
     return NavResult(
         goal=final_goal_class,
+        related_object=goal.related_object,
         goal_objects=goal_objects,
         clip_prompts=goal.clip_prompts,
         text_embedding=text_embedding_list,
@@ -1010,6 +1196,7 @@ def save_robot_command(output_path: str, prompt: str, result: NavResult) -> None
         "timestamp": time.time(),
         "prompt": prompt,
         "goal": result.goal,
+        "related_object": result.related_object,
         "clip_prompts": result.clip_prompts,
         "text_embedding": result.text_embedding,
         "goal_objects": _objects_with_coords(result.goal_objects),
@@ -1038,11 +1225,12 @@ def main():
     try:
         clustered_map = load_clustered_map(CLUSTERED_MAP_FILE)
         cluster_summaries = summarize_clusters(clustered_map)
+        assign_cluster_labels()
         print(f"Loaded {len(clustered_map)} cluster entries")
         print(f"Generated summaries for {len(cluster_summaries)} clusters")
         print(f"Cluster breakdown:")
         for cluster_id, objects in cluster_summaries.items():
-            print(f"  Cluster {cluster_id}: {', '.join(objects)}")
+            print(f"  Cluster {cluster_id} ({cluster_labels.get(cluster_id, 'unknown')}): {', '.join(objects)}")
         print()
     except FileNotFoundError as e:
         print(f"Warning: {e}")

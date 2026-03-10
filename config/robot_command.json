@@ -1,124 +1,90 @@
 {
-    "timestamp": 1773146053.8465168,
-    "prompt": "go to the white couch",
-    "goal": "couch",
+    "timestamp": 1773162458.4052026,
+    "prompt": "go to the sink in the bedroom",
+    "goal": "sink",
+    "related_object": "bedroom",
     "clip_prompts": [
-        "white couch",
-        "a white piece of furniture",
-        "couch that is white"
+        "a sink",
+        "the sink",
+        "a bathroom sink"
     ],
     "text_embedding": null,
     "goal_objects": [
         {
-            "id": "map_obj_000018",
-            "similarity_score": 0.4565705579251207,
+            "id": "map_obj_000021",
+            "similarity_score": 0.04478684414920352,
             "coords": {
-                "x": 3.274706470505768,
-                "y": 10.063198304404576,
-                "z": 0.6228961080136338
+                "x": 4.741610940710294,
+                "y": 4.67149900382434,
+                "z": 0.7789778519410282
             }
         },
         {
-            "id": "map_obj_000025",
-            "similarity_score": 0.09608000518112153,
+            "id": "map_obj_000016",
+            "similarity_score": 0.025154039584002977,
             "coords": {
-                "x": 0.906593917240422,
-                "y": 6.296828672553209,
-                "z": 3.619420621996328
+                "x": -0.5968781938490686,
+                "y": 5.074278641144594,
+                "z": 0.826500930873893
             }
         },
         {
-            "id": "map_obj_000023",
-            "similarity_score": 0.005509156326569706,
+            "id": "map_obj_000012",
+            "similarity_score": 0.008900701954660925,
             "coords": {
-                "x": 0.4151940835494311,
-                "y": 11.033147431474731,
-                "z": 0.47377678070851764
+                "x": 5.977944471925971,
+                "y": 1.2596163725485026,
+                "z": 0.7419801552582966
             }
         },
         {
-            "id": "map_obj_000019",
-            "similarity_score": 0.0014855400545903449,
+            "id": "map_obj_000011",
+            "similarity_score": 0.006457883870686072,
             "coords": {
-                "x": -0.0568949048785881,
-                "y": 7.966839582470735,
-                "z": 0.5540780666893098
-            }
-        },
-        {
-            "id": "map_obj_000024",
-            "similarity_score": 0.0012752943153309208,
-            "coords": {
-                "x": 3.9223911178522526,
-                "y": 3.6699496486309977,
-                "z": 3.6931022179172
+                "x": 5.966575211040515,
+                "y": 2.1230541627389754,
+                "z": 0.7704288066034213
             }
         }
     ],
     "selected_goal": {
-        "object_id": "map_obj_000018",
-        "decision_basis": "location",
-        "reasoning": "The prompt specifies a room, so I chose the best candidate in the matching cluster.",
+        "object_id": "map_obj_000021",
+        "decision_basis": "mixed",
+        "reasoning": "The prompt specifies a room and location, so I chose the best candidate in the matching cluster with the highest similarity.",
         "coords": {
-            "x": 3.274706470505768,
-            "y": 10.063198304404576,
-            "z": 0.6228961080136338
+            "x": 4.741610940710294,
+            "y": 4.67149900382434,
+            "z": 0.7789778519410282
         },
-        "similarity": 0.4565705579251207,
-        "cluster": 4
+        "similarity": 0.04478684414920352,
+        "cluster": 2
     },
     "object_similarities": [
         {
-            "object_id": "map_obj_000018",
-            "similarity": 0.4565705579251207
+            "object_id": "map_obj_000021",
+            "similarity": 0.04478684414920352
         },
         {
-            "object_id": "map_obj_000025",
-            "similarity": 0.09608000518112153
+            "object_id": "map_obj_000016",
+            "similarity": 0.025154039584002977
         },
         {
-            "object_id": "map_obj_000023",
-            "similarity": 0.005509156326569706
+            "object_id": "map_obj_000012",
+            "similarity": 0.008900701954660925
         },
         {
-            "object_id": "map_obj_000019",
-            "similarity": 0.0014855400545903449
-        },
-        {
-            "object_id": "map_obj_000024",
-            "similarity": 0.0012752943153309208
+            "object_id": "map_obj_000011",
+            "similarity": 0.006457883870686072
         }
     ],
     "cluster_info": {
-        "cluster_id": 5,
-        "objects": [
-            "couch"
-        ],
-        "reasoning": "The prompt mentions a white couch, which is in Cluster 5, so I select this cluster.",
-        "location_confidence": 0.8,
-        "prioritize_location": true,
-        "coords": {
-            "x": 0.4151940835494311,
-            "y": 11.033147431474731,
-            "z": 0.47377678070851764
-        },
-        "dimensions": {
-            "bounding_box": {
-                "min": {
-                    "x": 0.4151940835494311,
-                    "y": 11.033147431474731
-                },
-                "max": {
-                    "x": 0.4151940835494311,
-                    "y": 11.033147431474731
-                },
-                "dimensions": {
-                    "width": 0.0,
-                    "length": 0.0
-                }
-            },
-            "radius": 0.0
-        }
+        "cluster_id": null,
+        "objects": [],
+        "reasoning": "User says 'bedroom' but sink is not typically found in bedrooms.",
+        "location_confidence": 0.2,
+        "prioritize_location": false,
+        "coords": null,
+        "dimensions": null
     },
     "action": "go_to_object",
     "valid": true

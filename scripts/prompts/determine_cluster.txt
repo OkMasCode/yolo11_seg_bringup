@@ -4,7 +4,7 @@ CRITICAL OUTPUT FORMAT:
 - You MUST respond with ONLY a valid JSON object
 - NO additional text before or after the JSON
 - NO markdown formatting or code blocks
-- EXACTLY this format: {{"cluster_id": <int>, "reasoning": "<string>", "location_confidence": <float 0.0-1.0>}}
+- EXACTLY this format: {{"cluster_id": <int or null>, "reasoning": "<string>", "location_confidence": <float 0.0-1.0>}}
 
 Your task: Analyze the user's navigation prompt and determine which cluster is MOST LIKELY to contain the goal object.
 
@@ -12,69 +12,54 @@ AVAILABLE CLUSTERS IN THE HOUSE:
 {clusters_text}
 
 CLUSTER MATCHING STRATEGY:
-1. Semantic Content Analysis:
-   - Examine each cluster's object contents
-   - Match clusters to typical room types based on objects they contain
-   - Find which cluster(s) contain the goal object
+1. Room Name Matching (highest priority):
+   - Each cluster has a semantic label in parentheses (e.g. "kitchen", "bedroom #1").
+   - If the user prompt explicitly mentions a room name, select the cluster whose label best matches that room.
+   - Room constraints override object-only cues.
 
-2. Context-Based Refinement:
-   - Analyze contextual clues in the user's prompt:
-     * Room mentions ("kitchen", "bathroom", "living room", "bedroom")
-     * Spatial references ("near the", "next to", "in the")
-     * Activity context ("to watch TV" → cluster with TV)
-     * Object associations ("bring me the remote" → cluster with TV/sofa)
-    - Also estimate how much location information should be prioritized as location_confidence:
-       * HIGH (0.7-1.0): explicit spatial relations/room constraints ("near the fridge", "in the kitchen")
-       * MEDIUM (0.4-0.7): weak or partial location hints
-       * LOW (0.0-0.3): mostly visual/appearance description ("red chair", "small chair")
+2. Semantic Object Matching (fallback when NO room is mentioned):
+   - If no room/area is mentioned in the prompt, infer the cluster from objects explicitly named in the prompt.
+   - Match the named objects against cluster contents and typical co-occurrence patterns.
 
-3. Semantic room groupings (for reference):
-   - Kitchen: refrigerator, oven, microwave, stove, dishwasher, toaster, kitchen counter, cabinet, sink
-   - Bathroom: toilet, bathtub, shower, sink, towel rack, bathroom mirror
-   - Living room: sofa, couch, tv, television, armchair, coffee table, lamp, bookshelf
-   - Bedroom: bed, nightstand, dresser, closet, mirror
-   - Dining area: dining table, chair
+3. Confidence Policy:
+   - HIGH confidence: explicit room name matches a cluster label.
+   - MEDIUM confidence: partial location hints or moderate semantic match.
+   - LOW confidence: weak/ambiguous prompt with no reliable room/object grounding.
 
-4. Selection Priority:
-   - FIRST: Direct match - if goal object is directly in a cluster, strongly prefer that cluster
-   - SECOND: Semantic match - if goal not found, select cluster with most semantically related objects
-   - THIRD: Context match - use activity context and room mentions to refine selection
-
-5. Ambiguity Resolution:
-   - If the goal object appears in multiple clusters: use contextual clues to disambiguate
-   - Consider typical usage patterns
-   - Prefer the cluster with more semantically related objects
+4. Empty Cluster Rule:
+   - If no cluster can be selected confidently, return "cluster_id": null.
 
 DECISION PROCESS:
-1. List which cluster(s) contain the goal object (if any)
-2. Analyze contextual clues in the prompt
-3. Select the cluster that BEST matches the context
-4. Provide brief reasoning for your choice
+1. Parse room/location cues from the whole sentence.
+2. If room cues exist, choose cluster by room consistency.
+3. Otherwise, use semantic object matching.
+4. If still uncertain, output cluster_id as null.
 
 CRITICAL RULES:
-- MUST select a cluster_id from the available clusters above
 - NEVER invent cluster IDs that don't exist
-- All clusters are valid choices (no outliers)
-- If goal not found in any cluster, select the cluster with most related objects
+- Use null when confidence is insufficient to choose a reliable cluster
 - Reasoning should be concise (1-2 sentences)
 - location_confidence must be a numeric float between 0.0 and 1.0
 - Always consider the full context of the user's prompt
-- YOUR REASONING MUST MATCH YOUR SELECTED CLUSTER_ID - explain why this specific cluster is chosen
+- YOUR REASONING MUST MATCH YOUR SELECTED CLUSTER_ID (or null)
 - DO NOT recommend a different cluster in your reasoning than the one you select as cluster_id
 
 EXAMPLES:
-Prompt: "Go to the sofa in the living room" | Goal: "sofa" | Clusters: [Cluster 0: [sofa, tv, coffee table], Cluster 1: [bed, nightstand]]
-→ {{"cluster_id": 0, "reasoning": "Sofa is in Cluster 0 which represents the living room with TV and coffee table.", "location_confidence": 0.85}}
+Prompt: "Go to the sofa in the living room" | Goal: "sofa" | Clusters: [Cluster 0 (living room): [sofa, tv, coffee table], Cluster 1 (bedroom): [bed, nightstand]]
+→ {{"cluster_id": 0, "reasoning": "User says 'living room' which matches Cluster 0 label.", "location_confidence": 0.95}}
 
-Prompt: "Bring me the remote from near the TV" | Goal: "remote" | Clusters: [Cluster 0: [tv, sofa], Cluster 1: [bed]]
-→ {{"cluster_id": 0, "reasoning": "Remote is likely near TV, which is in Cluster 0 with sofa.", "location_confidence": 0.9}}
+Prompt: "Bring me the bottle near the kitchen sink" | Goal: "bottle" | Clusters: [Cluster 0 (kitchen): [sink, oven, fridge], Cluster 1 (bedroom): [bed]]
+→ {{"cluster_id": 0, "reasoning": "User says 'kitchen sink'; 'kitchen' matches Cluster 0 label and sink is in that cluster.", "location_confidence": 0.95}}
 
-Prompt: "Go to the red chair" | Goal: "chair" | Clusters: [Cluster 0: [chair, table], Cluster 1: [chair, sofa]]
-→ {{"cluster_id": 0, "reasoning": "Prompt is appearance-focused and gives little location context, so I select a plausible chair cluster.", "location_confidence": 0.1}}
+Prompt: "Bring me the remote from near the TV" | Goal: "remote" | Clusters: [Cluster 0 (living room): [tv, sofa], Cluster 1 (bedroom): [bed]]
+→ {{"cluster_id": 0, "reasoning": "No room mentioned. TV is in Cluster 0, remote is likely near it.", "location_confidence": 0.8}}
+
+Prompt: "Go to the red chair" | Goal: "chair" | Clusters: [Cluster 0 (dining area): [chair, table], Cluster 1 (living room): [chair, sofa]]
+→ {{"cluster_id": null, "reasoning": "No room mentioned and chair appears in multiple clusters. Cannot determine reliably.", "location_confidence": 0.1}}
 
 RESPONSE FORMAT:
 Return ONLY valid JSON with no additional text:
-{{"cluster_id": <int>, "reasoning": "<brief explanation>", "location_confidence": <float 0.0-1.0>}}
+{{"cluster_id": <int or null>, "reasoning": "<brief explanation>", "location_confidence": <float 0.0-1.0>}}
 
 Example valid response:
 {{"cluster_id": 0, "reasoning": "This cluster contains the goal object.", "location_confidence": 0.6}}

@@ -161,7 +161,7 @@
     },
     {
         "id": "map_obj_000006",
-        "cluster": 1,
+        "cluster": 3,
         "class": "bed",
         "coords": {
             "x": 6.632151901025905,
@@ -193,7 +193,7 @@
     },
     {
         "id": "map_obj_000007",
-        "cluster": 1,
+        "cluster": 3,
         "class": "nightstand",
         "coords": {
             "x": 8.238530281676184,
@@ -289,7 +289,7 @@
     },
     {
         "id": "map_obj_000011",
-        "cluster": 1,
+        "cluster": 3,
         "class": "sink",
         "coords": {
             "x": 5.966575211040515,
@@ -321,7 +321,7 @@
     },
     {
         "id": "map_obj_000012",
-        "cluster": 1,
+        "cluster": 3,
         "class": "sink",
         "coords": {
             "x": 5.977944471925971,
@@ -513,7 +513,7 @@
     },
     {
         "id": "map_obj_000018",
-        "cluster": 4,
+        "cluster": 5,
         "class": "couch",
         "coords": {
             "x": 3.274706470505768,
@@ -545,7 +545,7 @@
     },
     {
         "id": "map_obj_000019",
-        "cluster": 0,
+        "cluster": 5,
         "class": "couch",
         "coords": {
             "x": -0.0568949048785881,
@@ -609,7 +609,7 @@
     },
     {
         "id": "map_obj_000021",
-        "cluster": 0,
+        "cluster": 2,
         "class": "sink",
         "coords": {
             "x": 4.741610940710294,
@@ -641,7 +641,7 @@
     },
     {
         "id": "map_obj_000022",
-        "cluster": 0,
+        "cluster": 2,
         "class": "toilet",
         "coords": {
             "x": 3.997785512008532,
@@ -737,7 +737,7 @@
     },
     {
         "id": "map_obj_000025",
-        "cluster": 0,
+        "cluster": 6,
         "class": "couch",
         "coords": {
             "x": 0.906593917240422,
@@ -833,7 +833,7 @@
     },
     {
         "id": "map_obj_000028",
-        "cluster": 2,
+        "cluster": 8,
         "class": "nightstand",
         "coords": {
             "x": 8.329875408564352,
@@ -865,7 +865,7 @@
     },
     {
         "id": "map_obj_000029",
-        "cluster": 2,
+        "cluster": 8,
         "class": "bed",
         "coords": {
             "x": 8.342833636486846,
