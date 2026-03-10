@@ -25,8 +25,8 @@ MODEL_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 MODEL_MAX_LENGTH = 8192  # Mistral supports longer context
 OFFLINE_MODE = False  # Set to True for offline operation (uses cached model)
 
-MAP_FILE = "/workspaces/ros2_ws/src/yolo11_seg_bringup/config/map_v2.json"
-CLUSTERED_MAP_FILE = "/workspaces/ros2_ws/src/yolo11_seg_bringup/config/clustered_map_v2.json"
+MAP_FILE = "/workspaces/ros2_ws/src/yolo11_seg_bringup/config/map_v3.json"
+CLUSTERED_MAP_FILE = "/workspaces/ros2_ws/src/yolo11_seg_bringup/config/clustered_map_v3.json"
 ROBOT_COMMAND_FILE = "/workspaces/ros2_ws/src/yolo11_seg_bringup/config/robot_command.json"
 PROMPTS_DIR = os.path.join(os.path.dirname(__file__), "prompts")
 

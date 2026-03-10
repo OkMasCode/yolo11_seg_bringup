@@ -16,7 +16,7 @@ class MapPointsNode(Node):
 
         self.declare_parameter(
             'map_file',
-            '/workspaces/ros2_ws/src/yolo11_seg_bringup/config/map_v2.json',
+            '/workspaces/ros2_ws/src/yolo11_seg_bringup/config/map_v3.json',
         )
         self.declare_parameter('map_frame', 'map')
         self.declare_parameter('marker_topic', '/vision/map_objects_markers')
@@ -68,6 +68,10 @@ class MapPointsNode(Node):
             if not isinstance(data, dict):
                 self.get_logger().warn(f'Expected dict in map file, got: {type(data).__name__}')
                 return {}
+            self.get_logger().info(
+                f'[map_points] loaded map entries: {len(data)}',
+                throttle_duration_sec=5.0,
+            )
             return data
         except Exception as exc:
             self.get_logger().error(f'Failed to read map file {self.map_file}: {exc}')
@@ -122,6 +126,11 @@ class MapPointsNode(Node):
 
             valid_entries.append((entry, point_x, point_y, marker_z))
 
+        self.get_logger().info(
+            f'[map_points] valid entries for publish: {len(valid_entries)} / {len(map_entries)}',
+            throttle_duration_sec=5.0,
+        )
+
         for index, (entry, point_x, point_y, marker_z) in enumerate(valid_entries):
             point_z = marker_z
             point = Point(
@@ -157,6 +166,10 @@ class MapPointsNode(Node):
         marker_array.markers.append(points_marker)
         marker_array.markers.extend(text_markers)
         self.markers_pub.publish(marker_array)
+        self.get_logger().info(
+            f'[map_points] published markers: points={len(points_marker.points)}, labels={len(text_markers)}',
+            throttle_duration_sec=5.0,
+        )
 
 
 def main(args=None) -> None:

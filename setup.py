@@ -37,6 +37,7 @@ setup(
             'goal_detector = yolo11_seg_bringup.goal_detector:main',
             'mapper_node = yolo11_seg_bringup.mapper_node:main',
             'mapper_node_v2 = yolo11_seg_bringup.mapper_node_v2:main',
+            'mapper_node_v3 = yolo11_seg_bringup.mapper_node_v3:main',
             'map_points_node = yolo11_seg_bringup.map_points_node:main',
             'clustered_map_points_node = yolo11_seg_bringup.clustered_map_points_node:main',
             'clip_reader = yolo11_seg_bringup.clip_reader:main',

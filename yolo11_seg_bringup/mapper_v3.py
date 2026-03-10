@@ -157,6 +157,37 @@ class SemanticObjectMapV2:
         self.class_switch_margin = 0.75
         self.min_class_votes_to_lock = 4
 
+    def _normalize_embedding(self, embedding) -> Optional[np.ndarray]:
+        if embedding is None:
+            return None
+        vec = np.asarray(embedding, dtype=np.float32).reshape(-1)
+        if vec.size == 0:
+            return None
+        norm = float(np.linalg.norm(vec))
+        if not math.isfinite(norm) or norm <= 1e-12:
+            return None
+        return vec / norm
+
+    def _fuse_embeddings_running_avg(
+        self,
+        current_embedding,
+        current_count: int,
+        new_embedding,
+        new_count: int = 1,
+    ) -> Optional[np.ndarray]:
+        cur = self._normalize_embedding(current_embedding)
+        new = self._normalize_embedding(new_embedding)
+
+        if cur is None:
+            return new
+        if new is None:
+            return cur
+
+        cur_w = max(int(current_count), 1)
+        new_w = max(int(new_count), 1)
+        fused = (cur * float(cur_w) + new * float(new_w)) / float(cur_w + new_w)
+        return self._normalize_embedding(fused)
+
     def add_detection(
         self,
         object_name: str,
@@ -313,7 +344,7 @@ class SemanticObjectMapV2:
                 class_name=object_name,
                 confidence_max=float(confidence),
                 confidence_sum=max(float(confidence), 0.0),
-                image_embedding=image_embedding,
+                image_embedding=self._normalize_embedding(image_embedding),
                 embedding_confidence_max=(float(confidence) if image_embedding is not None else -1.0),
             )
             return False
@@ -334,7 +365,7 @@ class SemanticObjectMapV2:
                 class_name=object_name,
                 confidence_max=float(confidence),
                 confidence_sum=max(float(confidence), 0.0),
-                image_embedding=image_embedding,
+                image_embedding=self._normalize_embedding(image_embedding),
                 embedding_confidence_max=(float(confidence) if image_embedding is not None else -1.0),
             )
             return False
@@ -346,12 +377,17 @@ class SemanticObjectMapV2:
         hits = track.hits + 1
         conf_sum = track.confidence_sum + max(float(confidence), 0.0)
 
-        best_embedding = track.image_embedding
-        best_embedding_conf = track.embedding_confidence_max
-        # Keep only the highest-confidence embedding snapshot.
-        if image_embedding is not None and float(confidence) > best_embedding_conf:
-            best_embedding = image_embedding
-            best_embedding_conf = float(confidence)
+        # Keep a running average of embeddings and re-normalize after each update.
+        fused_embedding = self._fuse_embeddings_running_avg(
+            current_embedding=track.image_embedding,
+            current_count=track.hits,
+            new_embedding=image_embedding,
+            new_count=1,
+        )
+
+        best_embedding_conf = float(track.embedding_confidence_max)
+        if image_embedding is not None:
+            best_embedding_conf = max(best_embedding_conf, float(confidence))
 
         self.tentative_tracks[tracker_id] = TentativeTrack(
             track_id=tracker_id,
@@ -366,7 +402,7 @@ class SemanticObjectMapV2:
             class_name=track.class_name,
             confidence_max=max(track.confidence_max, float(confidence)),
             confidence_sum=conf_sum,
-            image_embedding=best_embedding,
+            image_embedding=fused_embedding,
             embedding_confidence_max=best_embedding_conf,
         )
 
@@ -454,12 +490,16 @@ class SemanticObjectMapV2:
         # Smooth confidence so downstream consumers see less noisy confidence traces.
         conf_ema = (1.0 - self.confidence_ema_alpha) * entry.confidence_ema + self.confidence_ema_alpha * float(confidence)
 
-        embedding = entry.image_embedding
+        embedding = self._fuse_embeddings_running_avg(
+            current_embedding=entry.image_embedding,
+            current_count=entry.occurrences,
+            new_embedding=image_embedding,
+            new_count=1,
+        )
+
         embedding_confidence_max = float(entry.embedding_confidence_max)
-        # Update embedding only when a stronger-confidence sample arrives.
-        if image_embedding is not None and float(confidence) > embedding_confidence_max:
-            embedding = image_embedding
-            embedding_confidence_max = float(confidence)
+        if image_embedding is not None:
+            embedding_confidence_max = max(embedding_confidence_max, float(confidence))
 
         self.objects[map_id] = MapObject(
             map_id=entry.map_id,
@@ -617,10 +657,11 @@ class SemanticObjectMapV2:
             class_conf_sums=class_conf_sums,
             similarity=max(keep.similarity, drop.similarity),
             confidence_ema=max(keep.confidence_ema, drop.confidence_ema),
-            image_embedding=(
-                keep.image_embedding
-                if float(keep.embedding_confidence_max) >= float(drop.embedding_confidence_max)
-                else drop.image_embedding
+            image_embedding=self._fuse_embeddings_running_avg(
+                current_embedding=keep.image_embedding,
+                current_count=keep.occurrences,
+                new_embedding=drop.image_embedding,
+                new_count=drop.occurrences,
             ),
             embedding_confidence_max=max(float(keep.embedding_confidence_max), float(drop.embedding_confidence_max)),
             source_track_id=keep.source_track_id,
@@ -695,7 +736,7 @@ class SemanticObjectMapV2:
                     float(obj_data['pose_map']['z']),
                 )
                 img = obj_data.get('image_embedding')
-                image_embedding = np.array(img, dtype=np.float32) if img else None
+                image_embedding = self._normalize_embedding(np.array(img, dtype=np.float32) if img else None)
 
                 self.objects[map_id] = MapObject(
                     map_id=map_id,
@@ -794,7 +835,7 @@ class SemanticObjectMapV2:
         if embeddings is None:
             return None
         arr = np.asarray(embeddings, dtype=np.float32)
-        return arr if arr.size > 0 else None
+        return self._normalize_embedding(arr)
 
     def _stamp_to_ns(self, stamp) -> int:
         return int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec)

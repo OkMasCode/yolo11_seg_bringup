@@ -24,8 +24,8 @@ class PointCloudMapperNodeV2(Node):
         self.declare_parameter('output_dir', '/workspaces/ros2_ws/src/yolo11_seg_bringup/config/')
         self.declare_parameter('export_interval', 5.0)
         self.declare_parameter('load_map_on_start', False)
-        self.declare_parameter('input_map_file', 'map_v2.json')
-        self.declare_parameter('output_map_file', 'map_v2.json')
+        self.declare_parameter('input_map_file', 'map_v3.json')
+        self.declare_parameter('output_map_file', 'map_v3.json')
 
         # False-positive suppression.
         self.declare_parameter('min_input_confidence', 0.55)
@@ -106,7 +106,7 @@ class PointCloudMapperNodeV2(Node):
             self.detection_callback,
             qos_profile=qos_sensor,
         )
-        self.map_pub = self.create_publisher(SemanticObjectArray, '/vision/semantic_map_v2', 10)
+        self.map_pub = self.create_publisher(SemanticObjectArray, '/vision/semantic_map_v3', 10)
         self.export_timer = self.create_timer(self.export_interval, self.export_callback)
 
         self.lock = threading.Lock()
@@ -118,7 +118,10 @@ class PointCloudMapperNodeV2(Node):
     def detection_callback(self, msg: DetectedObject):
         try:
             with self.lock:
-                self.semantic_map.add_detection(
+                pre_confirmed = len(self.semantic_map.objects)
+                pre_tentative = len(self.semantic_map.tentative_tracks)
+
+                created = self.semantic_map.add_detection(
                     object_name=msg.object_name,
                     tracker_id=str(msg.object_id),
                     pose_in_camera=msg.centroid,
@@ -131,6 +134,30 @@ class PointCloudMapperNodeV2(Node):
                     box_min=(msg.box_min.x, msg.box_min.y, msg.box_min.z),
                     box_max=(msg.box_max.x, msg.box_max.y, msg.box_max.z),
                 )
+
+                post_confirmed = len(self.semantic_map.objects)
+                post_tentative = len(self.semantic_map.tentative_tracks)
+                bound_map_id = self.semantic_map.track_to_map.get(str(msg.object_id), "-")
+
+                if created or post_confirmed > pre_confirmed:
+                    event = "new_confirmed"
+                elif post_confirmed < pre_confirmed:
+                    event = "merged_confirmed"
+                elif post_tentative > pre_tentative:
+                    event = "new_tentative"
+                elif post_tentative < pre_tentative:
+                    event = "tentative_transition"
+                else:
+                    event = "updated"
+
+                self.get_logger().info(
+                    "[det_state] "
+                    f"event={event} name={msg.object_name} track={msg.object_id} "
+                    f"conf={float(msg.confidence):.3f} sim={float(msg.similarity):.2f} "
+                    f"emb={'yes' if len(msg.embedding) > 0 else 'no'} "
+                    f"confirmed={post_confirmed} tentative={post_tentative} bound={bound_map_id}"
+                )
+
                 self.publish_semantic_map()
         except Exception as ex:
             self.get_logger().error(f"[mapper_node_v2] detection error: {ex}")
@@ -171,7 +198,7 @@ class PointCloudMapperNodeV2(Node):
     def shutdown_callback(self):
         with self.lock:
             try:
-                self.semantic_map.export_to_json(self.output_dir, 'map_v2_final.json')
+                self.semantic_map.export_to_json(self.output_dir, 'map_v3_final.json')
             except Exception as ex:
                 self.get_logger().error(f"[mapper_node_v2] final export error: {ex}")
 
