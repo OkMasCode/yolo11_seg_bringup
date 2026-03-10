@@ -23,7 +23,7 @@ def load_house_map(file_path):
     print(f"[DEBUG] Loaded {len(map_objects)} objects from map")
     return map_objects
 
-def cluster_map(object_dict, eps=1.5, min_samples=2):
+def cluster_map(object_dict, eps=1, min_samples=2):
     """
     Generates a map where each object has its ID, cluster assignment, class name, and coordinates.
     
@@ -131,7 +131,7 @@ def write_map_to_file(clustered_map, file_path):
 
 def main():
     parser = argparse.ArgumentParser(description="Cluster map objects with DBSCAN")
-    parser.add_argument("--eps", type=float, default=2, help="DBSCAN eps distance in meters")
+    parser.add_argument("--eps", type=float, default=2.4, help="DBSCAN eps distance in meters")
     parser.add_argument("--min-samples", type=int, default=2, help="DBSCAN min_samples")
     args = parser.parse_args()
 

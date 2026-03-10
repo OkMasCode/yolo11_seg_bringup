@@ -30,17 +30,6 @@ CLUSTERED_MAP_FILE = "/workspaces/ros2_ws/src/yolo11_seg_bringup/config/clustere
 ROBOT_COMMAND_FILE = "/workspaces/ros2_ws/src/yolo11_seg_bringup/config/robot_command.json"
 PROMPTS_DIR = os.path.join(os.path.dirname(__file__), "prompts")
 
-DICTIONARY = [
-    "sink","sports ball", "refrigerator", "oven", "microwave", "toaster", "dishwasher",
-    "dining table", "kitchen counter", "stove", "cabinet", "sofa", "couch",
-    "tv", "television", "armchair", "coffee table", "bookshelf", "lamp",
-    "window", "door", "bed", "nightstand", "dresser", "closet", "mirror",
-    "toilet", "bathtub", "shower", "bathroom mirror", "towel rack", "chair",
-    "table", "desk", "light", "painting", "picture frame", "plant",
-    "potted plant", "rug", "carpet", "curtain", "blind", "wall", "floor",
-    "ceiling", "shelf", "box", "basket",
-]
-
 llm_pipeline = None
 clip_processor = None
 
@@ -63,7 +52,18 @@ def load_prompt(filename: str, **kwargs) -> str:
     prompt_path = os.path.join(PROMPTS_DIR, filename)
     with open(prompt_path, 'r', encoding='utf-8') as f:
         template = f.read()
-    return template.format(**kwargs)
+
+    # Some prompt files contain JSON examples with literal braces.
+    # Only apply templating when variables are provided, and keep unknown
+    # placeholders unchanged so literal braces do not raise KeyError.
+    if not kwargs:
+        return template
+
+    class _SafeFormatDict(dict):
+        def __missing__(self, key):
+            return "{" + key + "}"
+
+    return template.format_map(_SafeFormatDict(kwargs))
 
 def initialize_model():
     """Initialize the Hugging Face model and tokenizer."""
@@ -282,16 +282,64 @@ def get_map_objects():
     """Returns all unique object classes from the map."""
     return sorted(list(set(obj.get("name", "") for obj in house_map if obj.get("name"))))
 
+def _infer_goal_from_prompt(prompt: str) -> str:
+    """Heuristic fallback goal extraction when LLM returns empty goal."""
+    if not prompt:
+        return ""
+
+    text = prompt.strip().lower()
+    # Remove punctuation that can break simple phrase capture.
+    text = re.sub(r"[^a-z0-9\s-]", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+
+    patterns = [
+        r"(?:bring|get|fetch|grab|find|locate|go to|goto|navigate to|take me to)\s+(?:me\s+)?(?:to\s+)?(?:an?|the)?\s*([a-z][a-z0-9\s-]{0,40})",
+        r"(?:an?|the)\s+([a-z][a-z0-9\s-]{0,40})",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if not match:
+            continue
+        candidate = match.group(1).strip()
+        candidate = re.split(r"\b(?:in|on|at|near|with|from|to|and|then)\b", candidate)[0].strip()
+        if candidate:
+            return candidate
+
+    # Last-resort: use final token as potential object label.
+    tokens = text.split()
+    return tokens[-1] if tokens else ""
+
+def _normalize_object_label(label: str) -> str:
+    """Normalize an object label for case/spacing-only matching."""
+    value = label.strip().lower()
+    return re.sub(r"\s+", " ", value)
+
 def find_objects(class_name: str):
     """Find all instances of an object in the map."""
-    class_name_lower = class_name.strip().lower()
+    class_name_norm = _normalize_object_label(class_name)
     matches = []
+    relaxed_matches = []
     
     for obj in house_map:
-        if obj.get("name", "").lower() == class_name_lower:
+        object_name = obj.get("name", "")
+        object_name_norm = _normalize_object_label(object_name)
+
+        if object_name_norm == class_name_norm:
             matches.append(obj)
+            continue
+
+        # Fallback for labels like "kitchen table" vs "table"
+        if class_name_norm and (
+            class_name_norm in object_name_norm
+            or object_name_norm in class_name_norm
+        ):
+            relaxed_matches.append(obj)
+
+    if matches:
+        return matches
     
-    return matches
+    return relaxed_matches
 
 def find_goal_objects(goal: str, clip_prompts: List[str]):
     """
@@ -302,8 +350,14 @@ def find_goal_objects(goal: str, clip_prompts: List[str]):
 
     goal_objects = find_objects(goal)
 
+    # If lexical matching fails (e.g., goal uses different wording than map labels),
+    # score all mapped objects using CLIP and let visual similarity choose.
+    if not goal_objects:
+        print(f"No direct class match for '{goal}'. Falling back to all objects in map for similarity ranking.")
+        goal_objects = list(house_map)
+
     if goal_objects:
-        print(f"Found {len(goal_objects)} objects of class {goal} in the map")
+        print(f"Evaluating {len(goal_objects)} candidate objects for goal '{goal}'")
         
         # Encode text prompts as ensemble
         text_embedding = clip_processor.encode_text(clip_prompts)
@@ -326,7 +380,7 @@ def find_goal_objects(goal: str, clip_prompts: List[str]):
         else:
             print("Warning: Could not encode text embedding\n")
     else:
-        print(f"No objects of class {goal} found in the map.\n")
+        print("No objects available in the map.\n")
     
     return goal_objects
 
@@ -471,7 +525,7 @@ def extract_goal(prompt : str) -> Goal:
     print("1. .......Extracting goal from prompt.........\n")
     
     # Load prompt template from file
-    SYSTEM_PROMPT = load_prompt('extract_goal.txt', DICTIONARY=DICTIONARY)
+    SYSTEM_PROMPT = load_prompt('extract_goal.txt', MAP_OBJECTS=get_map_objects())
 
     # message passed to the LLM
     msgs = [
@@ -509,6 +563,11 @@ def extract_goal(prompt : str) -> Goal:
             raise
     end_time = time.time()
     elapsed = end_time - start_time
+    goal_text = goal_text.strip()
+    if not goal_text:
+        goal_text = _infer_goal_from_prompt(prompt)
+        if goal_text:
+            print(f"LLM returned empty goal. Using heuristic fallback goal: {goal_text}")
     print(f"Goal: {goal_text}")
     print(f"Computation time: {elapsed:.2f} seconds\n")
     
@@ -826,22 +885,13 @@ def process_nav_instruction(prompt : str) -> NavResult:
     # 1. Extract goal from prompt
     goal = extract_goal(prompt)
 
-    if not goal.goal:
-        print("No valid goal extracted from the prompt.")
-        gc.collect()
-        return NavResult(
-            goal="",
-            goal_objects=[],
-            clip_prompts=[],
-            text_embedding=None,
-            object_similarities=[],
-            action="",
-            cluster_info=None,
-            selected_goal=None
-        )
+    effective_goal = goal.goal.strip() if goal.goal else ""
+    if not effective_goal and goal.clip_prompts:
+        effective_goal = _normalize_object_label(goal.clip_prompts[0])
+        print(f"No explicit goal returned. Using first CLIP prompt as goal hint: {effective_goal}")
     
     # 2. Read the map and find objects of the goal class (ranked by CLIP similarity)
-    goal_objects = find_goal_objects(goal.goal, goal.clip_prompts)
+    goal_objects = find_goal_objects(effective_goal, goal.clip_prompts)
 
     # 3. Extract text embedding and similarity scores from ranked objects
     print("5. .......Processing object similarities.........\n")
@@ -864,7 +914,7 @@ def process_nav_instruction(prompt : str) -> NavResult:
         print("No objects to compute similarities for.\n")
 
     # 4. Determine most likely cluster using LLM
-    cluster_prediction = determine_most_likely_cluster(prompt, goal.goal)
+    cluster_prediction = determine_most_likely_cluster(prompt, effective_goal)
     cluster_coords = compute_cluster_coords(cluster_prediction.cluster_id)
     cluster_dimensions = get_cluster_dimensions(cluster_prediction.cluster_id)
     cluster_info = {
@@ -881,7 +931,7 @@ def process_nav_instruction(prompt : str) -> NavResult:
     action = extract_action(prompt)
 
     # 6. Final object-level goal selection (can return no match)
-    final_selection = select_final_goal(prompt, goal.goal, goal_objects, cluster_info)
+    final_selection = select_final_goal(prompt, effective_goal, goal_objects, cluster_info)
     selected_goal = None
     if final_selection.selected_object_id:
         selected_goal = next(
@@ -890,7 +940,7 @@ def process_nav_instruction(prompt : str) -> NavResult:
         )
 
     # If no object matches well enough, intentionally clear the final goal.
-    final_goal_class = goal.goal if selected_goal is not None else ""
+    final_goal_class = selected_goal.get("name", "") if selected_goal is not None else ""
 
     return NavResult(
         goal=final_goal_class,
@@ -1000,7 +1050,7 @@ def main():
 
     print(f"Number of objects in the house map: {len(house_map)}")
     print(f"Number of unique classes in the map: {len(map_objects)}")
-    print(f"Number of recognizable classes: {len(DICTIONARY)}\n")
+    print(f"Goal extraction can target all classes in the loaded map\n")
 
     while True:
         user_prompt = input("Navigation Instruction: ").strip()
