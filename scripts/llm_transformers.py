@@ -25,8 +25,12 @@ MODEL_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 MODEL_MAX_LENGTH = 8192  # Mistral supports longer context
 OFFLINE_MODE = False  # Set to True for offline operation (uses cached model)
 
-MAP_FILE = "/workspaces/ros2_ws/src/yolo11_seg_bringup/config/map_v3.json"
-CLUSTERED_MAP_FILE = "/workspaces/ros2_ws/src/yolo11_seg_bringup/config/clustered_map_v3.json"
+# Test-only debug flag: print similarity for every object in house_map.
+# Set to False (or remove this block) when no longer needed.
+PRINT_ALL_MAP_SIMILARITIES_TEST = True
+
+MAP_FILE = "/workspaces/ros2_ws/src/yolo11_seg_bringup/config/map_v2.json"
+CLUSTERED_MAP_FILE = "/workspaces/ros2_ws/src/yolo11_seg_bringup/config/clustered_map_v2.json"
 ROBOT_COMMAND_FILE = "/workspaces/ros2_ws/src/yolo11_seg_bringup/config/robot_command.json"
 PROMPTS_DIR = os.path.join(os.path.dirname(__file__), "prompts")
 
@@ -467,6 +471,18 @@ def find_goal_objects(goal: str, clip_prompts: List[str]):
         
         if text_embedding is not None:
             print("Computing CLIP similarities...\n")
+
+            # Test-only debug output: similarity for every object in the map.
+            # This block is intentionally isolated and guarded by a single flag
+            # so it can be removed quickly after debugging.
+            if PRINT_ALL_MAP_SIMILARITIES_TEST:
+                all_objects_scored = compute_object_similarities(house_map, np.copy(text_embedding))
+                print("All map objects similarity (test, high precision):")
+                for i, obj in enumerate(all_objects_scored, 1):
+                    sim_score = obj.get("similarity_score", 0.0)
+                    print(f"  {i}. {obj.get('id')} - Similarity: {sim_score:.12f}%")
+                print()
+
             # Rank by similarity
             goal_objects = compute_object_similarities(goal_objects, text_embedding)
             

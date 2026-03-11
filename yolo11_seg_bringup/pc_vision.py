@@ -449,6 +449,7 @@ class NoPCVisionNode(Node):
         }
 
         # Prepare CLIP crop (if current frame is scheduled for CLIP).
+        # Prepare CLIP crop (if current frame is scheduled for CLIP).
         if do_clip_frame:
             sx1, sy1, sx2, sy2 = CLIPProcessor.compute_square_crop(
                 x1, y1, x2, y2, width, height, self.square_crop_scale
@@ -460,8 +461,18 @@ class NoPCVisionNode(Node):
                 mask_crop = binary_mask_uint8[sy1:sy2, sx1:sx2]
 
                 if img_crop.size > 0 and mask_crop.size > 0:
+                    
+                    # =======================================================
+                    # NEW: Mask Dilation
+                    # Expands the mask by a few pixels to capture object edges
+                    # =======================================================
+                    kernel = np.ones((5, 5), np.uint8)
+                    mask_crop = cv2.dilate(mask_crop, kernel, iterations=1)
+
                     # Gray masking
                     neutral_bg = np.full_like(img_crop, 122)  # neutral gray
+                    
+                    # The rest of your logic stays exactly the same
                     bg_mask = cv2.bitwise_not(mask_crop)
                     fg = cv2.bitwise_and(img_crop, img_crop, mask=mask_crop)
                     bg = cv2.bitwise_and(neutral_bg, neutral_bg, mask=bg_mask)

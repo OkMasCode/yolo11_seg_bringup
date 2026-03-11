@@ -1,90 +1,87 @@
 {
-    "timestamp": 1773162458.4052026,
-    "prompt": "go to the sink in the bedroom",
-    "goal": "sink",
-    "related_object": "bedroom",
+    "timestamp": 1773221799.7417386,
+    "prompt": "go to the bed with horizontal stripes",
+    "goal": "bed",
+    "related_object": "",
     "clip_prompts": [
-        "a sink",
-        "the sink",
-        "a bathroom sink"
+        "bed with horizontal stripes",
+        "bed featuring horizontal stripes",
+        "horizontal striped bed"
     ],
     "text_embedding": null,
     "goal_objects": [
         {
-            "id": "map_obj_000021",
-            "similarity_score": 0.04478684414920352,
+            "id": "map_obj_000006",
+            "similarity_score": 58.7506638742764,
             "coords": {
-                "x": 4.741610940710294,
-                "y": 4.67149900382434,
-                "z": 0.7789778519410282
+                "x": 6.636299356652186,
+                "y": -1.0155188317548933,
+                "z": 0.6916623342907924
             }
         },
         {
-            "id": "map_obj_000016",
-            "similarity_score": 0.025154039584002977,
+            "id": "map_obj_000029",
+            "similarity_score": 10.53166888459892,
             "coords": {
-                "x": -0.5968781938490686,
-                "y": 5.074278641144594,
-                "z": 0.826500930873893
-            }
-        },
-        {
-            "id": "map_obj_000012",
-            "similarity_score": 0.008900701954660925,
-            "coords": {
-                "x": 5.977944471925971,
-                "y": 1.2596163725485026,
-                "z": 0.7419801552582966
-            }
-        },
-        {
-            "id": "map_obj_000011",
-            "similarity_score": 0.006457883870686072,
-            "coords": {
-                "x": 5.966575211040515,
-                "y": 2.1230541627389754,
-                "z": 0.7704288066034213
+                "x": 8.341921489682663,
+                "y": 0.29813751619401097,
+                "z": 4.225246273636726
             }
         }
     ],
     "selected_goal": {
-        "object_id": "map_obj_000021",
-        "decision_basis": "mixed",
-        "reasoning": "The prompt specifies a room and location, so I chose the best candidate in the matching cluster with the highest similarity.",
+        "object_id": "map_obj_000006",
+        "decision_basis": "location",
+        "reasoning": "High location confidence and prioritization of location lead to choosing the best candidate in the matching cluster.",
         "coords": {
-            "x": 4.741610940710294,
-            "y": 4.67149900382434,
-            "z": 0.7789778519410282
+            "x": 6.636299356652186,
+            "y": -1.0155188317548933,
+            "z": 0.6916623342907924
         },
-        "similarity": 0.04478684414920352,
-        "cluster": 2
+        "similarity": 58.7506638742764,
+        "cluster": 1
     },
     "object_similarities": [
         {
-            "object_id": "map_obj_000021",
-            "similarity": 0.04478684414920352
+            "object_id": "map_obj_000006",
+            "similarity": 58.7506638742764
         },
         {
-            "object_id": "map_obj_000016",
-            "similarity": 0.025154039584002977
-        },
-        {
-            "object_id": "map_obj_000012",
-            "similarity": 0.008900701954660925
-        },
-        {
-            "object_id": "map_obj_000011",
-            "similarity": 0.006457883870686072
+            "object_id": "map_obj_000029",
+            "similarity": 10.53166888459892
         }
     ],
     "cluster_info": {
-        "cluster_id": null,
-        "objects": [],
-        "reasoning": "User says 'bedroom' but sink is not typically found in bedrooms.",
-        "location_confidence": 0.2,
-        "prioritize_location": false,
-        "coords": null,
-        "dimensions": null
+        "cluster_id": 2,
+        "objects": [
+            "nightstand",
+            "bed"
+        ],
+        "reasoning": "User mentions 'bed' with specific description, matching Cluster 2 (bedroom #1) label.",
+        "location_confidence": 0.95,
+        "prioritize_location": true,
+        "coords": {
+            "x": 8.335898449123508,
+            "y": -0.3473039697364902,
+            "z": 4.035297296591263
+        },
+        "dimensions": {
+            "bounding_box": {
+                "min": {
+                    "x": 8.329875408564352,
+                    "y": -0.9927454556669913
+                },
+                "max": {
+                    "x": 8.341921489682663,
+                    "y": 0.29813751619401097
+                },
+                "dimensions": {
+                    "width": 0.012046081118311847,
+                    "length": 1.2908829718610022
+                }
+            },
+            "radius": 0.6454695878023615
+        }
     },
     "action": "go_to_object",
     "valid": true
