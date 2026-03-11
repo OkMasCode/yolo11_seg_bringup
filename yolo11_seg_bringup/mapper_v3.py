@@ -87,7 +87,7 @@ def quaternion_matrix(quaternion):
     )
 
 
-class SemanticObjectMapV2:
+class SemanticObjectMapV3:
     """
     Simplified semantic mapper.
 
@@ -214,7 +214,7 @@ class SemanticObjectMapV2:
             )
             pose_in_map = self.transform_point(pose_cam, transform)
         except TransformException as ex:
-            self.node.get_logger().warning(f"[mapper_v2] Could not transform detection: {ex}")
+            self.node.get_logger().warning(f"[mapper_v3] Could not transform detection: {ex}")
             return False
 
         # Keep state fresh before any association decisions.
@@ -692,17 +692,39 @@ class SemanticObjectMapV2:
         self._next_map_id += 1
         return map_id
 
-    def export_to_json(self, directory_path: str, file: str = 'map_v2.json') -> None:
+    def export_to_json(self, directory_path: str, file: str = 'map_v3.json') -> None:
         os.makedirs(directory_path, exist_ok=True)
         path = os.path.join(directory_path, file)
 
         export_data = {}
         for map_id, obj in self.objects.items():
+            hx = float(obj.box_size[0]) * 0.5
+            hy = float(obj.box_size[1]) * 0.5
+            hz = float(obj.box_size[2]) * 0.5
+            cx = float(obj.pose_map[0])
+            cy = float(obj.pose_map[1])
+            cz = float(obj.pose_map[2])
+            bbox_min = {'x': cx - hx, 'y': cy - hy, 'z': cz - hz}
+            bbox_max = {'x': cx + hx, 'y': cy + hy, 'z': cz + hz}
             export_data[map_id] = {
                 'name': obj.current_name,
                 'frame': obj.frame,
                 'timestamp': {'sec': obj.timestamp.sec, 'nanosec': obj.timestamp.nanosec},
                 'pose_map': {'x': float(obj.pose_map[0]), 'y': float(obj.pose_map[1]), 'z': float(obj.pose_map[2])},
+                'bbox_type': 'aabb',
+                'box_size': {'x': float(obj.box_size[0]), 'y': float(obj.box_size[1]), 'z': float(obj.box_size[2])},
+                'bbox_min': bbox_min,
+                'bbox_max': bbox_max,
+                'bbox_corners': [
+                    {'x': bbox_min['x'], 'y': bbox_min['y'], 'z': bbox_min['z']},
+                    {'x': bbox_min['x'], 'y': bbox_min['y'], 'z': bbox_max['z']},
+                    {'x': bbox_min['x'], 'y': bbox_max['y'], 'z': bbox_min['z']},
+                    {'x': bbox_min['x'], 'y': bbox_max['y'], 'z': bbox_max['z']},
+                    {'x': bbox_max['x'], 'y': bbox_min['y'], 'z': bbox_min['z']},
+                    {'x': bbox_max['x'], 'y': bbox_min['y'], 'z': bbox_max['z']},
+                    {'x': bbox_max['x'], 'y': bbox_max['y'], 'z': bbox_min['z']},
+                    {'x': bbox_max['x'], 'y': bbox_max['y'], 'z': bbox_max['z']},
+                ],
                 'occurrences': int(obj.occurrences),
                 'similarity': float(obj.similarity),
                 'image_embedding': obj.image_embedding.tolist() if obj.image_embedding is not None else None,
@@ -713,10 +735,10 @@ class SemanticObjectMapV2:
         with open(path, 'w') as json_file:
             json.dump(export_data, json_file, indent=4)
 
-    def load_from_json(self, directory_path: str, file: str = 'map_v2.json') -> None:
+    def load_from_json(self, directory_path: str, file: str = 'map_v3.json') -> None:
         path = os.path.join(directory_path, file)
         if not os.path.exists(path):
-            self.node.get_logger().info(f"[mapper_v2] No map file found at {path}, starting empty")
+            self.node.get_logger().info(f"[mapper_v3] No map file found at {path}, starting empty")
             return
 
         try:
@@ -735,6 +757,21 @@ class SemanticObjectMapV2:
                     float(obj_data['pose_map']['y']),
                     float(obj_data['pose_map']['z']),
                 )
+                raw_box_size = obj_data.get('box_size')
+                if isinstance(raw_box_size, dict):
+                    box_size = (
+                        max(float(raw_box_size.get('x', 0.10)), 0.01),
+                        max(float(raw_box_size.get('y', 0.10)), 0.01),
+                        max(float(raw_box_size.get('z', 0.10)), 0.01),
+                    )
+                elif isinstance(raw_box_size, (list, tuple)) and len(raw_box_size) >= 3:
+                    box_size = (
+                        max(float(raw_box_size[0]), 0.01),
+                        max(float(raw_box_size[1]), 0.01),
+                        max(float(raw_box_size[2]), 0.01),
+                    )
+                else:
+                    box_size = (0.10, 0.10, 0.10)
                 img = obj_data.get('image_embedding')
                 image_embedding = self._normalize_embedding(np.array(img, dtype=np.float32) if img else None)
 
@@ -744,7 +781,7 @@ class SemanticObjectMapV2:
                     timestamp=ts,
                     pose_cam=pose_map,
                     pose_map=pose_map,
-                    box_size=(0.10, 0.10, 0.10),
+                    box_size=box_size,
                     occurrences=int(obj_data.get('occurrences', 1)),
                     first_seen_ns=self._stamp_to_ns(ts),
                     last_seen_ns=self._stamp_to_ns(ts),
@@ -770,10 +807,10 @@ class SemanticObjectMapV2:
                         pass
 
             self._next_map_id = max_numeric_id + 1
-            self.node.get_logger().info(f"[mapper_v2] Loaded {len(self.objects)} objects from {path}")
+            self.node.get_logger().info(f"[mapper_v3] Loaded {len(self.objects)} objects from {path}")
 
         except Exception as ex:
-            self.node.get_logger().error(f"[mapper_v2] Error loading map from {path}: {ex}")
+            self.node.get_logger().error(f"[mapper_v3] Error loading map from {path}: {ex}")
 
     def transform_point(self, point, transform: TransformStamped) -> Tuple[float, float, float]:
         q = transform.transform.rotation

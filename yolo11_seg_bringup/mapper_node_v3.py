@@ -7,15 +7,15 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 
-from yolo11_seg_bringup.mapper_v2 import SemanticObjectMapV2
+from yolo11_seg_bringup.mapper_v3 import SemanticObjectMapV3
 from yolo11_seg_interfaces.msg import DetectedObject, SemanticObject, SemanticObjectArray
 
 
-class PointCloudMapperNodeV2(Node):
+class PointCloudMapperNodeV3(Node):
     """Minimal semantic mapper node with clear and tunable behavior."""
 
     def __init__(self):
-        super().__init__('pointcloud_mapper_node_v2')
+        super().__init__('pointcloud_mapper_node_v3')
 
         # Core I/O.
         self.declare_parameter('detection_message', '/vision/detections')
@@ -29,8 +29,8 @@ class PointCloudMapperNodeV2(Node):
 
         # False-positive suppression.
         self.declare_parameter('min_input_confidence', 0.55)
-        self.declare_parameter('confirmation_min_hits', 10)
-        self.declare_parameter('confirmation_min_age_sec', 2)
+        self.declare_parameter('confirmation_min_hits', 5)
+        self.declare_parameter('confirmation_min_age_sec', 1)
         self.declare_parameter('min_avg_confidence_for_promotion', 0.50)
 
         # Geometry gating.
@@ -63,7 +63,7 @@ class PointCloudMapperNodeV2(Node):
 
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
-        self.semantic_map = SemanticObjectMapV2(self.tf_buffer, self)
+        self.semantic_map = SemanticObjectMapV3(self.tf_buffer, self)
 
         # Map simple node params into mapper internals.
         self.semantic_map.min_input_confidence = float(self.get_parameter('min_input_confidence').value)
@@ -112,7 +112,7 @@ class PointCloudMapperNodeV2(Node):
         self.lock = threading.Lock()
 
         self.get_logger().info(
-            f"[mapper_node_v2] ready. input={self.dm_topic}, output_dir={self.output_dir}, export={self.output_map_file}"
+            f"[mapper_node_v3] ready. input={self.dm_topic}, output_dir={self.output_dir}, export={self.output_map_file}"
         )
 
     def detection_callback(self, msg: DetectedObject):
@@ -160,7 +160,7 @@ class PointCloudMapperNodeV2(Node):
 
                 self.publish_semantic_map()
         except Exception as ex:
-            self.get_logger().error(f"[mapper_node_v2] detection error: {ex}")
+            self.get_logger().error(f"[mapper_node_v3] detection error: {ex}")
 
     def publish_semantic_map(self):
         if not self.semantic_map.objects:
@@ -193,19 +193,19 @@ class PointCloudMapperNodeV2(Node):
             try:
                 self.semantic_map.export_to_json(self.output_dir, self.output_map_file)
             except Exception as ex:
-                self.get_logger().error(f"[mapper_node_v2] export error: {ex}")
+                self.get_logger().error(f"[mapper_node_v3] export error: {ex}")
 
     def shutdown_callback(self):
         with self.lock:
             try:
                 self.semantic_map.export_to_json(self.output_dir, 'map_v3_final.json')
             except Exception as ex:
-                self.get_logger().error(f"[mapper_node_v2] final export error: {ex}")
+                self.get_logger().error(f"[mapper_node_v3] final export error: {ex}")
 
 
 def main(args=None):
     rclpy.init(args=args)
-    node = PointCloudMapperNodeV2()
+    node = PointCloudMapperNodeV3()
 
     executor = MultiThreadedExecutor()
     executor.add_node(node)

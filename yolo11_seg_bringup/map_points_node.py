@@ -20,25 +20,37 @@ class MapPointsNode(Node):
         )
         self.declare_parameter('map_frame', 'map')
         self.declare_parameter('marker_topic', '/vision/map_objects_markers')
+        self.declare_parameter('bbox_marker_topic', '/vision/map_objects_bbox_markers')
         self.declare_parameter('publish_rate_hz', 1.0)
         self.declare_parameter('point_scale', 0.15)
         self.declare_parameter('label_height_offset', 0.2)
+        self.declare_parameter('bbox_alpha', 0.35)
+        self.declare_parameter('bbox_min_edge_m', 0.02)
 
         self.map_file = str(self.get_parameter('map_file').value)
         self.map_frame = str(self.get_parameter('map_frame').value)
         self.marker_topic = str(self.get_parameter('marker_topic').value)
+        self.bbox_marker_topic = str(self.get_parameter('bbox_marker_topic').value)
         self.publish_rate_hz = float(self.get_parameter('publish_rate_hz').value)
         self.point_scale = float(self.get_parameter('point_scale').value)
         self.label_height_offset = float(self.get_parameter('label_height_offset').value)
+        self.bbox_alpha = float(self.get_parameter('bbox_alpha').value)
+        self.bbox_min_edge_m = float(self.get_parameter('bbox_min_edge_m').value)
 
         if self.publish_rate_hz <= 0.0:
             self.publish_rate_hz = 1.0
+        if self.bbox_alpha <= 0.0 or self.bbox_alpha > 1.0:
+            self.bbox_alpha = 0.35
+        if self.bbox_min_edge_m <= 0.0:
+            self.bbox_min_edge_m = 0.02
 
         self.markers_pub = self.create_publisher(MarkerArray, self.marker_topic, 10)
+        self.bbox_markers_pub = self.create_publisher(MarkerArray, self.bbox_marker_topic, 10)
         self.timer = self.create_timer(1.0 / self.publish_rate_hz, self.publish_markers)
 
         self.get_logger().info(
-            f'MapPointsNode started. map_file={self.map_file}, frame={self.map_frame}, topic={self.marker_topic}'
+            f'MapPointsNode started. map_file={self.map_file}, frame={self.map_frame}, '
+            f'topic={self.marker_topic}, bbox_topic={self.bbox_marker_topic}'
         )
 
     def compute_marker_z(self, pose_map: dict) -> float:
@@ -81,11 +93,16 @@ class MapPointsNode(Node):
         map_entries = self.load_map_entries()
 
         marker_array = MarkerArray()
+        bbox_marker_array = MarkerArray()
         now = self.get_clock().now().to_msg()
 
         clear_marker = Marker()
         clear_marker.action = Marker.DELETEALL
         marker_array.markers.append(clear_marker)
+
+        clear_bbox_marker = Marker()
+        clear_bbox_marker.action = Marker.DELETEALL
+        bbox_marker_array.markers.append(clear_bbox_marker)
 
         points_marker = Marker()
         points_marker.header.frame_id = self.map_frame
@@ -106,7 +123,7 @@ class MapPointsNode(Node):
         text_id = 1
 
         valid_entries = []
-        for entry in map_entries.values():
+        for map_id, entry in map_entries.items():
             if not isinstance(entry, dict):
                 continue
 
@@ -124,14 +141,14 @@ class MapPointsNode(Node):
             except (TypeError, ValueError):
                 continue
 
-            valid_entries.append((entry, point_x, point_y, marker_z))
+            valid_entries.append((map_id, entry, point_x, point_y, marker_z))
 
         self.get_logger().info(
             f'[map_points] valid entries for publish: {len(valid_entries)} / {len(map_entries)}',
             throttle_duration_sec=5.0,
         )
 
-        for index, (entry, point_x, point_y, marker_z) in enumerate(valid_entries):
+        for index, (map_id, entry, point_x, point_y, marker_z) in enumerate(valid_entries):
             point_z = marker_z
             point = Point(
                 x=point_x,
@@ -163,11 +180,43 @@ class MapPointsNode(Node):
             text_marker.text = label
             text_markers.append(text_marker)
 
+            box_size = entry.get('box_size', {})
+            if isinstance(box_size, dict):
+                sx = float(box_size.get('x', 0.0) or 0.0)
+                sy = float(box_size.get('y', 0.0) or 0.0)
+                sz = float(box_size.get('z', 0.0) or 0.0)
+            else:
+                sx = 0.0
+                sy = 0.0
+                sz = 0.0
+
+            if sx > 0.0 and sy > 0.0 and sz > 0.0:
+                bbox_marker = Marker()
+                bbox_marker.header.frame_id = self.map_frame
+                bbox_marker.header.stamp = now
+                bbox_marker.ns = 'map_objects_bbox'
+                bbox_marker.id = index
+                bbox_marker.type = Marker.CUBE
+                bbox_marker.action = Marker.ADD
+                bbox_marker.pose.position.x = point.x
+                bbox_marker.pose.position.y = point.y
+                bbox_marker.pose.position.z = point.z
+                bbox_marker.pose.orientation.w = 1.0
+                bbox_marker.scale.x = max(sx, self.bbox_min_edge_m)
+                bbox_marker.scale.y = max(sy, self.bbox_min_edge_m)
+                bbox_marker.scale.z = max(sz, self.bbox_min_edge_m)
+                bbox_marker.color = class_color
+                bbox_marker.color.a = self.bbox_alpha
+                bbox_marker.text = str(map_id)
+                bbox_marker_array.markers.append(bbox_marker)
+
         marker_array.markers.append(points_marker)
         marker_array.markers.extend(text_markers)
         self.markers_pub.publish(marker_array)
+        self.bbox_markers_pub.publish(bbox_marker_array)
         self.get_logger().info(
-            f'[map_points] published markers: points={len(points_marker.points)}, labels={len(text_markers)}',
+            f'[map_points] published markers: points={len(points_marker.points)}, labels={len(text_markers)}, '
+            f'bboxes={max(len(bbox_marker_array.markers) - 1, 0)}',
             throttle_duration_sec=5.0,
         )
 

@@ -43,9 +43,9 @@ class NoPCVisionNode(Node):
         # ============= Parameters ============= #
 
         # Communication parameters
-        self.declare_parameter('image_topic', '/camera/color/image_raw') #/camera/camera/color/image_raw
-        self.declare_parameter('depth_topic', '/camera/aligned_depth_to_color/image_raw') #/camera/camera/aligned_depth_to_color/image_raw
-        self.declare_parameter('camera_info_topic', '/camera/color/camera_info') #/camera/camera/color/camera_info
+        self.declare_parameter('image_topic', '/camera/rgb') #/camera/color/image_raw
+        self.declare_parameter('depth_topic', '/camera/depth') #/camera/aligned_depth_to_color/image_raw
+        self.declare_parameter('camera_info_topic', '/camera/depth/camera_info') #/camera/depth/camera_info
         self.declare_parameter('enable_visualization', True)
 
         self.image_topic = self.get_parameter('image_topic').value
