@@ -74,10 +74,28 @@ class NoPCVisionNode(Node):
         self.declare_parameter('robot_command_file', '/workspaces/ros2_ws/src/yolo11_seg_bringup/config/robot_command.json') #/home/workspace/ros2_ws/src/yolo11_seg_bringup/config/robot_command.json
         self.declare_parameter('map_file_path', '/workspaces/ros2_ws/src/yolo11_seg_bringup/config/map.json') #/home/workspace/ros2_ws/src/yolo11_seg_bringup/config/map.json
         self.declare_parameter('square_crop_scale', 1.2)
+        self.declare_parameter('min_depth_m', 0.25)
+        self.declare_parameter('max_depth_m', 3.5)
+        self.declare_parameter('sor_nb_neighbors', 35)
+        self.declare_parameter('sor_std_ratio', 1.4)
+        self.declare_parameter('voxel_size_m', 0.012)
+        self.declare_parameter('dbscan_eps_m', 0.055)
+        self.declare_parameter('dbscan_min_points', 22)
+        self.declare_parameter('min_downsampled_points', 18)
+        self.declare_parameter('min_cluster_points', 10)
 
         self.CLIP_model_name = self.get_parameter('CLIP_model_name').value
         self.robot_command_file = self.get_parameter('robot_command_file').value
         self.square_crop_scale = float(self.get_parameter('square_crop_scale').value)
+        self.min_depth_m = float(self.get_parameter('min_depth_m').value)
+        self.max_depth_m = float(self.get_parameter('max_depth_m').value)
+        self.sor_nb_neighbors = int(self.get_parameter('sor_nb_neighbors').value)
+        self.sor_std_ratio = float(self.get_parameter('sor_std_ratio').value)
+        self.voxel_size_m = float(self.get_parameter('voxel_size_m').value)
+        self.dbscan_eps_m = float(self.get_parameter('dbscan_eps_m').value)
+        self.dbscan_min_points = int(self.get_parameter('dbscan_min_points').value)
+        self.min_downsampled_points = int(self.get_parameter('min_downsampled_points').value)
+        self.min_cluster_points = int(self.get_parameter('min_cluster_points').value)
 
         # =========== Internal Topics / Runtime =========== #
 
@@ -117,6 +135,14 @@ class NoPCVisionNode(Node):
         self.model = YOLO(self.model_path, task='segment')
         self.model.set_classes(self.CLASS_NAMES)
         self.get_logger().info(f"YOLO classes set to: {self.CLASS_NAMES}")
+        self.get_logger().info(
+            "Point filtering params: "
+            f"depth=[{self.min_depth_m:.2f},{self.max_depth_m:.2f}]m, "
+            f"SOR(n={self.sor_nb_neighbors}, std={self.sor_std_ratio:.2f}), "
+            f"voxel={self.voxel_size_m:.3f}m, "
+            f"DBSCAN(eps={self.dbscan_eps_m:.3f}, min_pts={self.dbscan_min_points}), "
+            f"gates(downsampled>={self.min_downsampled_points}, cluster>={self.min_cluster_points})"
+        )
 
         # Load CLIP model
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -429,17 +455,26 @@ class NoPCVisionNode(Node):
         # Convert points to Open3D cloud and remove statistical outliers.
         pcd = o3d.geometry.PointCloud()
         pcd.points = o3d.utility.Vector3dVector(valid_points)
-        _, ind = pcd.remove_statistical_outlier(nb_neighbors=20, std_ratio=2.0)
+        _, ind = pcd.remove_statistical_outlier(
+            nb_neighbors=self.sor_nb_neighbors,
+            std_ratio=self.sor_std_ratio,
+        )
         clean_pcd = pcd.select_by_index(ind)
 
         # 1. SOTA STEP: Voxel Downsampling (compress the point cloud)
-        # 0.04 meters = 4cm resolution. 
-        downsampled_pcd = clean_pcd.voxel_down_sample(voxel_size=0.04)
+        # Smaller voxel size reduces blocky "grid" artifacts in reconstructed objects.
+        downsampled_pcd = clean_pcd.voxel_down_sample(voxel_size=self.voxel_size_m)
 
-        if len(downsampled_pcd.points) < 20:
+        if len(downsampled_pcd.points) < self.min_downsampled_points:
             return None
         
-        labels = np.array(downsampled_pcd.cluster_dbscan(eps=0.15, min_points=20, print_progress=False))
+        labels = np.array(
+            downsampled_pcd.cluster_dbscan(
+                eps=self.dbscan_eps_m,
+                min_points=self.dbscan_min_points,
+                print_progress=False,
+            )
+        )
 
         if len(labels) == 0 or labels.max() < 0:
             return None
@@ -459,7 +494,7 @@ class NoPCVisionNode(Node):
         # 6. Convert back to a simple NumPy array for ROS2 publishing
         object_points_cam = np.asarray(final_pcd.points, dtype=np.float32)
 
-        if object_points_cam.shape[0] < 5:
+        if object_points_cam.shape[0] < self.min_cluster_points:
             return None
 
         # 7. Compute the true centroid from the cleaned cluster
@@ -614,7 +649,11 @@ class NoPCVisionNode(Node):
             return np.empty((0, 3), dtype=np.float32)
 
         z = depth_m[v, u]
-        valid_z_mask = (z > 0) & np.isfinite(z)
+        valid_z_mask = (
+            np.isfinite(z)
+            & (z >= self.min_depth_m)
+            & (z <= self.max_depth_m)
+        )
         if not np.any(valid_z_mask):
             return np.empty((0, 3), dtype=np.float32)
 

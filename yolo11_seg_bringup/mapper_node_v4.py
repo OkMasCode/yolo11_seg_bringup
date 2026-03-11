@@ -47,7 +47,7 @@ class PointCloudMapperNodeV4(Node):
         # Geometry gating.
         self.declare_parameter('min_detection_depth_m', 0.25)
         self.declare_parameter('max_detection_depth_m', 4.0)
-        self.declare_parameter('min_association_iou', 0.12)
+        self.declare_parameter('min_association_iou', 0.08)
         self.declare_parameter('min_cross_class_iou', 0.20)
         self.declare_parameter('class_mismatch_penalty', 0.25)
 
@@ -315,20 +315,15 @@ class PointCloudMapperNodeV4(Node):
     def export_callback(self):
         with self.lock:
             try:
-                # ==========================================
-                # NEW: Trigger Map Self-Healing
-                # ==========================================
-                for map_id in list(self.semantic_map.objects.keys()):
-                    self.semantic_map._refine_object_geometry(map_id)
+                # NEW: Clean up duplicates before saving/publishing
+                self.semantic_map.resolve_overlapping_duplicates()
                 
-                # After cleaning, publish the updated map to RViz
-                self.publish_semantic_map()
-
-                # Export to JSON
+                # Existing export logic
                 self.semantic_map.export_to_json(self.output_dir, self.output_map_file)
-                self.get_logger().info("[mapper_node_v4] Map refined and exported.")
+                self.publish_semantic_map()
             except Exception as ex:
-                self.get_logger().error(f"[mapper_node_v4] export error: {ex}")
+                self.get_logger().error(f"Export/Merge error: {ex}")
+
 
     def shutdown_callback(self):
         with self.lock:

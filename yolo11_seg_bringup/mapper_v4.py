@@ -385,6 +385,9 @@ class SemanticObjectMapV4:
             current_ns=current_ns,
             frame=fixed_frame, # Tentative tracks now use the map frame natively
         )
+
+        self.resolve_map_duplicates()
+        
         self.node.get_logger().info(
             "[mapper_v4:add_detection:tentative_result] "
             f"track={tracker_id} created_confirmed={created} "
@@ -690,25 +693,26 @@ class SemanticObjectMapV4:
     def _find_best_candidate(self, class_name: str, obs_min, obs_max, current_ns: int) -> Optional[str]:
         best_id = None
         best_iou = -1.0
-        min_required_iou = 0.25 # Require 25% overlap to merge
+        
+        # LOWER threshold to be more aggressive with merging
+        min_required_iou = 0.10 
 
         for map_id, entry in self.objects.items():
-            if entry.last_seen_ns == current_ns: # Mutual Exclusion
+            if entry.last_seen_ns == current_ns:
                 continue
                 
+            # Use the properties that calculate from the STABLE cloud
+            # This 'snaps' the detection to the existing cluster
             iou = self.compute_3d_iou(entry.global_min, entry.global_max, obs_min, obs_max)
-            required_iou = min_required_iou if entry.current_name == class_name else 0.45
             
-            if iou >= required_iou and iou > best_iou:
+            # Cross-class check with a relaxed penalty
+            required = min_required_iou if entry.current_name == class_name else 0.25
+            
+            if iou >= required and iou > best_iou:
                 best_iou = iou
                 best_id = map_id
-
-        self.node.get_logger().info(
-            "[mapper_v4:candidate_search] "
-            f"class={class_name} best_id={best_id if best_id is not None else '-'} best_iou={best_iou:.3f}"
-        )
         return best_id
-
+    
     def _new_map_id(self) -> str:
         map_id = f"map_obj_{self._next_map_id:06d}"
         self._next_map_id += 1
@@ -957,7 +961,7 @@ class SemanticObjectMapV4:
         pcd = o3d.geometry.PointCloud()
         pcd.points = o3d.utility.Vector3dVector(combined)
         
-        downsampled = pcd.voxel_down_sample(voxel_size=0.05)
+        downsampled = pcd.voxel_down_sample(voxel_size=0.1)
         return np.asarray(downsampled.points, dtype=np.float32)
 
     def compute_3d_iou(self, box1_min, box1_max, box2_min, box2_max) -> float:
@@ -976,54 +980,7 @@ class SemanticObjectMapV4:
     
     def _refine_object_geometry(self, map_id: str) -> None:
         """
-        Self-healing routine: Cleans accumulated odometry drift and ghosting.
-        """
-        if map_id not in self.objects:
-            return
-
-        obj = self.objects[map_id]
-        points = obj.accumulated_points
-
-        if len(points) < 30:
-            return # Too small to meaningfully cluster
-
-        import open3d as o3d
-        import numpy as np
-
-        pcd = o3d.geometry.PointCloud()
-        pcd.points = o3d.utility.Vector3dVector(points)
-
-        # 1. Remove light fuzz
-        cl, ind = pcd.remove_statistical_outlier(nb_neighbors=20, std_ratio=2.0)
-        clean_pcd = pcd.select_by_index(ind)
-
-        if len(clean_pcd.points) < 10:
-            return
-
-        # 2. Amputate the ghost tails using DBSCAN
-        # eps=0.10 (10cm). Ghost tails are usually spread out due to drift.
-        # This will cleanly sever the dense body from the trailing smear.
-        labels = np.array(clean_pcd.cluster_dbscan(eps=0.10, min_points=15, print_progress=False))
-
-        if len(labels) == 0 or labels.max() < 0:
-            return 
-
-        # 3. Extract the primary dense object
-        unique_labels, counts = np.unique(labels[labels >= 0], return_counts=True)
-        if len(counts) == 0: 
-            return
-            
-        largest_cluster_label = unique_labels[np.argmax(counts)]
-        largest_cluster_indices = np.where(labels == largest_cluster_label)[0]
-        
-        final_pcd = clean_pcd.select_by_index(largest_cluster_indices)
-        refined_points = np.asarray(final_pcd.points, dtype=np.float32)
-
-        # 4. Update the object geometry
-        if len(refined_points) > 10: 
-            obj.accumulated_points = refined_points
-        """
-        Self-healing routine with safety nets to prevent objects from disappearing.
+        Refined ROR with aggressive density thresholds and logging.
         """
         if map_id not in self.objects:
             return
@@ -1032,8 +989,8 @@ class SemanticObjectMapV4:
         points = obj.accumulated_points
         original_count = len(points)
 
-        if original_count < 30:
-            return # Too small to meaningfully cluster
+        if original_count < 20:
+            return 
 
         import open3d as o3d
         import numpy as np
@@ -1041,85 +998,74 @@ class SemanticObjectMapV4:
         pcd = o3d.geometry.PointCloud()
         pcd.points = o3d.utility.Vector3dVector(points)
 
-        # 1. Relaxed Statistical Outlier Removal
-        # Increased std_ratio from 2.0 to 2.5 to be more forgiving of natural shape variations.
-        cl, ind = pcd.remove_statistical_outlier(nb_neighbors=20, std_ratio=2.5)
-        clean_pcd = pcd.select_by_index(ind)
+        # ==========================================
+        # TUNING THE RADIUS FILTER
+        # ==========================================
+        # Radius: 0.08 (8cm). If voxels are 5cm, this only looks at immediate neighbors.
+        # nb_points: 8. A point MUST have 8 neighbors in an 8cm ball to survive.
+        # Smears are usually thin (1-2 layers), so they will fail this.
+        cl, ind = pcd.remove_radius_outlier(nb_points=15, radius=0.15)
+        refined_pcd = pcd.select_by_index(ind)
+        new_count = len(refined_pcd.points)
 
-        if len(clean_pcd.points) < 15:
-            return
-
-        # 2. Relaxed DBSCAN
-        # eps=0.25 (25cm). Because voxels are 5cm apart, a 25cm radius ensures 
-        # that disjointed parts of the SAME object (like chair legs vs seat) stay connected.
-        # min_points=5 ensures we don't drop sparse but valid regions.
-        labels = np.array(clean_pcd.cluster_dbscan(eps=0.25, min_points=5, print_progress=False))
-
-        if len(labels) == 0 or labels.max() < 0:
-            return 
-
-        # 3. Extract the primary dense object
-        unique_labels, counts = np.unique(labels[labels >= 0], return_counts=True)
-        if len(counts) == 0: 
-            return
-            
-        largest_cluster_label = unique_labels[np.argmax(counts)]
-        largest_cluster_indices = np.where(labels == largest_cluster_label)[0]
+        # ==========================================
+        # UPDATE & DEBUG LOGGING
+        # ==========================================
+        deleted = original_count - new_count
         
-        final_pcd = clean_pcd.select_by_index(largest_cluster_indices)
-        refined_points = np.asarray(final_pcd.points, dtype=np.float32)
+        # We print even if 0 points were deleted so we know the code is running.
+        self.node.get_logger().info(
+            f"[refinement] {map_id}: {original_count} -> {new_count} (Dropped: {deleted})"
+        )
 
-        # 4. THE SAFETY NET (Crucial Fix)
-        # We only accept the amputation if the remaining object retains at least 50% 
-        # of its original mass. If the clustering tries to delete 80% of the object, 
-        # it means the cluster logic failed and fractured the real object.
-        # In that case, we abort and keep the original points.
-        if len(refined_points) >= (original_count * 0.50): 
-            obj.accumulated_points = refined_points
+        if 10 < new_count < original_count:
+            obj.accumulated_points = np.asarray(refined_pcd.points, dtype=np.float32)
+
+    def resolve_overlapping_duplicates(self):
+
         """
-        Self-healing routine: Cleans accumulated odometry drift and ghosting.
+        Scans all confirmed objects and merges any that have significant 3D overlap.
+        This kills the 'ghost' boxes shown in your kitchen island image.
         """
-        if map_id not in self.objects:
-            return
+        ids = list(self.objects.keys())
+        for i in range(len(ids)):
+            for j in range(i + 1, len(ids)):
+                id1, id2 = ids[i], ids[j]
+                if id1 not in self.objects or id2 not in self.objects:
+                    continue
+                
+                obj1, obj2 = self.objects[id1], self.objects[id2]
+                
+                # Compute IoU between the two existing stable clouds
+                iou = self.compute_3d_iou(obj1.global_min, obj1.global_max, 
+                                          obj2.global_min, obj2.global_max)
+                
+                # SOTA Threshold: If they overlap by 15% or more, they are 
+                # almost certainly the same physical mass.
+                if iou > 0.15:
+                    self.node.get_logger().info(f"[mapper_v4] Resolving duplicate: {id1} <-> {id2}")
+                    self._fuse_objects(id1, id2)
 
-        obj = self.objects[map_id]
-        points = obj.accumulated_points
-
-        if len(points) < 30:
-            return # Too small to meaningfully cluster
-
-        import open3d as o3d
-        import numpy as np
-
-        pcd = o3d.geometry.PointCloud()
-        pcd.points = o3d.utility.Vector3dVector(points)
-
-        # 1. Remove light fuzz
-        cl, ind = pcd.remove_statistical_outlier(nb_neighbors=20, std_ratio=2.0)
-        clean_pcd = pcd.select_by_index(ind)
-
-        if len(clean_pcd.points) < 10:
-            return
-
-        # 2. Amputate the ghost tails using DBSCAN
-        # eps=0.10 (10cm). Ghost tails are usually spread out due to drift.
-        # This will cleanly sever the dense body from the trailing smear.
-        labels = np.array(clean_pcd.cluster_dbscan(eps=0.10, min_points=15, print_progress=False))
-
-        if len(labels) == 0 or labels.max() < 0:
-            return 
-
-        # 3. Extract the primary dense object
-        unique_labels, counts = np.unique(labels[labels >= 0], return_counts=True)
-        if len(counts) == 0: 
-            return
-            
-        largest_cluster_label = unique_labels[np.argmax(counts)]
-        largest_cluster_indices = np.where(labels == largest_cluster_label)[0]
-        
-        final_pcd = clean_pcd.select_by_index(largest_cluster_indices)
-        refined_points = np.asarray(final_pcd.points, dtype=np.float32)
-
-        # 4. Update the object geometry
-        if len(refined_points) > 10: 
-            obj.accumulated_points = refined_points
+    def resolve_map_duplicates(self) -> None:
+        """
+        Scans all confirmed objects and fuses them if they overlap.
+        This runs every frame to permanently kill ghost duplicates.
+        """
+        ids = list(self.objects.keys())
+        for i in range(len(ids)):
+            for j in range(i + 1, len(ids)):
+                id1, id2 = ids[i], ids[j]
+                
+                # Skip if already fused and deleted in a previous iteration
+                if id1 not in self.objects or id2 not in self.objects:
+                    continue
+                
+                obj1, obj2 = self.objects[id1], self.objects[id2]
+                
+                iou = self.compute_3d_iou(obj1.global_min, obj1.global_max, 
+                                          obj2.global_min, obj2.global_max)
+                
+                # If they are the same class and overlap even slightly (5%), fuse them.
+                if obj1.current_name == obj2.current_name and iou > 0.05:
+                    self.node.get_logger().info(f"[mapper_v4] Fusing duplicate {obj1.current_name}s: {id1} into {id2}")
+                    self._fuse_objects(id1, id2)
