@@ -217,11 +217,16 @@ class SemanticObjectMapV3:
             self.node.get_logger().warning(f"[mapper_v3] Could not transform detection: {ex}")
             return False
 
+        # Build map-frame AABB by transforming the 8 camera-frame bbox corners.
+        bbox_center_map, new_size = self._transform_bbox_to_map_aabb(box_min, box_max, transform)
+        if bbox_center_map is not None:
+            pose_in_map = bbox_center_map
+        else:
+            new_size = self._compute_box_size(box_min, box_max)
+
         # Keep state fresh before any association decisions.
         current_ns = self._stamp_to_ns(detection_stamp)
         self._prune_stale_state(current_ns)
-
-        new_size = self._compute_box_size(box_min, box_max)
         img_vec = self._to_embedding(embeddings)
 
         if not self._passes_detection_quality_gate(confidence, pose_cam.z, new_size):
@@ -820,6 +825,42 @@ class SemanticObjectMapV3:
         translation = np.array([[t.x], [t.y], [t.z]])
         result = rot_matrix @ point_vec + translation
         return (result[0, 0], result[1, 0], result[2, 0])
+
+    def _transform_bbox_to_map_aabb(self, box_min, box_max, transform: TransformStamped):
+        if box_min is None or box_max is None:
+            return None, None
+
+        corners_cam = [
+            (box_min[0], box_min[1], box_min[2]),
+            (box_min[0], box_min[1], box_max[2]),
+            (box_min[0], box_max[1], box_min[2]),
+            (box_min[0], box_max[1], box_max[2]),
+            (box_max[0], box_min[1], box_min[2]),
+            (box_max[0], box_min[1], box_max[2]),
+            (box_max[0], box_max[1], box_min[2]),
+            (box_max[0], box_max[1], box_max[2]),
+        ]
+
+        corners_map = []
+        for x, y, z in corners_cam:
+            p = Vector3(x=float(x), y=float(y), z=float(z))
+            corners_map.append(self.transform_point(p, transform))
+
+        corners_np = np.asarray(corners_map, dtype=np.float64)
+        min_map = np.min(corners_np, axis=0)
+        max_map = np.max(corners_np, axis=0)
+
+        center_map = (
+            float((min_map[0] + max_map[0]) * 0.5),
+            float((min_map[1] + max_map[1]) * 0.5),
+            float((min_map[2] + max_map[2]) * 0.5),
+        )
+        size_map = (
+            max(float(max_map[0] - min_map[0]), 0.01),
+            max(float(max_map[1] - min_map[1]), 0.01),
+            max(float(max_map[2] - min_map[2]), 0.01),
+        )
+        return center_map, size_map
 
     def euclidean_distance(self, p1: Tuple[float, float, float], p2: Tuple[float, float, float]) -> float:
         return math.sqrt((p1[0] - p2[0]) ** 2 + (p1[1] - p2[1]) ** 2 + (p1[2] - p2[2]) ** 2)

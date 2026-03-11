@@ -19,6 +19,7 @@ from cv_bridge import CvBridge
 import threading
 import json
 from time import perf_counter
+import open3d as o3d
 
 from ultralytics import YOLO
 
@@ -425,12 +426,23 @@ class NoPCVisionNode(Node):
         if len(valid_points) == 0:
             return None
         
-        # Compute centroid and 3D bounding extents from valid points.
-        centroid = np.mean(valid_points, axis=0)
+        # Convert points to Open3D cloud and remove statistical outliers.
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(valid_points)
+        _, ind = pcd.remove_statistical_outlier(nb_neighbors=20, std_ratio=2.0)
+        clean_pcd = pcd.select_by_index(ind)
+
+        # Compute centroid from cleaned points.
+        clean_points = np.asarray(clean_pcd.points)
+        if clean_points.shape[0] == 0:
+            return None
+        centroid = np.mean(clean_points, axis=0)
         centroid = (float(centroid[0]), float(centroid[1]), float(centroid[2]))
 
-        min_box = np.min(valid_points, axis=0) # [min_x, min_y, min_z]
-        max_box = np.max(valid_points, axis=0) # [max_x, max_y, max_z]
+        # Extract axis-aligned bounding box from cleaned cloud.
+        aabb = clean_pcd.get_axis_aligned_bounding_box()
+        min_box = aabb.get_min_bound()
+        max_box = aabb.get_max_bound()
 
         # Create per-detection record shared across publishing stages.
         class_name = class_name #self.class_id_to_name(int(class_id))
