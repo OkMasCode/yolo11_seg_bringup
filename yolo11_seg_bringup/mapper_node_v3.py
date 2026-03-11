@@ -29,28 +29,28 @@ class PointCloudMapperNodeV3(Node):
 
         # False-positive suppression.
         self.declare_parameter('min_input_confidence', 0.55)
-        self.declare_parameter('confirmation_min_hits', 5)
-        self.declare_parameter('confirmation_min_age_sec', 1)
-        self.declare_parameter('min_avg_confidence_for_promotion', 0.50)
+        self.declare_parameter('confirmation_min_hits', 10)
+        self.declare_parameter('confirmation_min_age_sec', 1.0)
+        self.declare_parameter('min_avg_confidence_for_promotion', 0.6)
 
         # Geometry gating.
-        self.declare_parameter('min_detection_depth_m', 0.25)
-        self.declare_parameter('max_detection_depth_m', 4.0)
-        self.declare_parameter('min_association_iou', 0.12)
+        self.declare_parameter('min_detection_depth_m', 0.2)
+        self.declare_parameter('max_detection_depth_m', 1.5)
+        self.declare_parameter('min_association_iou', 0.17)
         self.declare_parameter('min_cross_class_iou', 0.20)
         self.declare_parameter('class_mismatch_penalty', 0.25)
 
         # Class consensus.
         self.declare_parameter('class_count_weight', 1.0)
         self.declare_parameter('class_confidence_weight', 2.0)
-        self.declare_parameter('class_switch_margin', 0.75)
+        self.declare_parameter('class_switch_margin', 0.65)
         self.declare_parameter('min_class_votes_to_lock', 4)
 
         # Large-object merge + small-object protection.
         self.declare_parameter('enable_detection_bbox_merge', True)
         self.declare_parameter('detection_bbox_merge_min_extent', 1.00)
-        self.declare_parameter('small_object_max_extent', 1.00)
-        self.declare_parameter('small_object_assoc_min_iou', 0.30)
+        self.declare_parameter('small_object_max_extent', 0.80)
+        self.declare_parameter('small_object_assoc_min_iou', 0.50)
 
         self.dm_topic = self.get_parameter('detection_message').value
         self.map_frame = self.get_parameter('map_frame').value

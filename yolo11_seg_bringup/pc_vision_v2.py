@@ -23,7 +23,7 @@ import open3d as o3d
 
 from ultralytics import YOLO
 
-from yolo11_seg_interfaces.msg import DetectedObject
+from yolo11_seg_interfaces.msg import DetectedObjectV2
 from .utils.clip_processor import CLIPProcessor
 
 
@@ -155,7 +155,7 @@ class NoPCVisionNode(Node):
 
         # Publishers    
         self.marker_pub = self.create_publisher(MarkerArray, self.markers_topic, 10)
-        self.detections_pub = self.create_publisher(DetectedObject, self.detection_topic, 10)
+        self.detections_pub = self.create_publisher(DetectedObjectV2, self.detection_topic, 10)
         if self.enable_vis:
             self.vis_pub = self.create_publisher(Image, self.anno_topic, 10)
 
@@ -432,20 +432,42 @@ class NoPCVisionNode(Node):
         _, ind = pcd.remove_statistical_outlier(nb_neighbors=20, std_ratio=2.0)
         clean_pcd = pcd.select_by_index(ind)
 
-        # Compute centroid from cleaned points.
-        clean_points = np.asarray(clean_pcd.points)
-        if clean_points.shape[0] == 0:
-            return None
-        centroid = np.mean(clean_points, axis=0)
-        centroid = (float(centroid[0]), float(centroid[1]), float(centroid[2]))
+        # 1. SOTA STEP: Voxel Downsampling (compress the point cloud)
+        # 0.04 meters = 4cm resolution. 
+        downsampled_pcd = clean_pcd.voxel_down_sample(voxel_size=0.04)
 
-        # Extract axis-aligned bounding box from cleaned cloud.
-        aabb = clean_pcd.get_axis_aligned_bounding_box()
-        min_box = aabb.get_min_bound()
-        max_box = aabb.get_max_bound()
+        if len(downsampled_pcd.points) < 20:
+            return None
+        
+        labels = np.array(downsampled_pcd.cluster_dbscan(eps=0.15, min_points=20, print_progress=False))
+
+        if len(labels) == 0 or labels.max() < 0:
+            return None
+
+        # 5. Extract the Largest Cluster
+        # We assume the object the YOLO mask was targeting is the largest physical mass
+        unique_labels, counts = np.unique(labels[labels >= 0], return_counts=True)
+        if len(counts) == 0: 
+            return None
+            
+        largest_cluster_label = unique_labels[np.argmax(counts)]
+        largest_cluster_indices = np.where(labels == largest_cluster_label)[0]
+        
+        # Isolate just the object
+        final_pcd = downsampled_pcd.select_by_index(largest_cluster_indices)
+
+        # 6. Convert back to a simple NumPy array for ROS2 publishing
+        object_points_cam = np.asarray(final_pcd.points, dtype=np.float32)
+
+        if object_points_cam.shape[0] < 5:
+            return None
+
+        # 7. Compute the true centroid from the cleaned cluster
+        centroid_np = np.mean(object_points_cam, axis=0)
+        centroid = (float(centroid_np[0]), float(centroid_np[1]), float(centroid_np[2]))
 
         # Create per-detection record shared across publishing stages.
-        class_name = class_name #self.class_id_to_name(int(class_id))
+        class_name = class_name
         
 
         detection_entry = {
@@ -456,8 +478,7 @@ class NoPCVisionNode(Node):
             "centroid": centroid, # (x, y, z) tuple
             "embedding": None,    # Placeholder
             "crop": None,         # Placeholder
-            "box_min": (float(min_box[0]), float(min_box[1]), float(min_box[2])),
-            "box_max": (float(max_box[0]), float(max_box[1]), float(max_box[2])),
+            "object_points": object_points_cam,
         }
 
         # Prepare CLIP crop (if current frame is scheduled for CLIP).
@@ -611,9 +632,9 @@ class NoPCVisionNode(Node):
 
     def publish_custom_detections(self, detections, header, timestamp):
         """ Iterate through the unified list and publish messages. """
-        # Publish one DetectedObject message per detection entry.
+        # Publish one V2 message per detection entry.
         for det in detections:
-            msg = DetectedObject()
+            msg = DetectedObjectV2()
             
             # Basic Info
             msg.object_name = det["object_name"]
@@ -642,14 +663,20 @@ class NoPCVisionNode(Node):
                 f"ID {det['instance_id']} ({det['object_name']}): Confidence={det['confidence']:.3f}, Goal={prob_goal}"
             )
 
-            # --- NEW: Assign Box ---
-            msg.box_min.x = det["box_min"][0]
-            msg.box_min.y = det["box_min"][1]
-            msg.box_min.z = det["box_min"][2]
+            # --- NEW: Assign Point Cloud ---
+            # You must first update your DetectedObjectV2.msg file to contain a PointCloud2 
+            # or an array of Point32/Vector3 messages instead of box_min/box_max.
             
-            msg.box_max.x = det["box_max"][0]
-            msg.box_max.y = det["box_max"][1]
-            msg.box_max.z = det["box_max"][2]
+            # Assuming you updated your msg to have: geometry_msgs/Point32[] object_points
+            from geometry_msgs.msg import Point32
+            
+            points_msg = []
+            for pt in det["object_points"]:
+                p = Point32()
+                p.x, p.y, p.z = float(pt[0]), float(pt[1]), float(pt[2])
+                points_msg.append(p)
+                
+            msg.object_points = points_msg
 
             # Add text embedding for mapper convenience
             msg.text_embedding = self.goal_text_embedding.tolist() if self.goal_text_embedding is not None else []

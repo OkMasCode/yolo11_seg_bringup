@@ -1,86 +1,82 @@
 {
-    "timestamp": 1773221799.7417386,
-    "prompt": "go to the bed with horizontal stripes",
-    "goal": "bed",
+    "timestamp": 1773233050.3181474,
+    "prompt": "go to the fridge",
+    "goal": "fridge",
     "related_object": "",
     "clip_prompts": [
-        "bed with horizontal stripes",
-        "bed featuring horizontal stripes",
-        "horizontal striped bed"
+        "a photo of a fridge",
+        "a cropped image of a fridge",
+        "an image of a fridge with gray background"
     ],
     "text_embedding": null,
     "goal_objects": [
         {
-            "id": "map_obj_000006",
-            "similarity_score": 58.7506638742764,
+            "id": "map_obj_000016",
+            "similarity_score": 0.2070948189684629,
             "coords": {
-                "x": 6.636299356652186,
-                "y": -1.0155188317548933,
-                "z": 0.6916623342907924
-            }
-        },
-        {
-            "id": "map_obj_000029",
-            "similarity_score": 10.53166888459892,
-            "coords": {
-                "x": 8.341921489682663,
-                "y": 0.29813751619401097,
-                "z": 4.225246273636726
+                "x": 1.4817326077608148,
+                "y": 3.493728589678782,
+                "z": 1.1482434793764789
             }
         }
     ],
     "selected_goal": {
-        "object_id": "map_obj_000006",
+        "object_id": "map_obj_000016",
         "decision_basis": "location",
-        "reasoning": "High location confidence and prioritization of location lead to choosing the best candidate in the matching cluster.",
+        "reasoning": "The prompt specifies a room, so I chose the best candidate in the matching cluster.",
         "coords": {
-            "x": 6.636299356652186,
-            "y": -1.0155188317548933,
-            "z": 0.6916623342907924
+            "x": 1.4817326077608148,
+            "y": 3.493728589678782,
+            "z": 1.1482434793764789
         },
-        "similarity": 58.7506638742764,
-        "cluster": 1
+        "similarity": 0.2070948189684629,
+        "cluster": 0
     },
     "object_similarities": [
         {
-            "object_id": "map_obj_000006",
-            "similarity": 58.7506638742764
-        },
-        {
-            "object_id": "map_obj_000029",
-            "similarity": 10.53166888459892
+            "object_id": "map_obj_000016",
+            "similarity": 0.2070948189684629
         }
     ],
     "cluster_info": {
-        "cluster_id": 2,
+        "cluster_id": 0,
         "objects": [
-            "nightstand",
-            "bed"
+            "microwave",
+            "chair",
+            "couch",
+            "coffee machine",
+            "fridge",
+            "sink",
+            "coffee machine",
+            "oven",
+            "sink",
+            "toilet",
+            "couch"
         ],
-        "reasoning": "User mentions 'bed' with specific description, matching Cluster 2 (bedroom #1) label.",
-        "location_confidence": 0.95,
+        "reasoning": "User says 'fridge' which matches Cluster 0 label.",
+        "location_confidence": 1.0,
         "prioritize_location": true,
         "coords": {
-            "x": 8.335898449123508,
-            "y": -0.3473039697364902,
-            "z": 4.035297296591263
+            "x": 1.0613482738026128,
+            "y": 5.204076239036367,
+            "z": 1.1536559631876597
         },
         "dimensions": {
             "bounding_box": {
                 "min": {
-                    "x": 8.329875408564352,
-                    "y": -0.9927454556669913
+                    "x": -0.6087714129816115,
+                    "y": 3.058499932272111
                 },
                 "max": {
-                    "x": 8.341921489682663,
-                    "y": 0.29813751619401097
+                    "x": 4.743404905811275,
+                    "y": 7.986701678074944
                 },
                 "dimensions": {
-                    "width": 0.012046081118311847,
-                    "length": 1.2908829718610022
+                    "width": 5.352176318792886,
+                    "length": 4.928201745802832
                 }
             },
-            "radius": 0.6454695878023615
+            "radius": 3.7200907068588016
         }
     },
     "action": "go_to_object",
