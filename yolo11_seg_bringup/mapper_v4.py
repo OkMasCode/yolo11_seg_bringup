@@ -182,6 +182,11 @@ class SemanticObjectMapV4:
         self.small_object_max_extent = 1.00
         self.small_object_assoc_min_iou = 0.30
 
+        # Periodic clustering cleanup (keep only largest connected cluster per object).
+        self.enable_largest_cluster_filter = False
+        self.cluster_filter_eps_m = 0.18
+        self.cluster_filter_min_points = 12
+
         # Tentative confirmation (false-positive suppression).
         self.confirmation_min_hits = 6
         self.confirmation_time_window_sec = 2.5

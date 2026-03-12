@@ -78,7 +78,7 @@ class NoPCVisionNode(Node):
         self.declare_parameter('max_depth_m', 3.5)
         self.declare_parameter('sor_nb_neighbors', 35)
         self.declare_parameter('sor_std_ratio', 1.4)
-        self.declare_parameter('voxel_size_m', 0.012)
+        self.declare_parameter('voxel_size_m', 0.008)
         self.declare_parameter('dbscan_eps_m', 0.055)
         self.declare_parameter('dbscan_min_points', 22)
         self.declare_parameter('min_downsampled_points', 18)

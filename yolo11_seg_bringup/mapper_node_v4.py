@@ -63,6 +63,11 @@ class PointCloudMapperNodeV4(Node):
         self.declare_parameter('small_object_max_extent', 1.00)
         self.declare_parameter('small_object_assoc_min_iou', 0.30)
 
+        # Periodic per-object clustering cleanup.
+        self.declare_parameter('enable_largest_cluster_filter', True)
+        self.declare_parameter('cluster_filter_eps_m', 0.18)
+        self.declare_parameter('cluster_filter_min_points', 12)
+
         self.dm_topic = self.get_parameter('detection_message').value
         self.map_frame = self.get_parameter('map_frame').value
         self.camera_frame = self.get_parameter('camera_frame').value
@@ -110,6 +115,11 @@ class PointCloudMapperNodeV4(Node):
         )
         self.semantic_map.small_object_max_extent = float(self.get_parameter('small_object_max_extent').value)
         self.semantic_map.small_object_assoc_min_iou = float(self.get_parameter('small_object_assoc_min_iou').value)
+        self.semantic_map.enable_largest_cluster_filter = bool(
+            self.get_parameter('enable_largest_cluster_filter').value
+        )
+        self.semantic_map.cluster_filter_eps_m = float(self.get_parameter('cluster_filter_eps_m').value)
+        self.semantic_map.cluster_filter_min_points = int(self.get_parameter('cluster_filter_min_points').value)
 
         self.get_logger().info(
             "[mapper_node_v4:init:mapper_params] "
@@ -117,7 +127,10 @@ class PointCloudMapperNodeV4(Node):
             f"confirm_hits={self.semantic_map.confirmation_min_hits} "
             f"confirm_min_age={self.semantic_map.confirmation_min_age_sec} "
             f"depth_range=({self.semantic_map.min_detection_depth_m},{self.semantic_map.max_detection_depth_m}) "
-            f"assoc_iou={self.semantic_map.min_association_iou}"
+            f"assoc_iou={self.semantic_map.min_association_iou} "
+            f"largest_cluster_filter={self.semantic_map.enable_largest_cluster_filter} "
+            f"cluster_eps={self.semantic_map.cluster_filter_eps_m} "
+            f"cluster_min_pts={self.semantic_map.cluster_filter_min_points}"
         )
 
         if self.load_map_on_start:
@@ -151,26 +164,13 @@ class PointCloudMapperNodeV4(Node):
 
     def detection_callback(self, msg: DetectedObjectV2):
         try:
-            self.get_logger().info(
-                "[mapper_node_v4:detection:start] "
-                f"name={msg.object_name} track={msg.object_id} conf={float(msg.confidence):.3f} "
-                f"sim={float(msg.similarity):.3f} points={len(msg.object_points)} emb_len={len(msg.embedding)}"
-            )
             with self.lock:
-                pre_confirmed = len(self.semantic_map.objects)
-                pre_tentative = len(self.semantic_map.tentative_tracks)
-
                 points_cam = np.array(
                     [[p.x, p.y, p.z] for p in msg.object_points], 
                     dtype=np.float32
                 )
 
-                self.get_logger().info(
-                    "[mapper_node_v4:detection:points] "
-                    f"shape={points_cam.shape} dtype={points_cam.dtype}"
-                )
-
-                created = self.semantic_map.add_detection(
+                self.semantic_map.add_detection(
                     object_name=msg.object_name,
                     tracker_id=str(msg.object_id),
                     detection_stamp=msg.timestamp,
@@ -182,48 +182,16 @@ class PointCloudMapperNodeV4(Node):
                     object_points_cam=points_cam
                 )
 
-                post_confirmed = len(self.semantic_map.objects)
-                post_tentative = len(self.semantic_map.tentative_tracks)
-                bound_map_id = self.semantic_map.track_to_map.get(str(msg.object_id), "-")
-
-                if created or post_confirmed > pre_confirmed:
-                    event = "new_confirmed"
-                elif post_confirmed < pre_confirmed:
-                    event = "merged_confirmed"
-                elif post_tentative > pre_tentative:
-                    event = "new_tentative"
-                elif post_tentative < pre_tentative:
-                    event = "tentative_transition"
-                else:
-                    event = "updated"
-
-                self.get_logger().info(
-                    "[det_state] "
-                    f"event={event} name={msg.object_name} track={msg.object_id} "
-                    f"conf={float(msg.confidence):.3f} sim={float(msg.similarity):.2f} "
-                    f"emb={'yes' if len(msg.embedding) > 0 else 'no'} "
-                    f"confirmed={post_confirmed} tentative={post_tentative} bound={bound_map_id}"
-                )
-
                 self.publish_semantic_map()
                 if self.publish_stable_pointcloud_enabled:
                     self.publish_stable_pointcloud()
-                self.get_logger().info(
-                    "[mapper_node_v4:detection:done] "
-                    f"track={msg.object_id} confirmed={post_confirmed} tentative={post_tentative}"
-                )
         except Exception as ex:
             self.get_logger().error(f"[mapper_node_v4] detection error: {ex}")
             self.get_logger().error(traceback.format_exc())
 
     def publish_semantic_map(self):
         if not self.semantic_map.objects:
-            self.get_logger().info('[mapper_node_v4:publish] skipped, no confirmed objects')
             return
-
-        self.get_logger().info(
-            f"[mapper_node_v4:publish:start] objects={len(self.semantic_map.objects)}"
-        )
 
         msg = SemanticObjectArray()
         append = msg.objects.append
@@ -246,25 +214,21 @@ class PointCloudMapperNodeV4(Node):
             append(obj)
 
         self.map_pub.publish(msg)
-        self.get_logger().info(
-            f"[mapper_node_v4:publish:done] published_objects={len(msg.objects)}"
-        )
 
     def publish_stable_pointcloud(self):
-        """Publishes all confirmed accumulated map points as class-colored PointCloud2 for RViz2."""
+        """Publishes all confirmed accumulated map points as object-colored PointCloud2 for RViz2."""
         if not self.semantic_map.objects:
-            self.get_logger().info('[mapper_node_v4:stable_cloud] skipped, no confirmed objects')
             return
 
         cloud_points = []
         class_point_counts = {}
         total_points = 0
-        for entry in self.semantic_map.objects.values():
+        for map_id, entry in self.semantic_map.objects.items():
             pts = entry.accumulated_points
             if pts is None or len(pts) == 0:
                 continue
             class_name = entry.current_name
-            color = self._class_to_color_rgb(class_name)
+            color = self._class_to_color_rgb(str(map_id))
             rgb_packed = self._pack_rgb_as_float32(color[0], color[1], color[2])
             class_point_counts[class_name] = class_point_counts.get(class_name, 0) + len(pts)
 
@@ -273,7 +237,6 @@ class PointCloudMapperNodeV4(Node):
             total_points += len(pts)
 
         if total_points == 0:
-            self.get_logger().info('[mapper_node_v4:stable_cloud] skipped, objects had no points')
             return
 
         header = Header()
@@ -296,7 +259,8 @@ class PointCloudMapperNodeV4(Node):
         self.get_logger().info(
             "[mapper_node_v4:stable_cloud] "
             f"published_points={total_points} objects={len(self.semantic_map.objects)} "
-            f"topic={self.stable_pointcloud_topic} classes={class_counts_log}"
+            f"topic={self.stable_pointcloud_topic} classes={class_counts_log}",
+            throttle_duration_sec=2.0,
         )
 
     def _class_to_color_rgb(self, class_name: str):
@@ -315,6 +279,9 @@ class PointCloudMapperNodeV4(Node):
     def export_callback(self):
         with self.lock:
             try:
+                # Periodic geometry cleanup: keep only largest cluster per object.
+                # self.semantic_map.keep_only_largest_cluster()
+
                 # NEW: Clean up duplicates before saving/publishing
                 self.semantic_map.resolve_overlapping_duplicates()
                 
@@ -323,7 +290,6 @@ class PointCloudMapperNodeV4(Node):
                 self.publish_semantic_map()
             except Exception as ex:
                 self.get_logger().error(f"Export/Merge error: {ex}")
-
 
     def shutdown_callback(self):
         with self.lock:
