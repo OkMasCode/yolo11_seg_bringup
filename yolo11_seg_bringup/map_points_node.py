@@ -26,6 +26,7 @@ class MapPointsNode(Node):
         self.declare_parameter('label_height_offset', 0.2)
         self.declare_parameter('bbox_alpha', 0.35)
         self.declare_parameter('bbox_min_edge_m', 0.02)
+        self.declare_parameter('bbox_line_width', 0.03)
 
         self.map_file = str(self.get_parameter('map_file').value)
         self.map_frame = str(self.get_parameter('map_frame').value)
@@ -36,6 +37,7 @@ class MapPointsNode(Node):
         self.label_height_offset = float(self.get_parameter('label_height_offset').value)
         self.bbox_alpha = float(self.get_parameter('bbox_alpha').value)
         self.bbox_min_edge_m = float(self.get_parameter('bbox_min_edge_m').value)
+        self.bbox_line_width = float(self.get_parameter('bbox_line_width').value)
 
         if self.publish_rate_hz <= 0.0:
             self.publish_rate_hz = 1.0
@@ -43,6 +45,8 @@ class MapPointsNode(Node):
             self.bbox_alpha = 0.35
         if self.bbox_min_edge_m <= 0.0:
             self.bbox_min_edge_m = 0.02
+        if self.bbox_line_width <= 0.0:
+            self.bbox_line_width = 0.03
 
         self.markers_pub = self.create_publisher(MarkerArray, self.marker_topic, 10)
         self.bbox_markers_pub = self.create_publisher(MarkerArray, self.bbox_marker_topic, 10)
@@ -148,6 +152,16 @@ class MapPointsNode(Node):
             throttle_duration_sec=5.0,
         )
 
+        # Open3D box corner order expected from export_to_json:
+        # 0:(min,min,min), 1:(max,min,min), 2:(min,max,min), 3:(min,min,max),
+        # 4:(max,max,max), 5:(min,max,max), 6:(max,min,max), 7:(max,max,min)
+        # Edges pair these corners into a 12-edge wireframe box.
+        edge_pairs = (
+            (0, 1), (1, 7), (7, 2), (2, 0),
+            (3, 6), (6, 4), (4, 5), (5, 3),
+            (0, 3), (1, 6), (2, 5), (7, 4),
+        )
+
         for index, (map_id, entry, point_x, point_y, marker_z) in enumerate(valid_entries):
             point_z = marker_z
             point = Point(
@@ -191,23 +205,61 @@ class MapPointsNode(Node):
                 sz = 0.0
 
             if sx > 0.0 and sy > 0.0 and sz > 0.0:
+                corners = []
+                raw_corners = entry.get('bbox_corners', [])
+                if isinstance(raw_corners, list) and len(raw_corners) == 8:
+                    for raw_corner in raw_corners:
+                        if not isinstance(raw_corner, dict):
+                            corners = []
+                            break
+                        try:
+                            corners.append(
+                                Point(
+                                    x=float(raw_corner.get('x', 0.0)),
+                                    y=float(raw_corner.get('y', 0.0)),
+                                    z=float(raw_corner.get('z', 0.0)),
+                                )
+                            )
+                        except (TypeError, ValueError):
+                            corners = []
+                            break
+
+                # Backward-compatible fallback for older maps without explicit OBB corners.
+                if len(corners) != 8:
+                    hx = max(sx, self.bbox_min_edge_m) * 0.5
+                    hy = max(sy, self.bbox_min_edge_m) * 0.5
+                    hz = max(sz, self.bbox_min_edge_m) * 0.5
+                    cx = point.x
+                    cy = point.y
+                    cz = point.z
+                    corners = [
+                        Point(x=cx - hx, y=cy - hy, z=cz - hz),  # 0
+                        Point(x=cx + hx, y=cy - hy, z=cz - hz),  # 1
+                        Point(x=cx - hx, y=cy + hy, z=cz - hz),  # 2
+                        Point(x=cx - hx, y=cy - hy, z=cz + hz),  # 3
+                        Point(x=cx + hx, y=cy + hy, z=cz + hz),  # 4
+                        Point(x=cx - hx, y=cy + hy, z=cz + hz),  # 5
+                        Point(x=cx + hx, y=cy - hy, z=cz + hz),  # 6
+                        Point(x=cx + hx, y=cy + hy, z=cz - hz),  # 7
+                    ]
+
                 bbox_marker = Marker()
                 bbox_marker.header.frame_id = self.map_frame
                 bbox_marker.header.stamp = now
                 bbox_marker.ns = 'map_objects_bbox'
                 bbox_marker.id = index
-                bbox_marker.type = Marker.CUBE
+                bbox_marker.type = Marker.LINE_LIST
                 bbox_marker.action = Marker.ADD
-                bbox_marker.pose.position.x = point.x
-                bbox_marker.pose.position.y = point.y
-                bbox_marker.pose.position.z = point.z
                 bbox_marker.pose.orientation.w = 1.0
-                bbox_marker.scale.x = max(sx, self.bbox_min_edge_m)
-                bbox_marker.scale.y = max(sy, self.bbox_min_edge_m)
-                bbox_marker.scale.z = max(sz, self.bbox_min_edge_m)
+                bbox_marker.scale.x = self.bbox_line_width
                 bbox_marker.color = class_color
                 bbox_marker.color.a = self.bbox_alpha
                 bbox_marker.text = str(map_id)
+
+                for edge_start, edge_end in edge_pairs:
+                    bbox_marker.points.append(corners[edge_start])
+                    bbox_marker.points.append(corners[edge_end])
+
                 bbox_marker_array.markers.append(bbox_marker)
 
         marker_array.markers.append(points_marker)
@@ -231,7 +283,6 @@ def main(args=None) -> None:
     finally:
         node.destroy_node()
         rclpy.shutdown()
-
 
 if __name__ == '__main__':
     main()

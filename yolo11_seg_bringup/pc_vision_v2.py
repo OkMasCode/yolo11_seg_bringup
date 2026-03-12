@@ -23,7 +23,7 @@ import open3d as o3d
 
 from ultralytics import YOLO
 
-from yolo11_seg_interfaces.msg import DetectedObjectV2
+from yolo11_seg_interfaces.msg import DetectedObjectV2, DetectedObjectV2Array
 from .utils.clip_processor import CLIPProcessor
 
 
@@ -181,7 +181,7 @@ class NoPCVisionNode(Node):
 
         # Publishers    
         self.marker_pub = self.create_publisher(MarkerArray, self.markers_topic, 10)
-        self.detections_pub = self.create_publisher(DetectedObjectV2, self.detection_topic, 10)
+        self.detections_pub = self.create_publisher(DetectedObjectV2Array, self.detection_topic, 10)
         if self.enable_vis:
             self.vis_pub = self.create_publisher(Image, self.anno_topic, 10)
 
@@ -439,7 +439,18 @@ class NoPCVisionNode(Node):
         m = masks_np[idx]
         if m.shape[0] != height or m.shape[1] != width:
             m = cv2.resize(m, (width, height), interpolation=cv2.INTER_NEAREST)
-        binary_mask = (m > 0.5)
+        
+        # 1. Convert to standard uint8 mask (0 or 255) for OpenCV
+        mask_uint8 = (m > 0.5).astype(np.uint8) * 255
+        
+        # 2. SOTA Edge Fix: Erode the mask to prevent depth bleeding.
+        # This shrinks the YOLO mask by 3 pixels inward, dropping the dangerous 
+        # edge pixels that cause 3D smearing and exploding bounding boxes.
+        kernel = np.ones((3, 3), np.uint8)
+        eroded_mask = cv2.erode(mask_uint8, kernel, iterations=1)
+        
+        # 3. Convert back to boolean for your point extraction
+        binary_mask = (eroded_mask > 0)
 
         # Back-project masked depth pixels to XYZ points.
         masked_points = self.get_points_in_mask(depth_m, binary_mask, self.fx, self.fy, self.cx, self.cy)
@@ -670,27 +681,42 @@ class NoPCVisionNode(Node):
     # ---------------- Publishers -------------- #
 
     def publish_custom_detections(self, detections, header, timestamp):
-        """ Iterate through the unified list and publish messages. """
-        # Publish one V2 message per detection entry.
+        """ 
+        Iterate through the unified list, package into an Array, and publish once. 
+        """
+        if not detections:
+            return
+
+        array_msg = DetectedObjectV2Array()
+        array_msg.header = header
+
+        from geometry_msgs.msg import Point32
+
         for det in detections:
             msg = DetectedObjectV2()
             
             # Basic Info
             msg.object_name = det["object_name"]
-            msg.object_id = det["instance_id"]
+            
+            # Since you need string tracker_ids in your mapper, make sure instance_id is cast to string
+            # If your custom message uses an integer for object_id, you'll need to handle the conversion 
+            # either here or in the receiving node. 
+            # Assuming msg.object_id is an integer based on your previous code:
+            msg.object_id = int(det["instance_id"]) 
+            
             msg.confidence = float(det.get("confidence", 0.0))
             
             # Centroid
             cx, cy, cz = det["centroid"]
             msg.centroid = Vector3(x=cx, y=cy, z=cz)
             
-            # Timestamp from synchronized pointcloud header.
-            msg.timestamp = header.stamp
+            # Timestamp
+            msg.timestamp = timestamp
             
             current_emb = det["embedding"]
             msg.embedding = current_emb.tolist() if current_emb is not None else []
 
-            # Compute goal similarity only when both embeddings are present.
+            # Compute goal similarity
             prob_goal = 0.0
             if current_emb is not None and self.goal_text_embedding is not None:
                 prob_goal = self.clip.compute_sigmoid_probs(current_emb, self.goal_text_embedding)
@@ -698,17 +724,7 @@ class NoPCVisionNode(Node):
             else:
                 msg.similarity = 0.0
 
-            self.get_logger().info(
-                f"ID {det['instance_id']} ({det['object_name']}): Confidence={det['confidence']:.3f}, Goal={prob_goal}"
-            )
-
-            # --- NEW: Assign Point Cloud ---
-            # You must first update your DetectedObjectV2.msg file to contain a PointCloud2 
-            # or an array of Point32/Vector3 messages instead of box_min/box_max.
-            
-            # Assuming you updated your msg to have: geometry_msgs/Point32[] object_points
-            from geometry_msgs.msg import Point32
-            
+            # Assign Point Cloud
             points_msg = []
             for pt in det["object_points"]:
                 p = Point32()
@@ -716,10 +732,20 @@ class NoPCVisionNode(Node):
                 points_msg.append(p)
                 
             msg.object_points = points_msg
-
-            # Add text embedding for mapper convenience
+            
+            # Add text embedding
             msg.text_embedding = self.goal_text_embedding.tolist() if self.goal_text_embedding is not None else []
-            self.detections_pub.publish(msg)
+
+            # Append to array
+            array_msg.detections.append(msg)
+
+            self.get_logger().debug(
+                f"Packaged ID {det['instance_id']} ({det['object_name']}): Conf={det['confidence']:.3f}"
+            )
+
+        # Publish the entire frame of detections simultaneously
+        self.detections_pub.publish(array_msg)
+        self.get_logger().info(f"Published {len(array_msg.detections)} detections in batch.")
 
     def publish_centroid_markers(self, detections, header):
         """Publish centroids as marker array."""

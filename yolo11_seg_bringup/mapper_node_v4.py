@@ -15,7 +15,7 @@ from sensor_msgs_py import point_cloud2 as pc2
 from std_msgs.msg import Header
 
 from yolo11_seg_bringup.mapper_v4 import SemanticObjectMapV4
-from yolo11_seg_interfaces.msg import DetectedObjectV2, SemanticObject, SemanticObjectArray
+from yolo11_seg_interfaces.msg import DetectedObjectV2, DetectedObjectV2Array, SemanticObject, SemanticObjectArray
 
 
 class PointCloudMapperNodeV4(Node):
@@ -147,7 +147,7 @@ class PointCloudMapperNodeV4(Node):
         )
 
         self.dm_sub = self.create_subscription(
-            DetectedObjectV2,
+            DetectedObjectV2Array,
             self.dm_topic,
             self.detection_callback,
             qos_profile=qos_sensor,
@@ -162,31 +162,48 @@ class PointCloudMapperNodeV4(Node):
             f"[mapper_node_v4] ready. input={self.dm_topic}, output_dir={self.output_dir}, export={self.output_map_file}"
         )
 
-    def detection_callback(self, msg: DetectedObjectV2):
+    def detection_callback(self, msg: DetectedObjectV2Array):
         try:
             with self.lock:
-                points_cam = np.array(
-                    [[p.x, p.y, p.z] for p in msg.object_points], 
-                    dtype=np.float32
-                )
+                # 1. Prepare lists to hold the batched data
+                object_names = []
+                tracker_ids = []
+                embeddings_list = []
+                confidences = []
+                points_cam_list = []
 
-                self.semantic_map.add_detection(
-                    object_name=msg.object_name,
-                    tracker_id=str(msg.object_id),
-                    detection_stamp=msg.timestamp,
+                # 2. Extract data from each detection in the array
+                for det in msg.detections:
+                    points_cam = np.array(
+                        [[p.x, p.y, p.z] for p in det.object_points], 
+                        dtype=np.float32
+                    )
+                    
+                    object_names.append(det.object_name)
+                    tracker_ids.append(str(det.object_id))
+                    embeddings_list.append(det.embedding)
+                    confidences.append(det.confidence)
+                    points_cam_list.append(points_cam)
+
+                # 3. Call the new batched method on the mapper
+                self.semantic_map.add_detections_batch(
+                    object_names=object_names,
+                    tracker_ids=tracker_ids,
+                    detection_stamp=msg.header.stamp,
                     camera_frame=self.camera_frame,
                     fixed_frame=self.map_frame,
-                    embeddings=msg.embedding,
-                    similarity=msg.similarity,
-                    confidence=msg.confidence,
-                    object_points_cam=points_cam
+                    embeddings_list=embeddings_list,
+                    confidences=confidences,
+                    points_cam_list=points_cam_list
                 )
 
+                # 4. Publish updates
                 self.publish_semantic_map()
                 if self.publish_stable_pointcloud_enabled:
                     self.publish_stable_pointcloud()
+                    
         except Exception as ex:
-            self.get_logger().error(f"[mapper_node_v4] detection error: {ex}")
+            self.get_logger().error(f"[mapper_node_v4] batch detection error: {ex}")
             self.get_logger().error(traceback.format_exc())
 
     def publish_semantic_map(self):

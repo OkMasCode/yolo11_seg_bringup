@@ -37,14 +37,29 @@ class MapObject:
     source_track_id: Optional[str] = None
 
     @property
-    def global_min(self) -> Tuple[float, float, float]:
-        min_b = np.percentile(self.accumulated_points, 5, axis=0)
-        return tuple(float(x) for x in min_b)
+    def obb(self) -> o3d.geometry.OrientedBoundingBox:
+        # 1. Create the point cloud
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(self.accumulated_points)
         
+        # 2. SOTA Fix: Statistical Outlier Removal
+        # This removes the invisible "dust" that causes the bounding box to explode.
+        # It looks at the 20 nearest neighbors for every point. If a point is further 
+        # away than 2.0 standard deviations from the average distance, it is deleted.
+        if len(pcd.points) > 20:
+            clean_pcd, ind = pcd.remove_statistical_outlier(nb_neighbors=20, std_ratio=2.0)
+            
+            # Fallback: If SOR accidentally deleted the whole object, use the original points
+            if len(clean_pcd.points) > 5:
+                return clean_pcd.get_minimal_oriented_bounding_box()
+                
+        # 3. Fit the tight, rotated bounding box around the clean geometry
+        return pcd.get_minimal_oriented_bounding_box()
+
     @property
-    def global_max(self) -> Tuple[float, float, float]:
-        max_b = np.percentile(self.accumulated_points, 95, axis=0)
-        return tuple(float(x) for x in max_b)
+    def box_size(self) -> Tuple[float, float, float]:
+        # Return the extents (length, width, height) of the oriented box
+        return tuple(float(x) for x in self.obb.extent)
 
     @property
     def pose_map(self) -> Tuple[float, float, float]:
@@ -55,11 +70,6 @@ class MapObject:
     def pose_cam(self) -> Tuple[float, float, float]:
         # pose_cam is deprecated in this architecture but kept to prevent downstream errors
         return self.pose_map 
-
-    @property
-    def box_size(self) -> Tuple[float, float, float]:
-        size = np.array(self.global_max) - np.array(self.global_min)
-        return tuple(float(max(x, 0.01)) for x in size)
 
 @dataclass
 class TentativeTrack:
@@ -77,14 +87,29 @@ class TentativeTrack:
     embedding_confidence_max: float = -1.0
     
     @property
-    def global_min(self) -> Tuple[float, float, float]:
-        min_b = np.percentile(self.accumulated_points, 5, axis=0)
-        return tuple(float(x) for x in min_b)
+    def obb(self) -> o3d.geometry.OrientedBoundingBox:
+        # 1. Create the point cloud
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(self.accumulated_points)
         
+        # 2. SOTA Fix: Statistical Outlier Removal
+        # This removes the invisible "dust" that causes the bounding box to explode.
+        # It looks at the 20 nearest neighbors for every point. If a point is further 
+        # away than 2.0 standard deviations from the average distance, it is deleted.
+        if len(pcd.points) > 20:
+            clean_pcd, ind = pcd.remove_statistical_outlier(nb_neighbors=20, std_ratio=2.0)
+            
+            # Fallback: If SOR accidentally deleted the whole object, use the original points
+            if len(clean_pcd.points) > 5:
+                return clean_pcd.get_minimal_oriented_bounding_box()
+                
+        # 3. Fit the tight, rotated bounding box around the clean geometry
+        return pcd.get_minimal_oriented_bounding_box()
+
     @property
-    def global_max(self) -> Tuple[float, float, float]:
-        max_b = np.percentile(self.accumulated_points, 95, axis=0)
-        return tuple(float(x) for x in max_b)
+    def box_size(self) -> Tuple[float, float, float]:
+        # Return the extents (length, width, height) of the oriented box
+        return tuple(float(x) for x in self.obb.extent)
 
     @property
     def pose_map(self) -> Tuple[float, float, float]:
@@ -93,12 +118,8 @@ class TentativeTrack:
         
     @property
     def pose_cam(self) -> Tuple[float, float, float]:
+        # pose_cam is deprecated in this architecture but kept to prevent downstream errors
         return self.pose_map 
-
-    @property
-    def box_size(self) -> Tuple[float, float, float]:
-        size = np.array(self.global_max) - np.array(self.global_min)
-        return tuple(float(max(x, 0.01)) for x in size)
 
 
 def quaternion_matrix(quaternion):
@@ -247,159 +268,220 @@ class SemanticObjectMapV4:
         fused = (cur * float(cur_w) + new * float(new_w)) / float(cur_w + new_w)
         return self._normalize_embedding(fused)
 
-    def add_detection(
+    def add_detections_batch(
         self,
-        object_name: str,
-        tracker_id: str,
+        object_names: list[str],
+        tracker_ids: list[str],
         detection_stamp,
         camera_frame: str = 'camera_color_optical_frame',
         fixed_frame: str = 'map',
-        embeddings=None,
-        similarity: float = 0.0,
-        confidence: float = 0.0,
-        object_points_cam: np.ndarray = None, # <--- NEW: Replaces box_min/max
-    ) -> bool:
-        self.node.get_logger().info(
-            "[mapper_v4:add_detection:start] "
-            f"name={object_name} track={tracker_id} conf={float(confidence):.3f} "
-            f"sim={float(similarity):.3f} points={0 if object_points_cam is None else len(object_points_cam)}"
-        )
-        if object_points_cam is None or len(object_points_cam) < 5:
-            self.node.get_logger().warning(
-                "[mapper_v4:add_detection:reject] "
-                f"name={object_name} track={tracker_id} reason=insufficient_points "
-                f"points={0 if object_points_cam is None else len(object_points_cam)}"
-            )
-            return False
+        embeddings_list: list = None,
+        confidences: list[float] = None,
+        points_cam_list: list[np.ndarray] = None,
+    ) -> None:
+        """
+        Processes a full frame of detections. 
+        Trusts the tracker ID first, then uses Bipartite Matching for new IDs.
+        """
+        if not points_cam_list or len(points_cam_list) == 0:
+            return
 
         try:
             lookup_time = rclpy.time.Time.from_msg(detection_stamp)
-            self.node.get_logger().info(
-                "[mapper_v4:add_detection:tf_lookup] "
-                f"fixed_frame={fixed_frame} camera_frame={camera_frame} "
-                f"stamp={detection_stamp.sec}.{detection_stamp.nanosec:09d}"
-            )
             transform = self.tf_buffer.lookup_transform(
                 fixed_frame, camera_frame, lookup_time, timeout=Duration(seconds=0.8)
             )
-            # 1. Transform points to map frame
-            points_map = self.transform_pointcloud(object_points_cam, transform)
-            self.node.get_logger().info(
-                "[mapper_v4:add_detection:tf_ok] "
-                f"name={object_name} track={tracker_id} points_map={len(points_map)}"
-            )
         except TransformException as ex:
-            self.node.get_logger().warning(f"[mapper_v4] Could not transform detection: {ex}")
-            return False
-        except Exception as ex:
-            self.node.get_logger().error(
-                "[mapper_v4:add_detection:error] "
-                f"name={object_name} track={tracker_id} stage=tf_or_transform error={ex}"
-            )
-            self.node.get_logger().error(traceback.format_exc())
-            return False
+            self.node.get_logger().warning(f"[mapper_v4] TF Error: {ex}")
+            return
 
-        # 2. Compute dynamic bounds for this specific observation
-        obs_min = np.percentile(points_map, 5, axis=0)
-        obs_max = np.percentile(points_map, 95, axis=0)
-        obs_size = obs_max - obs_min
-        
         current_ns = self._stamp_to_ns(detection_stamp)
         self._prune_stale_state(current_ns)
 
-        # 3. Quality Gate (Check depth using the CAMERA frame, not the map frame)
-        depth_m = float(np.mean(object_points_cam[:, 2]))
-        gate_failure = self._quality_gate_failure_reason(confidence, depth_m, obs_size)
-        if gate_failure is not None:
-            self.node.get_logger().warning(
-                "[mapper_v4:add_detection:reject] "
-                f"name={object_name} track={tracker_id} reason={gate_failure} "
-                f"depth_m={depth_m:.3f} obs_size=({float(obs_size[0]):.3f},{float(obs_size[1]):.3f},{float(obs_size[2]):.3f})"
-            )
-            return False
+        # ---------------------------------------------------------
+        # 1. PREPARE VALID DETECTIONS
+        # ---------------------------------------------------------
+        valid_detections = []
+        for i in range(len(points_cam_list)):
+            pts_cam = points_cam_list[i]
+            if pts_cam is None or len(pts_cam) < 5:
+                continue
 
-        img_vec = self._to_embedding(embeddings)
+            # Quality Gate
+            conf = confidences[i] if confidences else 0.0
+            depth_m = float(np.mean(pts_cam[:, 2]))
+            
+            pts_map = self.transform_pointcloud(pts_cam, transform)
+            obs_pcd = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(pts_map))
+            obs_obb = obs_pcd.get_minimal_oriented_bounding_box()
+            obs_size = obs_obb.extent
 
-        # 4. First try the tracker's previous map binding
-        bound_map_id = self.track_to_map.get(tracker_id)
-        if bound_map_id in self.objects:
-            obj = self.objects[bound_map_id]
-            # Verify the binding is still geometrically valid via IoU
-            bound_iou = self.compute_3d_iou(obj.global_min, obj.global_max, obs_min, obs_max)
-            self.node.get_logger().info(
-                "[mapper_v4:add_detection:bound_check] "
-                f"track={tracker_id} map_id={bound_map_id} iou={bound_iou:.3f} "
-                f"required={self.min_association_iou:.3f}"
-            )
-            if bound_iou >= self.min_association_iou:
-                self._update_object(
-                    map_id=bound_map_id,
-                    object_name=object_name,
-                    detection_stamp=detection_stamp,
-                    points_map=points_map, # Pass the points!
-                    similarity=similarity,
-                    confidence=confidence,
-                    image_embedding=img_vec,
-                    current_ns=current_ns,
-                    source_track_id=tracker_id,
-                )
-                self.track_last_seen_ns[tracker_id] = current_ns
-                self.node.get_logger().info(
-                    "[mapper_v4:add_detection:update_bound] "
-                    f"track={tracker_id} map_id={bound_map_id}"
-                )
-                return False
-            # Binding is stale
-            self.node.get_logger().info(
-                "[mapper_v4:add_detection:bound_stale] "
-                f"track={tracker_id} map_id={bound_map_id}"
-            )
-            self.track_to_map.pop(tracker_id, None)
-            self.track_last_seen_ns.pop(tracker_id, None)
+            gate_failure = self._quality_gate_failure_reason(conf, depth_m, obs_size)
+            if gate_failure:
+                continue
 
-        # 5. Global nearest-candidate lookup (Strict IoU)
-        candidate_id = self._find_best_candidate(object_name, obs_min, obs_max, current_ns)
-        if candidate_id is not None:
-            self.node.get_logger().info(
-                "[mapper_v4:add_detection:associate_candidate] "
-                f"track={tracker_id} candidate_map={candidate_id}"
-            )
-            self._update_object(
-                map_id=candidate_id,
-                object_name=object_name,
-                detection_stamp=detection_stamp,
-                points_map=points_map,
-                similarity=similarity,
-                confidence=confidence,
-                image_embedding=img_vec,
-                current_ns=current_ns,
-                source_track_id=tracker_id,
-            )
-            self.track_to_map[tracker_id] = candidate_id
-            self.track_last_seen_ns[tracker_id] = current_ns
-            return False
+            emb = self._to_embedding(embeddings_list[i] if embeddings_list else None)
 
-        # 6. No confirmed object matched; update or create a tentative track.
-        created = self._update_tentative(
-            object_name=object_name,
-            tracker_id=tracker_id,
-            points_map=points_map,
-            detection_stamp=detection_stamp,
-            confidence=confidence,
-            image_embedding=img_vec,
-            current_ns=current_ns,
-            frame=fixed_frame, # Tentative tracks now use the map frame natively
-        )
+            valid_detections.append({
+                'name': object_names[i],
+                'track_id': tracker_ids[i],
+                'points_map': pts_map,
+                'obb': obs_obb,
+                'centroid': np.mean(pts_map, axis=0),
+                'embedding': emb,
+                'confidence': conf
+            })
 
-        self.resolve_map_duplicates()
+        if not valid_detections:
+            return
+
+        unmatched_detections = []
+
+        # ---------------------------------------------------------
+        # 2. PHASE 1: DIRECT ID ROUTING (TRUST THE TRACKER)
+        # ---------------------------------------------------------
+        for det in valid_detections:
+            t_id = det['track_id']
+            matched = False
+
+            # Check if bound to a confirmed Map Object
+            bound_map_id = self.track_to_map.get(t_id)
+            if bound_map_id in self.objects:
+                map_obj = self.objects[bound_map_id]
+                
+                # SOTA SAFETY GATE: Do not trust the tracker if the YOLO class suddenly flips
+                if det['name'] != map_obj.current_name:
+                    self.node.get_logger().warning(
+                        f"[mapper_v4] Tracker {t_id} flipped class: {map_obj.current_name} -> {det['name']}. "
+                        "Revoking trust, sending to matrix."
+                    )
+                    # We do NOT set matched = True, so it falls to the unmatched list
+                else:
+                    self._update_object(
+                        map_id=bound_map_id, object_name=det['name'], detection_stamp=detection_stamp,
+                        points_map=det['points_map'], similarity=0.0, confidence=det['confidence'],
+                        image_embedding=det['embedding'], current_ns=current_ns, source_track_id=t_id
+                    )
+                    self.track_last_seen_ns[t_id] = current_ns
+                    matched = True
+            
+            # Check if it is an active Tentative Track
+            elif t_id in self.tentative_tracks:
+                track = self.tentative_tracks[t_id]
+                
+                # Apply the same safety gate here
+                if det['name'] != track.class_name:
+                    self.node.get_logger().warning(
+                        f"[mapper_v4] Tentative Tracker {t_id} flipped class. Revoking trust."
+                    )
+                else:
+                    self._update_tentative(
+                        object_name=det['name'], tracker_id=t_id, points_map=det['points_map'],
+                        detection_stamp=detection_stamp, confidence=det['confidence'],
+                        image_embedding=det['embedding'], current_ns=current_ns, frame=fixed_frame
+                    )
+                    matched = True
+
+            if not matched:
+                unmatched_detections.append(det)
+
+        if not unmatched_detections:
+            # Everything was handled by the tracker IDs
+            return
+
+        # ---------------------------------------------------------
+        # 3. PHASE 2: BIPARTITE MATCHING FOR NEW IDs
+        # ---------------------------------------------------------
+        map_ids = list(self.objects.keys())
         
-        self.node.get_logger().info(
-            "[mapper_v4:add_detection:tentative_result] "
-            f"track={tracker_id} created_confirmed={created} "
-            f"tentative_total={len(self.tentative_tracks)} confirmed_total={len(self.objects)}"
-        )
-        return created
-    
+        # If the map is empty, all unmatched detections become new tentative tracks
+        if not map_ids:
+            for det in unmatched_detections:
+                self._update_tentative(
+                    object_name=det['name'], tracker_id=det['track_id'], points_map=det['points_map'],
+                    detection_stamp=detection_stamp, confidence=det['confidence'],
+                    image_embedding=det['embedding'], current_ns=current_ns, frame=fixed_frame
+                )
+            return
+
+        N = len(unmatched_detections)
+        M = len(map_ids)
+        cost_matrix = np.zeros((N, M), dtype=np.float32)
+
+        # ---------------------------------------------------------
+        # 3. PHASE 2: BIPARTITE MATCHING FOR NEW IDs
+        # ---------------------------------------------------------
+        # ... (setup code remains the same) ...
+        
+        # Tuning Weights 
+        w_dist = 1.0
+        w_iou = 1.0
+        w_sem = 2.5 
+        MAX_COST = 3.5 
+
+        for i, det in enumerate(unmatched_detections):
+            for j, m_id in enumerate(map_ids):
+                map_obj = self.objects[m_id]
+
+                # A. Spatial Cost
+                dist = float(np.linalg.norm(det['centroid'] - map_obj.pose_map))
+                if dist > 1.5: 
+                    cost_matrix[i, j] = 999.0
+                    continue
+
+                # B. Geometric Cost (1.0 - IoU)
+                iou = self.compute_obb_iou(det['points_map'], det['obb'], map_obj.accumulated_points, map_obj.obb)
+                cost_iou = 1.0 - iou
+
+                # C. Semantic Cost
+                cost_sem = self.compute_semantic_distance(det['embedding'], map_obj.image_embedding)
+
+                # D. Explicit Class Mismatch Penalty
+                class_penalty = 0.0
+                if det['name'] != map_obj.current_name:
+                    # Adding 5.0 pushes the total cost well over the MAX_COST of 3.5,
+                    # mathematically forcing the algorithm to reject this match.
+                    class_penalty = 5.0 
+
+                # Total Multi-Modal Cost
+                cost_matrix[i, j] = (w_dist * dist) + (w_iou * cost_iou) + (w_sem * cost_sem) + class_penalty
+
+
+        # Solve the optimal assignment
+        from scipy.optimize import linear_sum_assignment
+        row_ind, col_ind = linear_sum_assignment(cost_matrix)
+
+        assigned_detections = set()
+
+        for idx in range(len(row_ind)):
+            det_idx = row_ind[idx]
+            map_idx = col_ind[idx]
+            cost = cost_matrix[det_idx, map_idx]
+
+            if cost < MAX_COST:
+                det = unmatched_detections[det_idx]
+                m_id = map_ids[map_idx]
+                
+                self._update_object(
+                    map_id=m_id, object_name=det['name'], detection_stamp=detection_stamp,
+                    points_map=det['points_map'], similarity=0.0, confidence=det['confidence'],
+                    image_embedding=det['embedding'], current_ns=current_ns, source_track_id=det['track_id']
+                )
+                self.track_to_map[det['track_id']] = m_id
+                self.track_last_seen_ns[det['track_id']] = current_ns
+                assigned_detections.add(det_idx)
+
+        # ---------------------------------------------------------
+        # 4. PHASE 3: SPAWN NEW TRACKS
+        # ---------------------------------------------------------
+        for i, det in enumerate(unmatched_detections):
+            if i not in assigned_detections:
+                self._update_tentative(
+                    object_name=det['name'], tracker_id=det['track_id'], points_map=det['points_map'],
+                    detection_stamp=detection_stamp, confidence=det['confidence'],
+                    image_embedding=det['embedding'], current_ns=current_ns, frame=fixed_frame
+                )
+
     def _update_tentative(
         self,
         object_name: str,
@@ -695,29 +777,6 @@ class SemanticObjectMapV4:
                 f"removed_tentative={removed_tentative} removed_bindings={removed_bindings}"
             )
 
-    def _find_best_candidate(self, class_name: str, obs_min, obs_max, current_ns: int) -> Optional[str]:
-        best_id = None
-        best_iou = -1.0
-        
-        # LOWER threshold to be more aggressive with merging
-        min_required_iou = 0.10 
-
-        for map_id, entry in self.objects.items():
-            if entry.last_seen_ns == current_ns:
-                continue
-                
-            # Use the properties that calculate from the STABLE cloud
-            # This 'snaps' the detection to the existing cluster
-            iou = self.compute_3d_iou(entry.global_min, entry.global_max, obs_min, obs_max)
-            
-            # Cross-class check with a relaxed penalty
-            required = min_required_iou if entry.current_name == class_name else 0.25
-            
-            if iou >= required and iou > best_iou:
-                best_iou = iou
-                best_id = map_id
-        return best_id
-    
     def _new_map_id(self) -> str:
         map_id = f"map_obj_{self._next_map_id:06d}"
         self._next_map_id += 1
@@ -729,7 +788,7 @@ class SemanticObjectMapV4:
         self.node.get_logger().info(
             f"[mapper_v4:export:start] path={path} objects={len(self.objects)}"
         )
-
+        
         export_data = {}
         for map_id, obj in self.objects.items():
             hx = float(obj.box_size[0]) * 0.5
@@ -740,25 +799,16 @@ class SemanticObjectMapV4:
             cz = float(obj.pose_map[2])
             bbox_min = {'x': cx - hx, 'y': cy - hy, 'z': cz - hz}
             bbox_max = {'x': cx + hx, 'y': cy + hy, 'z': cz + hz}
+            corners = np.asarray(obj.obb.get_box_points())
+            corners_list = [{'x': float(p[0]), 'y': float(p[1]), 'z': float(p[2])} for p in corners]
             export_data[map_id] = {
                 'name': obj.current_name,
                 'frame': obj.frame,
                 'timestamp': {'sec': obj.timestamp.sec, 'nanosec': obj.timestamp.nanosec},
                 'pose_map': {'x': float(obj.pose_map[0]), 'y': float(obj.pose_map[1]), 'z': float(obj.pose_map[2])},
-                'bbox_type': 'aabb',
+                'bbox_type': 'obb',
                 'box_size': {'x': float(obj.box_size[0]), 'y': float(obj.box_size[1]), 'z': float(obj.box_size[2])},
-                'bbox_min': bbox_min,
-                'bbox_max': bbox_max,
-                'bbox_corners': [
-                    {'x': bbox_min['x'], 'y': bbox_min['y'], 'z': bbox_min['z']},
-                    {'x': bbox_min['x'], 'y': bbox_min['y'], 'z': bbox_max['z']},
-                    {'x': bbox_min['x'], 'y': bbox_max['y'], 'z': bbox_min['z']},
-                    {'x': bbox_min['x'], 'y': bbox_max['y'], 'z': bbox_max['z']},
-                    {'x': bbox_max['x'], 'y': bbox_min['y'], 'z': bbox_min['z']},
-                    {'x': bbox_max['x'], 'y': bbox_min['y'], 'z': bbox_max['z']},
-                    {'x': bbox_max['x'], 'y': bbox_max['y'], 'z': bbox_min['z']},
-                    {'x': bbox_max['x'], 'y': bbox_max['y'], 'z': bbox_max['z']},
-                ],
+                'bbox_corners': corners_list,
                 'occurrences': int(obj.occurrences),
                 'similarity': float(obj.similarity),
                 'image_embedding': obj.image_embedding.tolist() if obj.image_embedding is not None else None,
@@ -969,23 +1019,38 @@ class SemanticObjectMapV4:
         downsampled = pcd.voxel_down_sample(voxel_size=0.1)
         return np.asarray(downsampled.points, dtype=np.float32)
 
-    def compute_3d_iou(self, box1_min, box1_max, box2_min, box2_max) -> float:
-        """Computes the volumetric Intersection over Union of two AABBs."""
-        inter_min = np.maximum(box1_min, box2_min)
-        inter_max = np.minimum(box1_max, box2_max)
-        if np.any(inter_max <= inter_min): return 0.0
+    def compute_obb_iou(self, points1: np.ndarray, obb1: o3d.geometry.OrientedBoundingBox, 
+                              points2: np.ndarray, obb2: o3d.geometry.OrientedBoundingBox) -> float:
+        """
+        Computes a point-to-OBB overlap proxy for IoU.
+        Instead of complex analytical box intersection, we count how many points 
+        from cloud 1 fall tightly into box 2, and vice-versa.
+        """
+        if len(points1) == 0 or len(points2) == 0:
+            return 0.0
             
-        inter_vol = np.prod(inter_max - inter_min)
-        box1_vol = np.prod(np.array(box1_max) - np.array(box1_min))
-        box2_vol = np.prod(np.array(box2_max) - np.array(box2_min))
+        vec1 = o3d.utility.Vector3dVector(points1)
+        vec2 = o3d.utility.Vector3dVector(points2)
         
-        union_vol = box1_vol + box2_vol - inter_vol
-        if union_vol <= 0: return 0.0
-        return float(inter_vol / union_vol)
+        # Get indices of points inside the other's bounding box using built-in Open3D
+        in_2 = obb2.get_point_indices_within_bounding_box(vec1)
+        in_1 = obb1.get_point_indices_within_bounding_box(vec2)
+        
+        # Average the intersecting points for robustness
+        intersect_count = (len(in_2) + len(in_1)) / 2.0
+        
+        # Union is total points minus the intersection
+        union_count = len(points1) + len(points2) - intersect_count
+        
+        if union_count <= 0: 
+            return 0.0
+            
+        return float(intersect_count / union_count)
     
     def _refine_object_geometry(self, map_id: str) -> None:
         """
-        Refined ROR with aggressive density thresholds and logging.
+        Uses DBSCAN clustering to isolate the largest contiguous physical mass 
+        of the object, discarding odometry smears and disconnected noise.
         """
         if map_id not in self.objects:
             return
@@ -994,43 +1059,59 @@ class SemanticObjectMapV4:
         points = obj.accumulated_points
         original_count = len(points)
 
+        # Require a minimum number of points to perform clustering
         if original_count < 20:
             return 
-
-        import open3d as o3d
-        import numpy as np
 
         pcd = o3d.geometry.PointCloud()
         pcd.points = o3d.utility.Vector3dVector(points)
 
         # ==========================================
-        # TUNING THE RADIUS FILTER
+        # DBSCAN CLUSTERING
         # ==========================================
-        # Radius: 0.08 (8cm). If voxels are 5cm, this only looks at immediate neighbors.
-        # nb_points: 8. A point MUST have 8 neighbors in an 8cm ball to survive.
-        # Smears are usually thin (1-2 layers), so they will fail this.
-        cl, ind = pcd.remove_radius_outlier(nb_points=15, radius=0.15)
-        refined_pcd = pcd.select_by_index(ind)
-        new_count = len(refined_pcd.points)
+        # eps = 0.18: Must be larger than the voxel downsample size (0.10) to keep the main object connected.
+        # min_points = 10: Minimum local density to form a cluster.
+        labels = np.array(pcd.cluster_dbscan(eps=0.18, min_points=10, print_progress=False))
+        
+        # If no clusters were found (all noise), do nothing
+        if labels.max() < 0:
+            return
+
+        # Find the label of the largest cluster
+        # bincount throws an error on negative numbers, so we shift labels by +1
+        # Noise is label -1, which becomes index 0. We ignore index 0 when finding the max.
+        shifted_labels = labels + 1
+        counts = np.bincount(shifted_labels)
+        
+        # Ensure there is at least one valid cluster (index > 0)
+        if len(counts) <= 1:
+            return
+            
+        # Get the label with the highest count (ignoring noise at index 0)
+        largest_cluster_label = counts[1:].argmax()
+        
+        # Get the indices of the points belonging to the largest cluster
+        largest_cluster_indices = np.where(labels == largest_cluster_label)[0]
+        new_count = len(largest_cluster_indices)
 
         # ==========================================
         # UPDATE & DEBUG LOGGING
         # ==========================================
         deleted = original_count - new_count
         
-        # We print even if 0 points were deleted so we know the code is running.
-        self.node.get_logger().info(
-            f"[refinement] {map_id}: {original_count} -> {new_count} (Dropped: {deleted})"
-        )
-
-        if 10 < new_count < original_count:
-            obj.accumulated_points = np.asarray(refined_pcd.points, dtype=np.float32)
+        if deleted > 0 and new_count >= 10:
+            # Extract only the points of the largest cluster
+            refined_points = points[largest_cluster_indices]
+            obj.accumulated_points = refined_points
+            
+            self.node.get_logger().info(
+                f"[mapper_v4:refinement] {map_id} DBSCAN: {original_count} -> {new_count} (Dropped {deleted} smear points)"
+            )
 
     def resolve_overlapping_duplicates(self):
-
         """
-        Scans all confirmed objects and merges any that have significant 3D overlap.
-        This kills the 'ghost' boxes shown in your kitchen island image.
+        Scans confirmed objects and merges duplicates ONLY if they share the same class, 
+        have highly similar embeddings, and physically overlap.
         """
         ids = list(self.objects.keys())
         for i in range(len(ids)):
@@ -1041,17 +1122,48 @@ class SemanticObjectMapV4:
                 
                 obj1, obj2 = self.objects[id1], self.objects[id2]
                 
-                # Compute IoU between the two existing stable clouds
-                iou = self.compute_3d_iou(obj1.global_min, obj1.global_max, 
-                                          obj2.global_min, obj2.global_max)
+                # ==========================================
+                # 1. STRICT CLASS GATE
+                # ==========================================
+                # If they are not the same class, NEVER merge them.
+                if obj1.current_name != obj2.current_name:
+                    continue
                 
-                # SOTA Threshold: If they overlap by 15% or more, they are 
-                # almost certainly the same physical mass.
-                if iou > 0.15:
-                    self.node.get_logger().info(f"[mapper_v4] Resolving duplicate: {id1} <-> {id2}")
-                    self._fuse_objects(id1, id2)
+                # ==========================================
+                # 2. SEMANTIC GATE
+                # ==========================================
+                # Even if classes match, ensure their AI fingerprints align 
+                # to prevent merging two distinct chairs placed next to each other.
+                sem_dist = self.compute_semantic_distance(obj1.image_embedding, obj2.image_embedding)
+                if sem_dist > 0.40: # Require strong similarity
+                    continue
 
-    def resolve_map_duplicates(self) -> None:
+                # ==========================================
+                # 3. GEOMETRIC GATE
+                # ==========================================
+                iou = self.compute_obb_iou(obj1.accumulated_points, obj1.obb, 
+                                           obj2.accumulated_points, obj2.obb)
+                
+                if iou > 0.15:
+                    self.node.get_logger().info(
+                        f"[mapper_v4] Resolving true duplicate: {obj1.current_name} ({id1} <-> {id2})"
+                    )
+                    self._fuse_objects(id1, id2)
+                    
+                    # Only run refinement after a legitimate merge
+                    self._refine_object_geometry(id1)
+
+    def compute_semantic_distance(self, emb1: Optional[np.ndarray], emb2: Optional[np.ndarray]) -> float:
+        if emb1 is None or emb2 is None:
+            return 1.0
+        
+        e1 = emb1 / (np.linalg.norm(emb1) + 1e-8)
+        e2 = emb2 / (np.linalg.norm(emb2) + 1e-8)
+        
+        sim = np.dot(e1, e2)
+        sim = max(-1.0, min(1.0, float(sim))) 
+        return 1.0 - sim
+
         """
         Scans all confirmed objects and fuses them if they overlap.
         This runs every frame to permanently kill ghost duplicates.
@@ -1067,10 +1179,11 @@ class SemanticObjectMapV4:
                 
                 obj1, obj2 = self.objects[id1], self.objects[id2]
                 
-                iou = self.compute_3d_iou(obj1.global_min, obj1.global_max, 
-                                          obj2.global_min, obj2.global_max)
+                iou = self.compute_obb_iou(obj1.accumulated_points, obj1.obb, 
+                                           obj2.accumulated_points, obj2.obb)
                 
                 # If they are the same class and overlap even slightly (5%), fuse them.
                 if obj1.current_name == obj2.current_name and iou > 0.05:
                     self.node.get_logger().info(f"[mapper_v4] Fusing duplicate {obj1.current_name}s: {id1} into {id2}")
                     self._fuse_objects(id1, id2)
+                    self._refine_object_geometry(id1)
