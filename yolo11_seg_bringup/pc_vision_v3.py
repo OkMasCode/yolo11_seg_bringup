@@ -6,20 +6,15 @@ CLIP embedding, and detection publishing.
 import os
 import rclpy
 from rclpy.node import Node
-from sensor_msgs.msg import Image, CameraInfo
-from visualization_msgs.msg import MarkerArray, Marker
-from geometry_msgs.msg import Vector3
+from sensor_msgs.msg import Image
 from rclpy.qos import QoSProfile, HistoryPolicy, ReliabilityPolicy, DurabilityPolicy
-import message_filters
 
 import torch
 import cv2
 import numpy as np
 from cv_bridge import CvBridge
-import threading
 import json
 from time import perf_counter
-import open3d as o3d
 
 from ultralytics import YOLO
 
@@ -312,7 +307,7 @@ class NoPCVisionNode(Node):
 
     def process_single_detection(self, idx, bbox, class_id, class_name, instance_id, confidence, masks_np,
                                  cv_bgr,
-                                 height, width, rgb_msg, do_clip_frame):
+                                 height, width, do_clip_frame):
         """ 
         prepare data container. 
         Returns detection_dictionary
@@ -344,9 +339,6 @@ class NoPCVisionNode(Node):
         kernel = np.ones((3, 3), np.uint8)
         eroded_mask = cv2.erode(mask_uint8, kernel, iterations=1)
         
-        # 3. Convert back to boolean for your point extraction
-        binary_mask = (mask_uint8 > 0)
-
         # Create per-detection record shared across publishing stages.
         class_name = class_name
         
@@ -456,7 +448,7 @@ class NoPCVisionNode(Node):
     
     # ---------------- Publishers -------------- #
 
-def publish_custom_detections(self, detections, header):
+    def publish_custom_detections(self, detections, header):
         """ 
         Iterate through the unified list, package into an Array, and publish once. 
         """
