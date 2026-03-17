@@ -258,7 +258,7 @@ class NoPCVisionNode(Node):
             result = self.process_single_detection(
                 i, xyxy[i], clss[i], names[i], ids[i], confs[i], masks_np,
                 cv_bgr,
-                height, width, rgb_msg, do_clip_frame
+                height, width, do_clip_frame
             )
 
             if result is None:

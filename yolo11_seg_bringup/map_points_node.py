@@ -16,7 +16,7 @@ class MapPointsNode(Node):
 
         self.declare_parameter(
             'map_file',
-            '/workspaces/ros2_ws/src/yolo11_seg_bringup/config/map_v4.json',
+            '/workspaces/ros2_ws/src/yolo11_seg_bringup/config/map_v5.json',
         )
         self.declare_parameter('map_frame', 'map')
         self.declare_parameter('marker_topic', '/vision/map_objects_markers')

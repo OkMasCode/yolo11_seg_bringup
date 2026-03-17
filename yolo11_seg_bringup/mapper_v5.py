@@ -284,7 +284,16 @@ class SemanticObjectMapV5:
         Trusts the tracker ID first, then uses Bipartite Matching for new IDs.
         """
         if not points_cam_list or len(points_cam_list) == 0:
+            self.node.get_logger().info(
+                "[mapper_v5:batch] skipped empty points batch",
+                throttle_duration_sec=1.0,
+            )
             return
+
+        self.node.get_logger().info(
+            "[mapper_v5:batch:start] "
+            f"input={len(points_cam_list)} objects={len(self.objects)} tentatives={len(self.tentative_tracks)}"
+        )
 
         try:
             lookup_time = rclpy.time.Time.from_msg(detection_stamp)
@@ -292,7 +301,11 @@ class SemanticObjectMapV5:
                 fixed_frame, camera_frame, lookup_time, timeout=Duration(seconds=0.8)
             )
         except TransformException as ex:
-            self.node.get_logger().warning(f"[mapper_v5] TF Error: {ex}")
+            self.node.get_logger().warning(
+                "[mapper_v5:batch:tf_error] "
+                f"fixed_frame={fixed_frame} camera_frame={camera_frame} "
+                f"stamp={detection_stamp.sec}.{detection_stamp.nanosec:09d} error={ex}"
+            )
             return
 
         current_ns = self._stamp_to_ns(detection_stamp)
@@ -302,9 +315,12 @@ class SemanticObjectMapV5:
         # 1. PREPARE VALID DETECTIONS
         # ---------------------------------------------------------
         valid_detections = []
+        gate_failures: Dict[str, int] = {}
+        skipped_too_few_points = 0
         for i in range(len(points_cam_list)):
             pts_cam = points_cam_list[i]
             if pts_cam is None or len(pts_cam) < 5:
+                skipped_too_few_points += 1
                 continue
 
             # Quality Gate
@@ -318,6 +334,7 @@ class SemanticObjectMapV5:
 
             gate_failure = self._quality_gate_failure_reason(conf, depth_m, obs_size)
             if gate_failure:
+                gate_failures[gate_failure] = gate_failures.get(gate_failure, 0) + 1
                 continue
 
             emb = self._to_embedding(embeddings_list[i] if embeddings_list else None)
@@ -332,10 +349,24 @@ class SemanticObjectMapV5:
                 'confidence': conf
             })
 
+        if gate_failures or skipped_too_few_points > 0:
+            gate_summary = ', '.join(f"{k}:{v}" for k, v in sorted(gate_failures.items()))
+            self.node.get_logger().info(
+                "[mapper_v5:batch:filter] "
+                f"valid={len(valid_detections)} dropped_small_points={skipped_too_few_points} "
+                f"gate_failures={gate_summary if gate_summary else 'none'}"
+            )
+
         if not valid_detections:
+            self.node.get_logger().info(
+                "[mapper_v5:batch] all detections dropped by quality gates or point count"
+            )
             return
 
         unmatched_detections = []
+        matched_via_bound_map = 0
+        matched_via_tentative = 0
+        revoked_due_to_class_flip = 0
 
         # ---------------------------------------------------------
         # 2. PHASE 1: DIRECT ID ROUTING (TRUST THE TRACKER)
@@ -355,6 +386,7 @@ class SemanticObjectMapV5:
                         f"[mapper_v5] Tracker {t_id} flipped class: {map_obj.current_name} -> {det['name']}. "
                         "Revoking trust, sending to matrix."
                     )
+                    revoked_due_to_class_flip += 1
                     # We do NOT set matched = True, so it falls to the unmatched list
                 else:
                     self._update_object(
@@ -364,6 +396,7 @@ class SemanticObjectMapV5:
                     )
                     self.track_last_seen_ns[t_id] = current_ns
                     matched = True
+                    matched_via_bound_map += 1
             
             # Check if it is an active Tentative Track
             elif t_id in self.tentative_tracks:
@@ -374,6 +407,7 @@ class SemanticObjectMapV5:
                     self.node.get_logger().warning(
                         f"[mapper_v5] Tentative Tracker {t_id} flipped class. Revoking trust."
                     )
+                    revoked_due_to_class_flip += 1
                 else:
                     self._update_tentative(
                         object_name=det['name'], tracker_id=t_id, points_map=det['points_map'],
@@ -381,12 +415,21 @@ class SemanticObjectMapV5:
                         image_embedding=det['embedding'], current_ns=current_ns, frame=fixed_frame
                     )
                     matched = True
+                    matched_via_tentative += 1
 
             if not matched:
                 unmatched_detections.append(det)
 
+        self.node.get_logger().info(
+            "[mapper_v5:batch:phase1] "
+            f"valid={len(valid_detections)} matched_map={matched_via_bound_map} "
+            f"matched_tentative={matched_via_tentative} revoked_class_flip={revoked_due_to_class_flip} "
+            f"unmatched={len(unmatched_detections)}"
+        )
+
         if not unmatched_detections:
             # Everything was handled by the tracker IDs
+            self.node.get_logger().info("[mapper_v5:batch] phase1 resolved all detections")
             return
 
         # ---------------------------------------------------------
@@ -396,12 +439,18 @@ class SemanticObjectMapV5:
         
         # If the map is empty, all unmatched detections become new tentative tracks
         if not map_ids:
+            spawned = 0
             for det in unmatched_detections:
                 self._update_tentative(
                     object_name=det['name'], tracker_id=det['track_id'], points_map=det['points_map'],
                     detection_stamp=detection_stamp, confidence=det['confidence'],
                     image_embedding=det['embedding'], current_ns=current_ns, frame=fixed_frame
                 )
+                spawned += 1
+            self.node.get_logger().info(
+                "[mapper_v5:batch:phase2] map empty, spawned tentative tracks "
+                f"count={spawned}"
+            )
             return
 
         N = len(unmatched_detections)
@@ -452,6 +501,8 @@ class SemanticObjectMapV5:
         row_ind, col_ind = linear_sum_assignment(cost_matrix)
 
         assigned_detections = set()
+        accepted_assignments = 0
+        rejected_assignments = 0
 
         for idx in range(len(row_ind)):
             det_idx = row_ind[idx]
@@ -470,10 +521,20 @@ class SemanticObjectMapV5:
                 self.track_to_map[det['track_id']] = m_id
                 self.track_last_seen_ns[det['track_id']] = current_ns
                 assigned_detections.add(det_idx)
+                accepted_assignments += 1
+            else:
+                rejected_assignments += 1
+
+        self.node.get_logger().info(
+            "[mapper_v5:batch:phase2] "
+            f"candidates={len(unmatched_detections)} accepted={accepted_assignments} "
+            f"rejected={rejected_assignments} max_cost={MAX_COST:.2f}"
+        )
 
         # ---------------------------------------------------------
         # 4. PHASE 3: SPAWN NEW TRACKS
         # ---------------------------------------------------------
+        spawned_tentatives = 0
         for i, det in enumerate(unmatched_detections):
             if i not in assigned_detections:
                 self._update_tentative(
@@ -481,6 +542,13 @@ class SemanticObjectMapV5:
                     detection_stamp=detection_stamp, confidence=det['confidence'],
                     image_embedding=det['embedding'], current_ns=current_ns, frame=fixed_frame
                 )
+                spawned_tentatives += 1
+
+        self.node.get_logger().info(
+            "[mapper_v5:batch:phase3] "
+            f"spawned_tentative={spawned_tentatives} objects={len(self.objects)} "
+            f"tentatives={len(self.tentative_tracks)}"
+        )
 
     def _update_tentative(
         self,
@@ -1017,7 +1085,13 @@ class SemanticObjectMapV5:
         pcd.points = o3d.utility.Vector3dVector(combined)
         
         downsampled = pcd.voxel_down_sample(voxel_size=0.1)
-        return np.asarray(downsampled.points, dtype=np.float32)
+        fused = np.asarray(downsampled.points, dtype=np.float32)
+        self.node.get_logger().info(
+            "[mapper_v5:geometry:fuse] "
+            f"old={len(old_points)} new={len(new_points)} combined={len(combined)} fused={len(fused)}",
+            throttle_duration_sec=1.0,
+        )
+        return fused
 
     def compute_obb_iou(self, points1: np.ndarray, obb1: o3d.geometry.OrientedBoundingBox, 
                               points2: np.ndarray, obb2: o3d.geometry.OrientedBoundingBox) -> float:
@@ -1113,7 +1187,11 @@ class SemanticObjectMapV5:
         Scans confirmed objects and merges duplicates ONLY if they share the same class, 
         have highly similar embeddings, and physically overlap.
         """
+        self.node.get_logger().info(
+            f"[mapper_v5:dedupe:start] objects={len(self.objects)}"
+        )
         ids = list(self.objects.keys())
+        merges = 0
         for i in range(len(ids)):
             for j in range(i + 1, len(ids)):
                 id1, id2 = ids[i], ids[j]
@@ -1149,9 +1227,13 @@ class SemanticObjectMapV5:
                         f"[mapper_v5] Resolving true duplicate: {obj1.current_name} ({id1} <-> {id2})"
                     )
                     self._fuse_objects(id1, id2)
+                    merges += 1
                     
                     # Only run refinement after a legitimate merge
                     self._refine_object_geometry(id1)
+        self.node.get_logger().info(
+            f"[mapper_v5:dedupe:done] merges={merges} remaining_objects={len(self.objects)}"
+        )
 
     def compute_semantic_distance(self, emb1: Optional[np.ndarray], emb2: Optional[np.ndarray]) -> float:
         if emb1 is None or emb2 is None:
