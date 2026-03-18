@@ -1,1 +1,52 @@
-{}
+{
+    "map_obj_000002": {
+        "name": "bottle",
+        "frame": "camera_color_optical_frame",
+        "timestamp": {
+            "sec": 1773843972,
+            "nanosec": 939948242
+        },
+        "pose_map": {
+            "x": -0.28312191367149353,
+            "y": -0.027362782508134842,
+            "z": 0.3402637839317322
+        },
+        "bbox_type": "unknown",
+        "box_size": {
+            "x": 0.0,
+            "y": 0.0,
+            "z": 0.0
+        },
+        "bbox_corners": [],
+        "occurrences": 2571,
+        "similarity": 0.0,
+        "image_embedding": [],
+        "embedding_confidence": 0.8179694414138794,
+        "confidence": 0.8179694414138794
+    },
+    "map_obj_000001": {
+        "name": "keyboard",
+        "frame": "camera_color_optical_frame",
+        "timestamp": {
+            "sec": 1773843972,
+            "nanosec": 939948242
+        },
+        "pose_map": {
+            "x": 0.03887942060828209,
+            "y": 0.1171875074505806,
+            "z": 0.3544262647628784
+        },
+        "bbox_type": "unknown",
+        "box_size": {
+            "x": 0.0,
+            "y": 0.0,
+            "z": 0.0
+        },
+        "bbox_corners": [],
+        "occurrences": 3007,
+        "similarity": 0.0,
+        "image_embedding": [],
+        "embedding_confidence": 0.9263468384742737,
+        "confidence": 0.9263468384742737
+    }
+}

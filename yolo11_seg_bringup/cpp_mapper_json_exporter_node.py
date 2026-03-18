@@ -13,7 +13,7 @@ class CppMapperJsonExporterNode(Node):
         super().__init__("cpp_mapper_json_exporter_node")
 
         self.declare_parameter("input_topic", "/vision/semantic_map_v5")
-        self.declare_parameter("output_dir", "/workspaces/ros2_ws/src/yolo11_seg_bringup/config")
+        self.declare_parameter("output_dir", "/home/workspace/ros2_ws/src/yolo11_seg_bringup/config")
         self.declare_parameter("output_map_file", "map_v5.json")
         self.declare_parameter("export_interval", 3.0)
 
@@ -53,6 +53,15 @@ class CppMapperJsonExporterNode(Node):
         for obj in msg.objects:
             map_id = obj.object_id if obj.object_id else "unknown"
 
+            corners = [
+                {
+                    "x": float(pt.x),
+                    "y": float(pt.y),
+                    "z": float(pt.z),
+                }
+                for pt in obj.bbox_corners
+            ]
+
             # Match legacy mapper_v5 export schema as closely as possible from available fields.
             new_map[map_id] = {
                 "name": obj.name,
@@ -66,9 +75,13 @@ class CppMapperJsonExporterNode(Node):
                     "y": float(obj.pose_map.y),
                     "z": float(obj.pose_map.z),
                 },
-                "bbox_type": "unknown",
-                "box_size": {"x": 0.0, "y": 0.0, "z": 0.0},
-                "bbox_corners": [],
+                "bbox_type": obj.bbox_type if obj.bbox_type else "unknown",
+                "box_size": {
+                    "x": float(obj.box_size.x),
+                    "y": float(obj.box_size.y),
+                    "z": float(obj.box_size.z),
+                },
+                "bbox_corners": corners,
                 "occurrences": int(obj.occurrences),
                 "similarity": float(obj.similarity),
                 "image_embedding": [float(v) for v in obj.image_embedding],
