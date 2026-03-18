@@ -81,6 +81,12 @@ class CppMapperJsonExporterNode(Node):
                     "y": float(obj.box_size.y),
                     "z": float(obj.box_size.z),
                 },
+                "bbox_orientation": {
+                    "x": float(obj.bbox_orientation.x),
+                    "y": float(obj.bbox_orientation.y),
+                    "z": float(obj.bbox_orientation.z),
+                    "w": float(obj.bbox_orientation.w),
+                },
                 "bbox_corners": corners,
                 "occurrences": int(obj.occurrences),
                 "similarity": float(obj.similarity),

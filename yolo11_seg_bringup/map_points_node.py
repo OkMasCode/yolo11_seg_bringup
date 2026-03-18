@@ -1,6 +1,7 @@
 import json
 import colorsys
 import hashlib
+import math
 from pathlib import Path
 
 import rclpy
@@ -92,6 +93,44 @@ class MapPointsNode(Node):
         except Exception as exc:
             self.get_logger().error(f'Failed to read map file {self.map_file}: {exc}')
             return {}
+
+    @staticmethod
+    def quaternion_to_rotation_matrix(qx: float, qy: float, qz: float, qw: float):
+        norm = math.sqrt(qx * qx + qy * qy + qz * qz + qw * qw)
+        if norm <= 1e-12:
+            return (
+                (1.0, 0.0, 0.0),
+                (0.0, 1.0, 0.0),
+                (0.0, 0.0, 1.0),
+            )
+        qx /= norm
+        qy /= norm
+        qz /= norm
+        qw /= norm
+
+        xx = qx * qx
+        yy = qy * qy
+        zz = qz * qz
+        xy = qx * qy
+        xz = qx * qz
+        yz = qy * qz
+        wx = qw * qx
+        wy = qw * qy
+        wz = qw * qz
+
+        return (
+            (1.0 - 2.0 * (yy + zz), 2.0 * (xy - wz), 2.0 * (xz + wy)),
+            (2.0 * (xy + wz), 1.0 - 2.0 * (xx + zz), 2.0 * (yz - wx)),
+            (2.0 * (xz - wy), 2.0 * (yz + wx), 1.0 - 2.0 * (xx + yy)),
+        )
+
+    @staticmethod
+    def rotate_vec3(rot, x: float, y: float, z: float):
+        return (
+            rot[0][0] * x + rot[0][1] * y + rot[0][2] * z,
+            rot[1][0] * x + rot[1][1] * y + rot[1][2] * z,
+            rot[2][0] * x + rot[2][1] * y + rot[2][2] * z,
+        )
 
     def publish_markers(self) -> None:
         map_entries = self.load_map_entries()
@@ -232,16 +271,29 @@ class MapPointsNode(Node):
                     cx = point.x
                     cy = point.y
                     cz = point.z
-                    corners = [
-                        Point(x=cx - hx, y=cy - hy, z=cz - hz),  # 0
-                        Point(x=cx + hx, y=cy - hy, z=cz - hz),  # 1
-                        Point(x=cx - hx, y=cy + hy, z=cz - hz),  # 2
-                        Point(x=cx - hx, y=cy - hy, z=cz + hz),  # 3
-                        Point(x=cx + hx, y=cy + hy, z=cz + hz),  # 4
-                        Point(x=cx - hx, y=cy + hy, z=cz + hz),  # 5
-                        Point(x=cx + hx, y=cy - hy, z=cz + hz),  # 6
-                        Point(x=cx + hx, y=cy + hy, z=cz - hz),  # 7
+
+                    quat = entry.get('bbox_orientation', {})
+                    qx = float(quat.get('x', 0.0) or 0.0) if isinstance(quat, dict) else 0.0
+                    qy = float(quat.get('y', 0.0) or 0.0) if isinstance(quat, dict) else 0.0
+                    qz = float(quat.get('z', 0.0) or 0.0) if isinstance(quat, dict) else 0.0
+                    qw = float(quat.get('w', 1.0) or 1.0) if isinstance(quat, dict) else 1.0
+                    rot = self.quaternion_to_rotation_matrix(qx, qy, qz, qw)
+
+                    local = [
+                        (-hx, -hy, -hz),  # 0
+                        (+hx, -hy, -hz),  # 1
+                        (-hx, +hy, -hz),  # 2
+                        (-hx, -hy, +hz),  # 3
+                        (+hx, +hy, +hz),  # 4
+                        (-hx, +hy, +hz),  # 5
+                        (+hx, -hy, +hz),  # 6
+                        (+hx, +hy, -hz),  # 7
                     ]
+
+                    corners = []
+                    for lx, ly, lz in local:
+                        rx, ry, rz = self.rotate_vec3(rot, lx, ly, lz)
+                        corners.append(Point(x=cx + rx, y=cy + ry, z=cz + rz))
 
                 bbox_marker = Marker()
                 bbox_marker.header.frame_id = self.map_frame
