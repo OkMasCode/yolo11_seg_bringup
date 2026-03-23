@@ -29,8 +29,8 @@ OFFLINE_MODE = False  # Set to True for offline operation (uses cached model)
 # Set to False (or remove this block) when no longer needed.
 PRINT_ALL_MAP_SIMILARITIES_TEST = True
 
-MAP_FILE = "/workspaces/ros2_ws/src/yolo11_seg_bringup/config/map_v2.json"
-CLUSTERED_MAP_FILE = "/workspaces/ros2_ws/src/yolo11_seg_bringup/config/clustered_map_v2.json"
+MAP_FILE = "/workspaces/ros2_ws/src/yolo11_seg_bringup/config/map_v5.json"
+CLUSTERED_MAP_FILE = "/workspaces/ros2_ws/src/yolo11_seg_bringup/config/clustered_map_v5.json"
 ROBOT_COMMAND_FILE = "/workspaces/ros2_ws/src/yolo11_seg_bringup/config/robot_command.json"
 PROMPTS_DIR = os.path.join(os.path.dirname(__file__), "prompts")
 

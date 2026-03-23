@@ -13,8 +13,8 @@ class CppMapperJsonExporterNode(Node):
         super().__init__("cpp_mapper_json_exporter_node")
 
         self.declare_parameter("input_topic", "/vision/semantic_map_v5")
-        self.declare_parameter("output_dir", "/home/workspace/ros2_ws/src/yolo11_seg_bringup/config")
-        self.declare_parameter("output_map_file", "map_v5.json")
+        self.declare_parameter("output_dir", "/workspaces/ros2_ws/src/yolo11_seg_bringup/config")
+        self.declare_parameter("output_map_file", "map_v6.json")
         self.declare_parameter("export_interval", 3.0)
 
         self.input_topic = str(self.get_parameter("input_topic").value)

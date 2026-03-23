@@ -1,84 +1,92 @@
 {
-    "timestamp": 1773233050.3181474,
-    "prompt": "go to the fridge",
-    "goal": "fridge",
+    "timestamp": 1773925365.0282223,
+    "prompt": "bring me a bottle",
+    "goal": "bottle",
     "related_object": "",
     "clip_prompts": [
-        "a photo of a fridge",
-        "a cropped image of a fridge",
-        "an image of a fridge with gray background"
+        "a close-up photo of a bottle",
+        "a cropped image of a bottle",
+        "an image of a bottle with gray background"
     ],
     "text_embedding": null,
     "goal_objects": [
         {
-            "id": "map_obj_000016",
-            "similarity_score": 0.2070948189684629,
+            "id": "map_obj_000004",
+            "similarity_score": 20.695834206674384,
             "coords": {
-                "x": 1.4817326077608148,
-                "y": 3.493728589678782,
-                "z": 1.1482434793764789
+                "x": 0.38647377490997314,
+                "y": 0.037541650235652924,
+                "z": 0.7035521268844604
+            }
+        },
+        {
+            "id": "map_obj_000003",
+            "similarity_score": 5.622157459440706,
+            "coords": {
+                "x": 0.4164349436759949,
+                "y": 0.15391772985458374,
+                "z": 0.5220966339111328
             }
         }
     ],
     "selected_goal": {
-        "object_id": "map_obj_000016",
+        "object_id": "map_obj_000004",
         "decision_basis": "location",
-        "reasoning": "The prompt specifies a room, so I chose the best candidate in the matching cluster.",
+        "reasoning": "The prompt is for a 'bottle' and location confidence is moderate, so I chose the best candidate in the matching cluster.",
         "coords": {
-            "x": 1.4817326077608148,
-            "y": 3.493728589678782,
-            "z": 1.1482434793764789
+            "x": 0.38647377490997314,
+            "y": 0.037541650235652924,
+            "z": 0.7035521268844604
         },
-        "similarity": 0.2070948189684629,
+        "similarity": 20.695834206674384,
         "cluster": 0
     },
     "object_similarities": [
         {
-            "object_id": "map_obj_000016",
-            "similarity": 0.2070948189684629
+            "object_id": "map_obj_000004",
+            "similarity": 20.695834206674384
+        },
+        {
+            "object_id": "map_obj_000003",
+            "similarity": 5.622157459440706
         }
     ],
     "cluster_info": {
         "cluster_id": 0,
         "objects": [
-            "microwave",
             "chair",
-            "couch",
-            "coffee machine",
-            "fridge",
-            "sink",
-            "coffee machine",
-            "oven",
-            "sink",
-            "toilet",
-            "couch"
+            "tv",
+            "bottle",
+            "bottle",
+            "mouse",
+            "keyboard"
         ],
-        "reasoning": "User says 'fridge' which matches Cluster 0 label.",
-        "location_confidence": 1.0,
+        "reasoning": "No room mentioned, but 'bottle' is in Cluster 0.",
+        "location_confidence": 0.6,
         "prioritize_location": true,
         "coords": {
-            "x": 1.0613482738026128,
-            "y": 5.204076239036367,
-            "z": 1.1536559631876597
+            "x": 0.0823723344753186,
+            "y": 0.11015402401487033,
+            "z": 0.7487100760142008
         },
         "dimensions": {
             "bounding_box": {
                 "min": {
-                    "x": -0.6087714129816115,
-                    "y": 3.058499932272111
+                    "x": -0.7035384774208069,
+                    "y": -0.17792820930480957
                 },
                 "max": {
-                    "x": 4.743404905811275,
-                    "y": 7.986701678074944
+                    "x": 0.4164349436759949,
+                    "y": 0.26219311356544495
                 },
                 "dimensions": {
-                    "width": 5.352176318792886,
-                    "length": 4.928201745802832
+                    "width": 1.1199734210968018,
+                    "length": 0.4401213228702545
                 }
             },
-            "radius": 3.7200907068588016
+            "radius": 0.7885361942899973
         }
     },
-    "action": "go_to_object",
+    "action": "bring_back_object",
     "valid": true
 }
