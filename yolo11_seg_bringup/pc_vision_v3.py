@@ -14,12 +14,13 @@ import cv2
 import numpy as np
 from cv_bridge import CvBridge
 import json
+import threading
 from time import perf_counter
 
 from ultralytics import YOLO
 
 from yolo11_seg_interfaces.msg import DetectedObjectV3, DetectedObjectV3Array
-from .utils.clip_processor import CLIPProcessor
+from .utils.clip_processor_validator import CLIPProcessorValidator
 
 
 # -------------------- CLASS ------------------- #
@@ -58,13 +59,20 @@ class NoPCVisionNode(Node):
 
         # CLIP parameters
         self.declare_parameter('CLIP_model_name', 'ViT-B-16-SigLIP')
+        self.declare_parameter('clip_pretrained', 'webli')
         self.declare_parameter('robot_command_file', '/workspaces/ros2_ws/src/yolo11_seg_bringup/config/robot_command.json')
-        self.declare_parameter('map_file_path', '/workspaces/ros2_ws/src/yolo11_seg_bringup/config/map.json')
+        self.declare_parameter('prompt_check_interval', 30.0)
         self.declare_parameter('square_crop_scale', 1.2)
+        self.declare_parameter('masked_score_weight', 0.5)
+        self.declare_parameter('unmasked_score_weight', 0.5)
 
         self.CLIP_model_name = self.get_parameter('CLIP_model_name').value
+        self.clip_pretrained = self.get_parameter('clip_pretrained').value
         self.robot_command_file = self.get_parameter('robot_command_file').value
+        self.prompt_check_interval = float(self.get_parameter('prompt_check_interval').value)
         self.square_crop_scale = float(self.get_parameter('square_crop_scale').value)
+        self.masked_score_weight = float(self.get_parameter('masked_score_weight').value)
+        self.unmasked_score_weight = float(self.get_parameter('unmasked_score_weight').value)
 
         # =========== Internal Topics / Runtime =========== #
 
@@ -72,7 +80,6 @@ class NoPCVisionNode(Node):
         self.detection_topic = '/vision/detections'
 
         self.frame_skip = 5
-        self.prompt_check_interval = 760.0  # Check for new prompts every 760 seconds
 
         self.CLASS_NAMES = ["oven", "fridge", "dining table", "sink", "toilet", "couch", "chair", "tv", "bed", 
                             "nightstand", "dresser", "stove", "fireplace", "potted plant", "coffee machine", "toaster", "painting", "coffee table", "desk",  
@@ -102,10 +109,18 @@ class NoPCVisionNode(Node):
         # Load CLIP model
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.get_logger().info(f"Loading CLIP model on device: {self.device}\n")
-        self.clip = CLIPProcessor(
+        self.clip = CLIPProcessorValidator(
             device=self.device, 
             model_name=self.CLIP_model_name, 
-            pretrained="webli"
+            pretrained=self.clip_pretrained,
+            square_crop_scale=self.square_crop_scale,
+            masked_score_weight=self.masked_score_weight,
+            unmasked_score_weight=self.unmasked_score_weight,
+        )
+        self.get_logger().info(
+            "CLIP blend weights normalized to: "
+            f"masked={self.clip.masked_score_weight:.2f}, "
+            f"unmasked={self.clip.unmasked_score_weight:.2f}"
         )
 
         # CV bridge and camera intrinsics placeholders.
@@ -138,6 +153,7 @@ class NoPCVisionNode(Node):
         self.class_colors = {}
         self.current_clip_prompt = None
         self.goal_text_embedding = None
+        self.clip_state_lock = threading.Lock()
 
         # Timing instrumentation
         self.timing_stats = {
@@ -266,7 +282,7 @@ class NoPCVisionNode(Node):
 
             det_entry = result
             frame_detections.append(det_entry)
-            if det_entry.get("crop") is not None:
+            if det_entry.get("masked_crop") is not None and det_entry.get("unmasked_crop") is not None:
                 batch_queue.append(det_entry)
         
         det_proc_time = (perf_counter() - det_process_start) * 1000
@@ -278,21 +294,27 @@ class NoPCVisionNode(Node):
         if batch_queue:
             try:
                 clip_start = perf_counter()
-                # Extract just the images for the batch
-                images = [item["crop"] for item in batch_queue]
-                
-                # Run inference on all at once
-                embeddings = self.clip.encode_images_batch(images)
-                
-                # Re-associate embeddings with metadata and release image crops.
-                for i, emb in enumerate(embeddings):
-                    batch_queue[i]["embedding"] = emb
-                    # Clear the image to free memory
-                    batch_queue[i]["crop"] = None
+                masked_images = [item["masked_crop"] for item in batch_queue]
+                unmasked_images = [item["unmasked_crop"] for item in batch_queue]
+
+                masked_embeddings = self.clip.encode_images_batch(masked_images)
+                unmasked_embeddings = self.clip.encode_images_batch(unmasked_images)
+
+                pair_count = min(len(masked_embeddings), len(unmasked_embeddings), len(batch_queue))
+                for i in range(pair_count):
+                    batch_queue[i]["masked_embedding"] = masked_embeddings[i]
+                    batch_queue[i]["unmasked_embedding"] = unmasked_embeddings[i]
+                    # Keep legacy embedding field for downstream compatibility.
+                    batch_queue[i]["embedding"] = masked_embeddings[i]
+                    batch_queue[i]["masked_crop"] = None
+                    batch_queue[i]["unmasked_crop"] = None
                 
                 clip_time = (perf_counter() - clip_start) * 1000
                 self.timing_stats['clip_encoding'].append(clip_time)
-                self.get_logger().debug(f"CLIP encoding ({len(batch_queue)} crops): {clip_time:.2f}ms")
+                self.get_logger().info(
+                    f"CLIP encoding completed: paired={pair_count}/{len(batch_queue)} crops in {clip_time:.2f}ms",
+                    throttle_duration_sec=2.0,
+                )
             except Exception as e:
                 self.get_logger().error(f"Batch CLIP inference failed: {e}")
 
@@ -348,33 +370,23 @@ class NoPCVisionNode(Node):
             "object_name": class_name,
             "confidence": float(confidence),
             "embedding": None,    # Placeholder
-            "crop": None,         # Placeholder
+            "masked_embedding": None,
+            "unmasked_embedding": None,
+            "masked_crop": None,
+            "unmasked_crop": None,
             "mask_ros": eroded_mask
         }
 
         # Prepare CLIP crop (if current frame is scheduled for CLIP).
         if do_clip_frame:
-            sx1, sy1, sx2, sy2 = CLIPProcessor.compute_square_crop(
-                x1, y1, x2, y2, width, height, self.square_crop_scale
+            masked_crop, unmasked_crop = self.clip.prepare_crops(
+                cv_bgr,
+                mask_uint8,
+                (x1, y1, x2, y2),
             )
-            if sx2 > sx1 and sy2 > sy1:
-                img_crop = cv_bgr[sy1:sy2, sx1:sx2]
-                mask_crop = mask_uint8[sy1:sy2, sx1:sx2]
-
-                if img_crop.size > 0 and mask_crop.size > 0:
-
-                    kernel = np.ones((5, 5), np.uint8)
-                    mask_crop = cv2.dilate(mask_crop, kernel, iterations=1)
-
-                    # Gray masking
-                    neutral_bg = np.full_like(img_crop, 122)  # neutral gray
-                    
-                    # The rest of your logic stays exactly the same
-                    bg_mask = cv2.bitwise_not(mask_crop)
-                    fg = cv2.bitwise_and(img_crop, img_crop, mask=mask_crop)
-                    bg = cv2.bitwise_and(neutral_bg, neutral_bg, mask=bg_mask)
-                    final_crop = cv2.add(fg, bg)
-                    detection_entry["crop"] = final_crop
+            if masked_crop is not None and unmasked_crop is not None:
+                detection_entry["masked_crop"] = masked_crop
+                detection_entry["unmasked_crop"] = unmasked_crop
 
         return detection_entry
     
@@ -382,25 +394,68 @@ class NoPCVisionNode(Node):
 
     def _load_clip_prompt(self):
         """
-        Load clip_prompt from robot_command.json and update text embedding if changed.
+        Load CLIP prompt from robot_command.json and regenerate embedding
+        only when prompt content changes.
         """
+        if not os.path.exists(self.robot_command_file):
+            self.get_logger().warn(
+                f"robot_command file not found: '{self.robot_command_file}'. CLIP scoring is paused.",
+                throttle_duration_sec=10.0,
+            )
+            return
+
         try:
-            # If command file does not exist yet, keep previous prompt.
-            if not os.path.exists(self.robot_command_file):
-                return
-            
             with open(self.robot_command_file, 'r') as f:
                 data = json.load(f)
-            
-            # Update goal prompt and regenerate text embedding only when prompt changes.
+
+            # Required source: robot_command.json -> clip_prompts
+            # Current format uses a single prompt string.
             clip_prompt = data.get('clip_prompts', None)
-            if clip_prompt != self.current_clip_prompt:
-                self.current_clip_prompt = clip_prompt
-                self.goal_text_embedding = self.clip.encode_text(clip_prompt)
-                self.get_logger().info(f"Updated Goal Ensemble: {clip_prompt}")
+
+            if isinstance(clip_prompt, str):
+                prompt_value = clip_prompt.strip()
+            elif isinstance(clip_prompt, list):
+                # Backward-compatible fallback if older writers still emit a list.
+                prompt_value = ''
+                if clip_prompt:
+                    first = clip_prompt[0]
+                    if isinstance(first, str):
+                        prompt_value = first.strip()
+            else:
+                prompt_value = ''
+
+            prompt_texts = None
+            prompt_key = None
+            if prompt_value:
+                prompt_texts = self.clip.build_prompt_list(prompt_value)
+                prompt_key = prompt_value
+
+            if not prompt_texts:
+                self.get_logger().warn(
+                    f"No valid 'clip_prompts' value in '{self.robot_command_file}'.",
+                    throttle_duration_sec=5.0,
+                )
+                return
+
+            if prompt_key == self.current_clip_prompt:
+                return
+
+            new_embedding = self.clip.encode_text(prompt_texts)
+            if new_embedding is None:
+                self.get_logger().warn("Prompt encoding returned no embedding", throttle_duration_sec=5.0)
+                return
+
+            with self.clip_state_lock:
+                self.current_clip_prompt = prompt_key
+                self.goal_text_embedding = new_embedding
+
+            self.get_logger().info(
+                f"Updated CLIP prompt from robot_command clip_prompts: '{prompt_key}'",
+                throttle_duration_sec=2.0,
+            )
 
         except Exception as e:
-            self.get_logger().error(f"Error loading robot_command.json: {e}")
+            self.get_logger().error(f"Error loading robot_command clip prompt: {e}")
 
     def _read_goal_from_command_file(self):
         """Read robot command JSON and return the goal string, if available."""
@@ -468,14 +523,31 @@ class NoPCVisionNode(Node):
             
             # Embeddings
             current_emb = det["embedding"]
+            masked_emb = det.get("masked_embedding")
+            unmasked_emb = det.get("unmasked_embedding")
+            with self.clip_state_lock:
+                text_embedding = None if self.goal_text_embedding is None else self.goal_text_embedding.copy()
+
             msg.embedding = current_emb.tolist() if current_emb is not None else []
-            msg.text_embedding = self.goal_text_embedding.tolist() if self.goal_text_embedding is not None else []
+            msg.text_embedding = text_embedding.tolist() if text_embedding is not None else []
 
             # Compute goal similarity
             prob_goal = 0.0
-            if current_emb is not None and self.goal_text_embedding is not None:
-                prob_goal = self.clip.compute_sigmoid_probs(current_emb, self.goal_text_embedding)
-                msg.similarity = float(prob_goal) if prob_goal is not None else 0.0
+            if masked_emb is not None and unmasked_emb is not None and text_embedding is not None:
+                prob_goal = self.clip.compute_blended_match_score(masked_emb, unmasked_emb, text_embedding)
+                msg.similarity = float(prob_goal)
+                self.get_logger().info(
+                    "Object similarity: "
+                    f"id={det['instance_id']} "
+                    f"class='{det['object_name']}' "
+                    f"conf={det['confidence']:.3f} "
+                    f"score={msg.similarity:.2f}",
+                    throttle_duration_sec=1.0,
+                )
+            elif current_emb is not None and text_embedding is not None:
+                # Fallback for detections that only have one embedding.
+                prob_goal = self.clip.compute_match_score(current_emb, text_embedding)
+                msg.similarity = float(prob_goal)
             else:
                 msg.similarity = 0.0
 

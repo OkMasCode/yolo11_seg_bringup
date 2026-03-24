@@ -1,12 +1,10 @@
 {
     "timestamp": 1773925365.0282223,
     "prompt": "bring me a bottle",
-    "goal": "bottle",
+    "goal": "microwave",
     "related_object": "",
     "clip_prompts": [
-        "a close-up photo of a bottle",
-        "a cropped image of a bottle",
-        "an image of a bottle with gray background"
+        "microwave"
     ],
     "text_embedding": null,
     "goal_objects": [
