@@ -67,24 +67,6 @@ class ClipModelValidatorNode(Node):
         self.masked_score_weight = float(self.get_parameter("masked_score_weight").value)
         self.unmasked_score_weight = float(self.get_parameter("unmasked_score_weight").value)
 
-        # Normalize weights so user-provided values remain robust.
-        total_weight = self.masked_score_weight + self.unmasked_score_weight
-        if total_weight <= 0.0:
-            self.masked_score_weight = 0.5
-            self.unmasked_score_weight = 0.5
-            self.get_logger().warn(
-                "Invalid blend weights (sum <= 0). Falling back to 50/50."
-            )
-        else:
-            self.masked_score_weight /= total_weight
-            self.unmasked_score_weight /= total_weight
-
-        self.get_logger().info(
-            "Embedding blend weights: "
-            f"masked={self.masked_score_weight:.2f}, "
-            f"unmasked={self.unmasked_score_weight:.2f}"
-        )
-
         # --- Device & Model Setup ---
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.get_logger().info(f"Loading model: {self.clip_model_name} on {self.device}")
@@ -110,7 +92,7 @@ class ClipModelValidatorNode(Node):
                 else 0.0
             )
 
-        self.CLASS_NAMES = ["bed"]
+        self.CLASS_NAMES = ["bottle"]
         
         self.get_logger().info(f"Loading YOLO segmentation model: {self.yolo_model_path}")
         self.yolo = YOLO(self.yolo_model_path, task="segment")

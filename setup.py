@@ -29,6 +29,7 @@ setup(
         'console_scripts': [
             'clio_vision = yolo11_seg_bringup.clio_vision:main',
             'simple_yolo_annotator_node = yolo11_seg_bringup.simple_yolo_annotator_node:main',
+            'still_image_publisher_node = yolo11_seg_bringup.still_image_publisher_node:main',
             'pc_vision_node = yolo11_seg_bringup.pc_vision:main',
             'pc_vision_node_v2 = yolo11_seg_bringup.pc_vision_v2:main',
             'pc_vision_node_v3 = yolo11_seg_bringup.pc_vision_v3:main',
