@@ -12,21 +12,18 @@ import re
 import warnings
 import logging
 
-from yolo11_seg_bringup.utils.clip_processor import CLIPProcessor
+from yolo11_seg_bringup.utils.clip_processor_validator import CLIPProcessorValidator
 
 # Suppress HuggingFace warnings
 warnings.filterwarnings('ignore', category=UserWarning, module='transformers')
 logging.getLogger('transformers').setLevel(logging.ERROR)
 
 # Configure Hugging Face model
-# Using Mistral-7B for Jetson Thor - excellent performance, no authentication required
 CHAT_MODEL = "meta-llama/Llama-3.1-8B-Instruct" #"mistralai/Mistral-7B-Instruct-v0.3"
 MODEL_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-MODEL_MAX_LENGTH = 8192  # Mistral supports longer context
-OFFLINE_MODE = False  # Set to True for offline operation (uses cached model)
+MODEL_MAX_LENGTH = 8192
+OFFLINE_MODE = False
 
-# Test-only debug flag: print similarity for every object in house_map.
-# Set to False (or remove this block) when no longer needed.
 PRINT_ALL_MAP_SIMILARITIES_TEST = True
 
 MAP_FILE = "/workspaces/ros2_ws/src/yolo11_seg_bringup/config/map_v5.json"
@@ -58,9 +55,6 @@ def load_prompt(filename: str, **kwargs) -> str:
     with open(prompt_path, 'r', encoding='utf-8') as f:
         template = f.read()
 
-    # Some prompt files contain JSON examples with literal braces.
-    # Only apply templating when variables are provided, and keep unknown
-    # placeholders unchanged so literal braces do not raise KeyError.
     if not kwargs:
         return template
 
@@ -78,8 +72,6 @@ def initialize_model():
     print(f"Offline mode: {OFFLINE_MODE}\n")
     
     try:
-        # Load tokenizer and model
-        # local_files_only=True ensures offline operation after first download
         tokenizer = AutoTokenizer.from_pretrained(
             CHAT_MODEL,
             local_files_only=OFFLINE_MODE
@@ -119,35 +111,54 @@ def initialize_clip_processor():
     global clip_processor
     try:
         print("Initializing SigLIP CLIP processor...")
-        clip_processor = CLIPProcessor(
+        clip_processor = CLIPProcessorValidator(
             device=MODEL_DEVICE,
             model_name='ViT-B-16-SigLIP',
             pretrained='webli',
-            image_size=224
         )
         print("Successfully loaded SigLIP CLIP processor!\n")
     except Exception as e:
         print(f"Failed to load CLIP processor: {e}")
         sys.exit(1)
 
-def encode_clip_prompts(clip_prompts: List[str]) -> np.ndarray | None:
+
+def _build_validator_prompt_ensemble(clip_prompt: str) -> List[str]:
+    """Expand one LLM prompt using validator-style prompt templates."""
+    if not isinstance(clip_prompt, str):
+        return []
+
+    clean = clip_prompt.strip()
+    if not clean:
+        return []
+
+    expanded = clip_processor.build_prompt_list(clean)
+    if not expanded:
+        return []
+
+    unique = list(dict.fromkeys(expanded))
+    return unique
+
+def encode_clip_prompt(clip_prompt: str) -> np.ndarray | None:
     """
-    Encode CLIP prompts into a single averaged embedding using the CLIP processor.
+    Encode one CLIP prompt into a single averaged embedding using validator expansion.
     
     Args:
-        clip_prompts: List of text prompts (typically 3)
+        clip_prompt: One LLM-extracted text prompt
     
     Returns:
         Normalized embedding vector (numpy array) or None if encoding fails
     """
-    if not clip_prompts or clip_processor is None:
+    if not clip_prompt or clip_processor is None:
         return None
-    
+
     try:
-        # CLIPProcessor.encode_text handles ensemble averaging of multiple prompts
-        text_embedding = clip_processor.encode_text(clip_prompts)
+        prompt_ensemble = _build_validator_prompt_ensemble(clip_prompt)
+        if not prompt_ensemble:
+            return None
+
+        print(f"Encoding {len(prompt_ensemble)} validator-style CLIP prompts")
+        text_embedding = clip_processor.encode_text(prompt_ensemble)
         if text_embedding is not None:
-            # Ensure we return a proper numpy array
             if not isinstance(text_embedding, np.ndarray):
                 text_embedding = np.array(text_embedding)
         return text_embedding
@@ -177,14 +188,12 @@ def compute_object_similarities(goal_objects: List[Dict], text_embedding) -> Lis
                 "similarity_score": 0.0
             })
             continue
-        
-        # Convert to numpy if needed
+
         if isinstance(image_embedding, list):
             image_embedding = np.array(image_embedding, dtype=np.float32)
-        
-        # Compute similarity using CLIP processor
+
         try:
-            similarity = clip_processor.compute_sigmoid_probs(image_embedding, text_embedding)
+            similarity = clip_processor.compute_match_score(image_embedding, text_embedding)
             if similarity is None:
                 similarity = 0.0
         except Exception as e:
@@ -195,14 +204,11 @@ def compute_object_similarities(goal_objects: List[Dict], text_embedding) -> Lis
             **obj,
             "similarity_score": float(similarity)
         })
-        
-        # Clear image embedding from memory after use
+
         del image_embedding
-    
-    # Sort by similarity score (highest first)
+
     scored_objects.sort(key=lambda x: x.get("similarity_score", 0.0), reverse=True)
-    
-    # Clear text embedding reference and cleanup
+
     del text_embedding
     gc.collect()
     
@@ -215,10 +221,8 @@ def load_house_map(filename):
     
     with open(filename, "r", encoding="utf-8") as f:
         data = json.load(f)
-    
-    # Convert dict structure to list format for compatibility
+
     if isinstance(data, dict):
-        # map.json has structure: {"id": {"name": ..., "pose_map": ..., "image_embedding": ...}}
         result = []
         for obj_id, obj_data in data.items():
             obj_data["id"] = obj_id
@@ -263,6 +267,7 @@ def get_labeled_cluster_descriptions() -> List[str]:
         descriptions.append(f"Cluster {cluster_id} ({label}): {', '.join(objects)}")
     return descriptions
 
+# NOT NECESSARY
 def assign_cluster_labels() -> None:
     """
     Use LLM once to assign semantic names (kitchen/bedroom/etc.) to clusters.
@@ -294,7 +299,7 @@ def assign_cluster_labels() -> None:
             if attempt > 0:
                 print(f"   Retry attempt {attempt + 1}/{max_retries}")
 
-            response_text = call_llm(msgs, temperature=0.2)
+            response_text = call_llm(msgs, temperature=0.4)
             response_json = extract_json_from_response(response_text, expected_keys=["cluster_labels"])
             labels_payload = response_json.get("cluster_labels", [])
 
@@ -332,18 +337,15 @@ def assign_cluster_labels() -> None:
             print(f"WARNING: Error during cluster labeling: {type(e).__name__}: {str(e)}")
             break
 
-    # Ensure every cluster has a label, deduplicating with #1, #2, etc.
     cluster_labels = {}
     raw_labels = {}
     for cluster_id in cluster_summaries.keys():
         raw_labels[cluster_id] = assigned.get(cluster_id, f"cluster_{cluster_id}")
 
-    # Count occurrences of each label
     label_counts = {}
     for label in raw_labels.values():
         label_counts[label] = label_counts.get(label, 0) + 1
 
-    # Assign numbered labels for duplicates
     label_counters = {}
     for cluster_id in sorted(raw_labels.keys()):
         label = raw_labels[cluster_id]
@@ -391,34 +393,6 @@ def get_map_objects():
     """Returns all unique object classes from the map."""
     return sorted(list(set(obj.get("name", "") for obj in house_map if obj.get("name"))))
 
-def _infer_goal_from_prompt(prompt: str) -> str:
-    """Heuristic fallback goal extraction when LLM returns empty goal."""
-    if not prompt:
-        return ""
-
-    text = prompt.strip().lower()
-    # Remove punctuation that can break simple phrase capture.
-    text = re.sub(r"[^a-z0-9\s-]", " ", text)
-    text = re.sub(r"\s+", " ", text).strip()
-
-    patterns = [
-        r"(?:bring|get|fetch|grab|find|locate|go to|goto|navigate to|take me to)\s+(?:me\s+)?(?:to\s+)?(?:an?|the)?\s*([a-z][a-z0-9\s-]{0,40})",
-        r"(?:an?|the)\s+([a-z][a-z0-9\s-]{0,40})",
-    ]
-
-    for pattern in patterns:
-        match = re.search(pattern, text)
-        if not match:
-            continue
-        candidate = match.group(1).strip()
-        candidate = re.split(r"\b(?:in|on|at|near|with|from|to|and|then)\b", candidate)[0].strip()
-        if candidate:
-            return candidate
-
-    # Last-resort: use final token as potential object label.
-    tokens = text.split()
-    return tokens[-1] if tokens else ""
-
 def _normalize_object_label(label: str) -> str:
     """Normalize an object label for case/spacing-only matching."""
     value = label.strip().lower()
@@ -450,10 +424,10 @@ def find_objects(class_name: str):
     
     return relaxed_matches
 
-def find_goal_objects(goal: str, clip_prompts: List[str]):
+def find_goal_objects(goal: str, clip_prompt: str) -> tuple[List[Dict], np.ndarray | None]:
     """
     Find goal objects in the map and rank them by CLIP similarity.
-    Uses ensemble of CLIP prompts.
+    Uses validator-style ensemble expansion from one CLIP prompt.
     """
     print("2. .......Extracting objects in the map.........")
 
@@ -461,20 +435,17 @@ def find_goal_objects(goal: str, clip_prompts: List[str]):
 
     if not goal_objects:
         print(f"No map objects matched extracted goal '{goal}'. Skipping object-level map selection.\n")
-        return []
+        return [], None
 
     if goal_objects:
         print(f"Evaluating {len(goal_objects)} candidate objects for goal '{goal}'")
         
-        # Encode text prompts as ensemble
-        text_embedding = clip_processor.encode_text(clip_prompts)
+        # Encode one prompt as a validator-style ensemble.
+        text_embedding = encode_clip_prompt(clip_prompt)
         
         if text_embedding is not None:
             print("Computing CLIP similarities...\n")
 
-            # Test-only debug output: similarity for every object in the map.
-            # This block is intentionally isolated and guarded by a single flag
-            # so it can be removed quickly after debugging.
             if PRINT_ALL_MAP_SIMILARITIES_TEST:
                 all_objects_scored = compute_object_similarities(house_map, np.copy(text_embedding))
                 print("All map objects similarity (test, high precision):")
@@ -483,10 +454,8 @@ def find_goal_objects(goal: str, clip_prompts: List[str]):
                     print(f"  {i}. {obj.get('id')} - Similarity: {sim_score:.12f}%")
                 print()
 
-            # Rank by similarity
             goal_objects = compute_object_similarities(goal_objects, text_embedding)
-            
-            # Print ranking
+
             print("Ranked by similarity:")
             for i, obj in enumerate(goal_objects, 1):
                 sim_score = obj.get("similarity_score", 0.0)
@@ -501,15 +470,15 @@ def find_goal_objects(goal: str, clip_prompts: List[str]):
     else:
         print("No objects available in the map.\n")
     
-    return goal_objects
+    return goal_objects, text_embedding
 
 # --------------- OUTPUT FORMATS --------------- #
 
 class NavResult(BaseModel):
     goal: str # class of the object to navigate to
-    related_object: str = "" # object related to the goal location, empty if none
+    #related_object: str = "" # object related to the goal location, empty if none
     goal_objects: List[Dict] # list of objects of that class in the map
-    clip_prompts: List[str] # 3 CLIP prompts describing the object
+    clip_prompts: str # single CLIP prompt describing the object
     text_embedding: List[float] | None = None # CLIP text embedding for the prompts
     object_similarities: List[Dict] = [] # similarity scores for each goal object
     action: str # high-level action plan to reach the goal
@@ -518,18 +487,18 @@ class NavResult(BaseModel):
 
 class Goal(BaseModel):
     goal: str # class of the object to navigate to
-    related_object: str = "" # object related to the goal location, empty if none
-    clip_prompts: List[str] # 3 CLIP prompts describing the object
+    #related_object: str = "" # object related to the goal location, empty if none
+    clip_prompts: str # single CLIP prompt describing the object
     text_embedding: List[float] | None = None # CLIP text embedding for the prompts
 
 class Action(BaseModel):
     action: str # Action that the robot has to perform
 
-class ClipPromptsOutput(BaseModel):
-    clip_prompts: List[str]  # List of exactly 3 prompts
+class ClipPromptOutput(BaseModel):
+    clip_prompt: str = ""  # Single prompt used as seed for validator expansion
 
-class RelatedObjectOutput(BaseModel):
-    related_object: str = ""  # related object for location grounding
+#class RelatedObjectOutput(BaseModel):
+#    related_object: str = ""  # related object for location grounding
 
 class ClusterPrediction(BaseModel):
     cluster_id: int | None = None  # ID of the most likely cluster, None when uncertain
@@ -688,34 +657,30 @@ def extract_goal(prompt : str) -> Goal:
     end_time = time.time()
     elapsed = end_time - start_time
     goal_text = goal_text.strip()
-    if not goal_text:
-        goal_text = _infer_goal_from_prompt(prompt)
-        if goal_text:
-            print(f"LLM returned empty goal. Using heuristic fallback goal: {goal_text}")
     print(f"Goal: {goal_text}")
     print(f"Computation time: {elapsed:.2f} seconds\n")
     
-    # Now generate CLIP prompts for this goal
-    clip_prompts_result = extract_clip_prompts(prompt, goal_text)
-    related_object_result = extract_related_object(prompt, goal_text)
+    # Now generate one CLIP prompt for this goal
+    clip_prompts_result = extract_clip_prompt(prompt, goal_text)
+    #related_object_result = extract_related_object(prompt, goal_text)
     
     # Combine goal and clip prompts into the result (text_embedding will be computed later in find_goal_objects)
     result = Goal(
         goal=goal_text, 
-        related_object=related_object_result.related_object,
-        clip_prompts=clip_prompts_result.clip_prompts,
+        #related_object=related_object_result.related_object,
+        clip_prompts=clip_prompts_result.clip_prompt,
         text_embedding=None  # Will be computed when finding objects
     )
     
     return result
 
-def extract_clip_prompts(prompt: str, goal: str) -> ClipPromptsOutput:
+def extract_clip_prompt(prompt: str, goal: str) -> ClipPromptOutput:
     """
-    Uses LLM to generate 3 different CLIP prompts that describe the object
+    Uses LLM to generate one CLIP seed prompt that describes the object
     based only on features mentioned in the user's prompt.
-    These prompts are optimized for sigLIP visual similarity matching.
+    The final embedding ensemble is created by validator template expansion.
     """
-    print("1b. .......Generating CLIP prompts for visual matching.........\n")
+    print("1b. .......Generating CLIP prompt for visual matching.........\n")
     
     SYSTEM_PROMPT = load_prompt('extract_clip_prompts.txt')
     
@@ -733,12 +698,11 @@ def extract_clip_prompts(prompt: str, goal: str) -> ClipPromptsOutput:
             
             response_text = call_llm(msgs, temperature=0.2)
             
-            response_json = extract_json_from_response(response_text, expected_keys=["clip_prompts"])
-            result = ClipPromptsOutput.model_validate(response_json)
-            
-            # Ensure we have exactly 3 prompts
-            if len(result.clip_prompts) != 3:
-                print(f"WARNING: Expected 3 clips prompts, got {len(result.clip_prompts)}")
+            response_json = extract_json_from_response(response_text, expected_keys=["clip_prompt"])
+            result = ClipPromptOutput.model_validate(response_json)
+            result.clip_prompt = result.clip_prompt.strip()
+            if not result.clip_prompt:
+                raise ValueError("LLM returned empty clip_prompt")
             
             break
             
@@ -758,65 +722,64 @@ def extract_clip_prompts(prompt: str, goal: str) -> ClipPromptsOutput:
     
     end_time = time.time()
     elapsed = end_time - start_time
-    print(f"CLIP Prompts generated:")
-    for i, prompt_text in enumerate(result.clip_prompts, 1):
-        print(f"  {i}. {prompt_text}")
+    print("CLIP prompt generated:")
+    print(f"  {result.clip_prompt}")
     print(f"Computation time: {elapsed:.2f} seconds\n")
     
     return result
 
-def extract_related_object(prompt: str, goal: str) -> RelatedObjectOutput:
-    """
-    Uses LLM to extract the object that appears in relation with the goal.
-    Returns empty related_object when the prompt has no location relation.
-    """
-    print("1c. .......Extracting related object from prompt.........\n")
+# def extract_related_object(prompt: str, goal: str) -> RelatedObjectOutput:
+#     """
+#     Uses LLM to extract the object that appears in relation with the goal.
+#     Returns empty related_object when the prompt has no location relation.
+#     """
+#     print("1c. .......Extracting related object from prompt.........\n")
 
-    cluster_descriptions = get_labeled_cluster_descriptions()
-    clusters_text = "\n".join(cluster_descriptions) if cluster_descriptions else "No cluster data available."
+#     cluster_descriptions = get_labeled_cluster_descriptions()
+#     clusters_text = "\n".join(cluster_descriptions) if cluster_descriptions else "No cluster data available."
 
-    SYSTEM_PROMPT = load_prompt('extract_related_object.txt', clusters_text=clusters_text)
+#     SYSTEM_PROMPT = load_prompt('extract_related_object.txt', clusters_text=clusters_text)
 
-    msgs = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": f"User prompt: '{prompt}'\nGoal object: '{goal}'"}
-    ]
+#     msgs = [
+#         {"role": "system", "content": SYSTEM_PROMPT},
+#         {"role": "user", "content": f"User prompt: '{prompt}'\nGoal object: '{goal}'"}
+#     ]
 
-    start_time = time.time()
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            if attempt > 0:
-                print(f"   Retry attempt {attempt + 1}/{max_retries}")
+#     start_time = time.time()
+#     max_retries = 3
+#     for attempt in range(max_retries):
+#         try:
+#             if attempt > 0:
+#                 print(f"   Retry attempt {attempt + 1}/{max_retries}")
 
-            response_text = call_llm(msgs, temperature=0.2)
-            response_json = extract_json_from_response(response_text, expected_keys=["related_object"])
-            result = RelatedObjectOutput.model_validate(response_json)
+#             response_text = call_llm(msgs, temperature=0.2)
+#             response_json = extract_json_from_response(response_text, expected_keys=["related_object"])
+#             result = RelatedObjectOutput.model_validate(response_json)
 
-            related = result.related_object.strip()
-            if related and _normalize_object_label(related) == _normalize_object_label(goal):
-                related = ""
-            result.related_object = related
-            break
+#             related = result.related_object.strip()
+#             if related and _normalize_object_label(related) == _normalize_object_label(goal):
+#                 related = ""
+#             result.related_object = related
+#             break
 
-        except (ValueError, json.JSONDecodeError):
-            if attempt < max_retries - 1:
-                print("   JSON parsing failed, retrying...")
-                time.sleep(1)
-                continue
-            print(f"ERROR: Failed to get valid JSON after {max_retries} attempts")
-            print(f"Last response: {response_text}\n")
-            raise
-        except Exception as e:
-            print(f"ERROR during related-object extraction: {type(e).__name__}")
-            print(f"Error message: {str(e)}\n")
-            raise
+#         except (ValueError, json.JSONDecodeError):
+#             if attempt < max_retries - 1:
+#                 print("   JSON parsing failed, retrying...")
+#                 time.sleep(1)
+#                 continue
+#             print(f"ERROR: Failed to get valid JSON after {max_retries} attempts")
+#             print(f"Last response: {response_text}\n")
+#             raise
+#         except Exception as e:
+#             print(f"ERROR during related-object extraction: {type(e).__name__}")
+#             print(f"Error message: {str(e)}\n")
+#             raise
 
-    end_time = time.time()
-    elapsed = end_time - start_time
-    print(f"Related object: {result.related_object if result.related_object else 'NONE'}")
-    print(f"Computation time: {elapsed:.2f} seconds\n")
-    return result
+#     end_time = time.time()
+#     elapsed = end_time - start_time
+#     print(f"Related object: {result.related_object if result.related_object else 'NONE'}")
+#     print(f"Computation time: {elapsed:.2f} seconds\n")
+#     return result
 
 def determine_most_likely_cluster(prompt: str, goal: str) -> ClusterPrediction:
     """
@@ -1074,16 +1037,19 @@ def process_nav_instruction(prompt : str) -> NavResult:
 
     effective_goal = goal.goal.strip() if goal.goal else ""
     if not effective_goal and goal.clip_prompts:
-        effective_goal = _normalize_object_label(goal.clip_prompts[0])
-        print(f"No explicit goal returned. Using first CLIP prompt as goal hint: {effective_goal}")
+        effective_goal = _normalize_object_label(goal.clip_prompts)
+        print(f"No explicit goal returned. Using CLIP prompt as goal hint: {effective_goal}")
     
     # 2. Read the map and find objects of the goal class (ranked by CLIP similarity)
-    goal_objects = find_goal_objects(effective_goal, goal.clip_prompts)
+    goal_objects, text_embedding = find_goal_objects(effective_goal, goal.clip_prompts)
 
     # 3. Extract text embedding and similarity scores from ranked objects
     print("5. .......Processing object similarities.........\n")
     text_embedding_list = None
     object_similarities = []
+
+    if text_embedding is not None:
+        text_embedding_list = text_embedding.astype(float).tolist()
     
     if goal_objects:
         # Extract similarity scores from objects
@@ -1145,7 +1111,7 @@ def process_nav_instruction(prompt : str) -> NavResult:
 
     return NavResult(
         goal=final_goal_class,
-        related_object=goal.related_object,
+        #related_object=goal.related_object,
         goal_objects=goal_objects,
         clip_prompts=goal.clip_prompts,
         text_embedding=text_embedding_list,
@@ -1212,7 +1178,7 @@ def save_robot_command(output_path: str, prompt: str, result: NavResult) -> None
         "timestamp": time.time(),
         "prompt": prompt,
         "goal": result.goal,
-        "related_object": result.related_object,
+        #"related_object": result.related_object,
         "clip_prompts": result.clip_prompts,
         "text_embedding": result.text_embedding,
         "goal_objects": _objects_with_coords(result.goal_objects),

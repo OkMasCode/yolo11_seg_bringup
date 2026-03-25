@@ -9,67 +9,31 @@ CRITICAL RULES - YOU MUST FOLLOW EXACTLY:
    - DO NOT use relational features: "near", "on top of", "next to", "beside", "under", "in front of", "behind"
    - DO NOT use room/location information: "in kitchen", "in bedroom", etc.
 
-2. GENERATING PROMPTS:
-   - Create exactly 3 different CLIP prompts
-   - Each prompt should describe the object with only the extracted features
-   - Vary the phrasing and emphasis across the 3 prompts
-   - Make phrases natural and specific to improve sigLIP visual similarity matching
-   - Each prompt should be a short descriptive phrase (3-8 words typically)
+2. GENERATING ONE PROMPT:
+   - Create exactly ONE CLIP seed prompt
+   - This prompt will be expanded later by the runtime into multiple templates
+   - Keep it short and object-focused (typically 2-7 words)
+   - Prefer concise noun phrase style
 
-3. PROMPT OPTIMIZATION FOR CLIP/SIGLIP:
-   - Use natural language descriptions of visual attributes
-   - Start with the object type, then add features
-   - Example formats (when features ARE available):
-     * "{{color}} {{object}}" (if color mentioned)
-     * "{{size}} {{material}} {{object}}" (if size/material mentioned)
-     * "{{color}} {{object}} with {{pattern}}" (if pattern mentioned)
-   - Avoid overly complex descriptions
+3. PROMPT STYLE:
+   - Start from object type and include explicit visual features if present
+   - Example with features:
+     * "red coffee table"
+     * "blue wooden chair"
+     * "small striped pillow"
+   - If no visual features are provided, return just the object label:
+     * "sofa"
+     * "bottle"
 
-4. NO-FEATURE FALLBACK (when NO visual features are mentioned):
-   - Do NOT repeat the bare object name three times with trivial rephrasing
-   - Instead, wrap the object name with photography/image-context phrases that
-     help sigLIP match against real cropped detections:
-     * "a photo of {{object}}"
-     * "a cropped image of {{object}}"
-     * "an image of {{object}} with gray background"
-     * "a close-up photo of {{object}}"
-     * "a realistic photo of {{object}}"
-     * "an image showing a {{object}}"
-   - Vary the three phrases so they cover slightly different visual contexts.
-   - This rule applies whenever only the object name is known (no color, size,
-     material, texture, shape, pattern, style or condition was mentioned).
-
-EXAMPLE WORKFLOW:
-
-Example 1 - User says: "bring me the red coffee table"
-- Extracted features: object="coffee table", color="red"
-- Prompt 1: "red coffee table"
-- Prompt 2: "a red table"
-- Prompt 3: "coffee table that is red"
-
-Example 2 - User says: "go to the sofa"
-- Extracted features: object="sofa" (no other features → apply NO-FEATURE FALLBACK)
-- Prompt 1: "a photo of a sofa"
-- Prompt 2: "a cropped image of a sofa"
-- Prompt 3: "an image of a sofa with gray background"
-
-Example 3 - User says: "get the blue wooden chair"
-- Extracted features: object="chair", color="blue", material="wooden"
-- Prompt 1: "blue wooden chair"
-- Prompt 2: "blue chair made of wood"
-- Prompt 3: "wooden chair that is blue"
-
-Example 4 - User says: "find the bottle"
-- Extracted features: object="bottle" (no other features → apply NO-FEATURE FALLBACK)
-- Prompt 1: "a close-up photo of a bottle"
-- Prompt 2: "a cropped image of a bottle"
-- Prompt 3: "a realistic photo of a bottle"
+4. IMPORTANT:
+   - Do not add camera/photo wording (runtime expansion will do that)
+   - Do not add punctuation unless needed inside object names
 
 CRITICAL OUTPUT FORMAT:
 - You MUST respond with ONLY a valid JSON object
 - NO additional text before or after the JSON
 - NO markdown formatting or code blocks
-- EXACTLY this format: {{"clip_prompts": ["prompt1", "prompt2", "prompt3"]}}
+- EXACTLY this format: {{"clip_prompt": "prompt"}}
 
 Return ONLY valid JSON with no additional text:
-{{"clip_prompts": ["<prompt1>", "<prompt2>", "<prompt3>"]}}
+{{"clip_prompt": "<prompt>"}}
