@@ -40,14 +40,14 @@ class NoPCVisionNode(Node):
         # ============= Parameters ============= #
 
         # Communication parameters
-        self.declare_parameter('image_topic', '/camera/rgb') #/camera/color/image_raw
+        self.declare_parameter('image_topic', '/camera/camera/color/image_raw') #
         self.declare_parameter('enable_visualization', True)
 
         self.image_topic = self.get_parameter('image_topic').value
         self.enable_vis = bool(self.get_parameter('enable_visualization').value)
 
         # YOLO parameters
-        self.declare_parameter('model_path', '/workspaces/yoloe-26l-seg.pt')
+        self.declare_parameter('model_path', '/home/workspace/yoloe-26l-seg.pt')
         self.declare_parameter('imgsz', 640)
         self.declare_parameter('conf', 0.45)
         self.declare_parameter('iou', 0.35)
@@ -60,7 +60,7 @@ class NoPCVisionNode(Node):
         # CLIP parameters
         self.declare_parameter('CLIP_model_name', 'ViT-B-16-SigLIP')
         self.declare_parameter('clip_pretrained', 'webli')
-        self.declare_parameter('robot_command_file', '/workspaces/ros2_ws/src/yolo11_seg_bringup/config/robot_command.json')
+        self.declare_parameter('robot_command_file', '/home/workspace/ros2_ws/src/yolo11_seg_bringup/config/robot_command.json')
         self.declare_parameter('prompt_check_interval', 30.0)
         self.declare_parameter('square_crop_scale', 1.2)
         self.declare_parameter('masked_score_weight', 0.5)
@@ -81,9 +81,7 @@ class NoPCVisionNode(Node):
 
         self.frame_skip = 5
 
-        self.CLASS_NAMES = ["oven", "fridge", "dining table", "sink", "toilet", "couch", "chair", "tv", "bed", 
-                            "nightstand", "dresser", "stove", "fireplace", "potted plant", "coffee machine", "toaster", "painting", "coffee table", "desk",  
-                            "microwave", "kitchen island", "towel", "houseplant", "pillow"]
+        self.CLASS_NAMES = ["keyboard", "mouse", "tv", "chair", "bottle"]
 
         goal_class = self._read_goal_from_command_file()
         if goal_class:
@@ -536,13 +534,10 @@ class NoPCVisionNode(Node):
             if masked_emb is not None and unmasked_emb is not None and text_embedding is not None:
                 prob_goal = self.clip.compute_blended_match_score(masked_emb, unmasked_emb, text_embedding)
                 msg.similarity = float(prob_goal)
+                # Log final similarity only when embeddings were computed
                 self.get_logger().info(
-                    "Object similarity: "
-                    f"id={det['instance_id']} "
-                    f"class='{det['object_name']}' "
-                    f"conf={det['confidence']:.3f} "
-                    f"score={msg.similarity:.2f}",
-                    throttle_duration_sec=1.0,
+                    f"Object similarity: id={det['instance_id']} class='{det['object_name']}' "
+                    f"conf={det['confidence']:.3f} score={msg.similarity:.3f}"
                 )
             elif current_emb is not None and text_embedding is not None:
                 # Fallback for detections that only have one embedding.
@@ -570,7 +565,6 @@ class NoPCVisionNode(Node):
 
         # Publish the entire frame of detections simultaneously
         self.detections_pub.publish(array_msg)
-        self.get_logger().info(f"Published {len(array_msg.detections)} detections in batch.")
 
 # -------------------- MAIN -------------------- # 
 

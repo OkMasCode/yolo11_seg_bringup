@@ -1,10 +1,10 @@
 {
     "timestamp": 1773925365.0282223,
     "prompt": "bring me a bottle",
-    "goal": "microwave",
+    "goal": "bottle",
     "related_object": "",
     "clip_prompts": [
-        "microwave"
+        "red bottle"
     ],
     "text_embedding": null,
     "goal_objects": [
