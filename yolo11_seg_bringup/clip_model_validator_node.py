@@ -2,6 +2,7 @@ import threading
 import json
 import os
 from time import perf_counter
+from datetime import datetime, timezone
 
 import cv2
 import numpy as np
@@ -51,6 +52,12 @@ class ClipModelValidatorNode(Node):
         self.declare_parameter("square_crop_scale", 1.2)
         self.declare_parameter("masked_score_weight", 0.5)
         self.declare_parameter("unmasked_score_weight", 0.5)
+        self.declare_parameter(
+            "reduced_map_output_dir",
+            "/workspaces/ros2_ws/src/yolo11_seg_bringup/config",
+        )
+        self.declare_parameter("reduced_map_file", "reduced_map.json")
+        self.declare_parameter("reduced_map_export_interval", 5.0)
 
         self.image_topic = self.get_parameter("image_topic").value
         self.similarity_topic = self.get_parameter("similarity_topic").value
@@ -66,6 +73,11 @@ class ClipModelValidatorNode(Node):
         self.square_crop_scale = float(self.get_parameter("square_crop_scale").value)
         self.masked_score_weight = float(self.get_parameter("masked_score_weight").value)
         self.unmasked_score_weight = float(self.get_parameter("unmasked_score_weight").value)
+        self.reduced_map_output_dir = self.get_parameter("reduced_map_output_dir").value
+        self.reduced_map_file = self.get_parameter("reduced_map_file").value
+        self.reduced_map_export_interval = float(
+            self.get_parameter("reduced_map_export_interval").value
+        )
 
         # --- Device & Model Setup ---
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -108,6 +120,7 @@ class ClipModelValidatorNode(Node):
         self.avg_window = 30
         self.avg_score_sum = 0.0
         self.avg_score_count = 0
+        self.stable_map = {}
 
         self.timing_stats = {
             "text_encoding": [],
@@ -151,8 +164,140 @@ class ClipModelValidatorNode(Node):
             self._load_prompt_from_json,
             callback_group=self.timer_cb_group,
         )
+        self.reduced_map_timer = self.create_timer(
+            self.reduced_map_export_interval,
+            self.export_reduced_map,
+            callback_group=self.timer_cb_group,
+        )
 
-        self.get_logger().info("ClipModelValidatorNode ready.")
+        self.get_logger().info(
+            "ClipModelValidatorNode ready. "
+            f"reduced_map_path={os.path.join(self.reduced_map_output_dir, self.reduced_map_file)} "
+            f"export_interval={self.reduced_map_export_interval:.1f}s"
+        )
+
+    @staticmethod
+    def _normalize_embedding(embedding):
+        if embedding is None:
+            return []
+        emb = np.asarray(embedding, dtype=np.float32).flatten()
+        if emb.size == 0:
+            return []
+        norm = float(np.linalg.norm(emb))
+        if norm <= 1e-12 or not np.isfinite(norm):
+            return []
+        return (emb / norm).tolist()
+
+    def _fuse_embeddings_running_avg(self, current_embedding, current_count, new_embedding, new_count=1):
+        cur = self._normalize_embedding(current_embedding)
+        nxt = self._normalize_embedding(new_embedding)
+
+        if not cur:
+            return nxt
+        if not nxt:
+            return cur
+
+        cw = max(int(current_count), 1)
+        nw = max(int(new_count), 1)
+
+        cur_arr = np.asarray(cur, dtype=np.float32)
+        nxt_arr = np.asarray(nxt, dtype=np.float32)
+
+        if cur_arr.shape != nxt_arr.shape:
+            self.get_logger().warn(
+                "Embedding size mismatch while fusing running average; replacing with new embedding",
+                throttle_duration_sec=2.0,
+            )
+            return nxt
+
+        fused = ((cur_arr * cw) + (nxt_arr * nw)) / float(cw + nw)
+        return self._normalize_embedding(fused)
+
+    def _combine_detection_embeddings(self, masked_embedding, unmasked_embedding):
+        masked = self._normalize_embedding(masked_embedding)
+        unmasked = self._normalize_embedding(unmasked_embedding)
+
+        if not masked:
+            return unmasked
+        if not unmasked:
+            return masked
+
+        masked_arr = np.asarray(masked, dtype=np.float32)
+        unmasked_arr = np.asarray(unmasked, dtype=np.float32)
+        if masked_arr.shape != unmasked_arr.shape:
+            self.get_logger().warn(
+                "Masked/unmasked embedding size mismatch; using masked embedding",
+                throttle_duration_sec=2.0,
+            )
+            return masked
+
+        weighted = (
+            (self.masked_score_weight * masked_arr)
+            + (self.unmasked_score_weight * unmasked_arr)
+        )
+        return self._normalize_embedding(weighted)
+
+    @staticmethod
+    def _build_pose_from_bbox(bbox_xyxy):
+        x1, y1, x2, y2 = bbox_xyxy
+        cx = 0.5 * (x1 + x2)
+        cy = 0.5 * (y1 + y2)
+        return {
+            "x": float(cx),
+            "y": float(cy),
+            "bbox_xyxy": [float(x1), float(y1), float(x2), float(y2)],
+        }
+
+    def _update_stable_map_entry(self, instance_id, class_name, pose, detection_embedding):
+        object_id = str(instance_id)
+        with self.state_lock:
+            prev = self.stable_map.get(object_id)
+            if prev is None:
+                self.stable_map[object_id] = {
+                    "id": object_id,
+                    "pose": pose,
+                    "class": class_name,
+                    "embedding": self._normalize_embedding(detection_embedding),
+                    "occurrences": 1,
+                }
+            else:
+                prev_occ = int(prev.get("occurrences", 0))
+                prev["pose"] = pose
+                prev["class"] = class_name
+                prev["embedding"] = self._fuse_embeddings_running_avg(
+                    prev.get("embedding", []),
+                    prev_occ,
+                    detection_embedding,
+                    1,
+                )
+                prev["occurrences"] = prev_occ + 1
+
+    def export_reduced_map(self):
+        output_dir = self.reduced_map_output_dir
+        output_file = self.reduced_map_file
+        output_path = os.path.join(output_dir, output_file)
+        tmp_path = output_path + ".tmp"
+
+        with self.state_lock:
+            map_copy = dict(self.stable_map)
+
+        payload = {
+            "objects": map_copy,
+            "object_count": len(map_copy),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+        try:
+            os.makedirs(output_dir, exist_ok=True)
+            with open(tmp_path, "w", encoding="utf-8") as file_handle:
+                json.dump(payload, file_handle, indent=2)
+            os.replace(tmp_path, output_path)
+            self.get_logger().info(
+                f"Reduced map exported: objects={len(map_copy)} path='{output_path}'",
+                throttle_duration_sec=2.0,
+            )
+        except Exception as exc:
+            self.get_logger().error(f"Failed to export reduced map '{output_path}': {exc}")
 
     @staticmethod
     def _pad_to_square(image_bgr: np.ndarray) -> np.ndarray:
@@ -454,6 +599,7 @@ class ClipModelValidatorNode(Node):
                         "instance_id": int(ids[idx]),
                         "class_name": str(names[idx]),
                         "confidence": float(confs[idx]),
+                        "bbox_xyxy": [float(x1), float(y1), float(x2), float(y2)],
                     }
                 )
                 masked_crops.append(masked_crop)
@@ -497,9 +643,27 @@ class ClipModelValidatorNode(Node):
                     f"(masked={masked_score:.2f}, unmasked={unmasked_score:.2f})"
                 )
 
+                fused_detection_embedding = self._combine_detection_embeddings(
+                    masked_embeddings[idx],
+                    unmasked_embeddings[idx],
+                )
+                self._update_stable_map_entry(
+                    meta["instance_id"],
+                    meta["class_name"],
+                    self._build_pose_from_bbox(meta["bbox_xyxy"]),
+                    fused_detection_embedding,
+                )
+
                 total_score += match_score
                 if match_score > best_score:
                     best_score = match_score
+
+            with self.state_lock:
+                stable_count = len(self.stable_map)
+            self.get_logger().info(
+                f"Stable map update: objects={stable_count}",
+                throttle_duration_sec=2.0,
+            )
 
             self.timing_stats["match_score_compute"].append((perf_counter() - score_start) * 1000.0)
 
@@ -558,6 +722,7 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
+        node.export_reduced_map()
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
