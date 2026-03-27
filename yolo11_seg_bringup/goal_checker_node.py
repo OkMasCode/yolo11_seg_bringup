@@ -147,14 +147,23 @@ class GoalCheckerNode(Node):
                     )
 
                     pose_msg = PoseStamped()
-                    pose_msg.header = best_goal_obj.timestamp
+                    
+                    # FIX: Assign the timestamp to the 'stamp' field of the Header object
+                    pose_msg.header.stamp = best_goal_obj.timestamp
+                    
+                    # FIX: Pass the coordinate frame name from the detection to the new message
+                    pose_msg.header.frame_id = best_goal_obj.frame 
+                    
                     pose_msg.pose.position.x = best_goal_obj.pose_map.x
                     pose_msg.pose.position.y = best_goal_obj.pose_map.y
                     pose_msg.pose.position.z = best_goal_obj.pose_map.z
+                    
+                    # Set a default, unrotated quaternion
                     pose_msg.pose.orientation.x = 0.0
                     pose_msg.pose.orientation.y = 0.0
                     pose_msg.pose.orientation.z = 0.0
                     pose_msg.pose.orientation.w = 1.0
+                    
                     self.goal_position_pub.publish(pose_msg)
 
                     self.get_logger().info(

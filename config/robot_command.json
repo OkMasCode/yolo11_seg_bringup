@@ -1,46 +1,87 @@
 {
-    "timestamp": 1774620668.918417,
-    "prompt": "go to the bed with horizontal stripes",
-    "goal": "bed",
-    "clip_prompts": "bed with horizontal stripes",
+    "timestamp": 1774629266.398211,
+    "prompt": "go to the coffee machine near the fridge",
+    "goal": "coffee machine",
+    "clip_prompts": "coffee machine",
     "goal_objects": [
         {
-            "id": "map_obj_000019",
-            "similarity_score": 30.02781185376232,
+            "id": "map_obj_000010",
+            "similarity_score": 0.8807672432218984,
             "coords": {
-                "x": 7.547863006591797,
-                "y": -1.4441463947296143,
-                "z": 0.725534975528717
+                "x": 0.20814941823482513,
+                "y": 3.106130361557007,
+                "z": 1.0773570537567139
+            }
+        },
+        {
+            "id": "map_obj_000009",
+            "similarity_score": 0.048883518560086624,
+            "coords": {
+                "x": -0.6276340484619141,
+                "y": 3.776634693145752,
+                "z": 1.1012928485870361
             }
         }
     ],
     "selected_goal": {
-        "object_id": "map_obj_000019",
-        "decision_basis": "similarity",
-        "reasoning": "Prompt specifies a distinctive feature of the bed, and location_confidence is high, so the candidate with the highest similarity is selected, but since there is only one candidate, it is selected.",
+        "object_id": "map_obj_000010",
+        "decision_basis": "location",
+        "reasoning": "Prompt specifies a location near the fridge, and location_confidence is moderate, so the candidate near the fridge is selected based on location.",
         "coords": {
-            "x": 7.547863006591797,
-            "y": -1.4441463947296143,
-            "z": 0.725534975528717
+            "x": 0.20814941823482513,
+            "y": 3.106130361557007,
+            "z": 1.0773570537567139
         },
-        "similarity": 30.02781185376232,
+        "similarity": 0.8807672432218984,
         "cluster": null
     },
     "object_similarities": [
         {
-            "object_id": "map_obj_000019",
-            "similarity": 30.02781185376232
+            "object_id": "map_obj_000010",
+            "similarity": 0.8807672432218984
+        },
+        {
+            "object_id": "map_obj_000009",
+            "similarity": 0.048883518560086624
         }
     ],
     "cluster_info": {
-        "cluster_id": null,
-        "objects": [],
-        "reasoning": "No room mentioned, but bed is explicitly mentioned with a distinctive feature (horizontal stripes), which is unique to Cluster 1 (bedroom).",
-        "location_confidence": 0.8,
-        "prioritize_location": false,
-        "coords": null,
-        "dimensions": null
+        "cluster_id": 0,
+        "objects": [
+            "chair",
+            "tv",
+            "bottle",
+            "bottle",
+            "mouse",
+            "keyboard"
+        ],
+        "reasoning": "No room mentioned, but coffee machine and fridge are likely in the kitchen, which is not explicitly mentioned, but implied.",
+        "location_confidence": 0.6,
+        "prioritize_location": true,
+        "coords": {
+            "x": 0.0823723344753186,
+            "y": 0.11015402401487033,
+            "z": 0.7487100760142008
+        },
+        "dimensions": {
+            "bounding_box": {
+                "min": {
+                    "x": -0.7035384774208069,
+                    "y": -0.17792820930480957
+                },
+                "max": {
+                    "x": 0.4164349436759949,
+                    "y": 0.26219311356544495
+                },
+                "dimensions": {
+                    "width": 1.1199734210968018,
+                    "length": 0.4401213228702545
+                }
+            },
+            "radius": 0.7885361942899973
+        }
     },
     "action": "go_to_object",
+    "logic": "GENERIC_OBJECT_SPECIFIC_LOCATION",
     "valid": true
 }

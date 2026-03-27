@@ -482,6 +482,7 @@ class NavResult(BaseModel):
     text_embedding: List[float] | None = None # CLIP text embedding for the prompts
     object_similarities: List[Dict] = [] # similarity scores for each goal object
     action: str # high-level action plan to reach the goal
+    logic: str 
     cluster_info: Dict | None = None # information about the most likely cluster
     selected_goal: Dict | None = None # final selected object, or None if no match
 
@@ -493,6 +494,9 @@ class Goal(BaseModel):
 
 class Action(BaseModel):
     action: str # Action that the robot has to perform
+
+class Logic_decision(BaseModel):
+    logic: str
 
 class ClipPromptOutput(BaseModel):
     clip_prompt: str = ""  # Single prompt used as seed for validator expansion
@@ -908,6 +912,50 @@ def extract_action(prompt : str) -> Action:
     print(f"Computation time: {elapsed:.2f} seconds\n")
     return result
 
+def decide_logic(prompt : str) -> Logic_decision:
+        
+    print("5. .......Deciding logic.........\n")
+    
+    # Load prompt template from file
+    SYSTEM_PROMPT = load_prompt('decide_logic.txt')
+    
+    msgs = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": prompt}
+    ]
+
+    start_time = time.time()
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            if attempt > 0:
+                print(f"   Retry attempt {attempt + 1}/{max_retries}")
+            
+            response_text = call_llm(msgs, temperature=0.1)  # Very low temp for binary choice
+            
+            response_json = extract_json_from_response(response_text, expected_keys=["logic"])
+            result = Logic_decision.model_validate(response_json)
+            break
+            
+        except (ValueError, json.JSONDecodeError) as e:
+            if attempt < max_retries - 1:
+                print(f"   JSON parsing failed, retrying...")
+                time.sleep(1)
+                continue
+            else:
+                print(f"ERROR: Failed to get valid JSON after {max_retries} attempts")
+                print(f"Last response: {response_text}\n")
+                raise
+        except Exception as e:
+            print(f"ERROR during logic decision: {type(e).__name__}")
+            print(f"Error message: {str(e)}\n")
+            raise
+    end_time = time.time()
+    elapsed = end_time - start_time
+    print(f"Logic: {result.logic}")
+    print(f"Computation time: {elapsed:.2f} seconds\n")
+    return result
+
 def _find_object_cluster(object_id: str) -> int | None:
     """Return cluster id for a given object id from clustered_map."""
     for entry in clustered_map:
@@ -1097,6 +1145,8 @@ def process_nav_instruction(prompt : str) -> NavResult:
     # 5. Determine action plan
     action = extract_action(prompt)
 
+    logic = decide_logic(prompt)
+
     # 6. Final object-level goal selection (can return no match)
     final_selection = select_final_goal(prompt, effective_goal, goal_objects, cluster_info)
     selected_goal = None
@@ -1117,6 +1167,7 @@ def process_nav_instruction(prompt : str) -> NavResult:
         text_embedding=text_embedding_list,
         object_similarities=object_similarities,
         action=action.action,
+        logic=logic.logic,
         cluster_info=cluster_info,
         selected_goal={
             "object_id": final_selection.selected_object_id,
@@ -1186,6 +1237,7 @@ def save_robot_command(output_path: str, prompt: str, result: NavResult) -> None
         "object_similarities": result.object_similarities,
         "cluster_info": cluster_info,
         "action": result.action,
+        "logic": result.logic,
         "valid": valid,
     }
 
