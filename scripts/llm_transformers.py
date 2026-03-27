@@ -26,7 +26,7 @@ OFFLINE_MODE = False
 
 PRINT_ALL_MAP_SIMILARITIES_TEST = True
 
-MAP_FILE = "/workspaces/ros2_ws/src/yolo11_seg_bringup/config/map_v5.json"
+MAP_FILE = "/workspaces/ros2_ws/src/yolo11_seg_bringup/config/map_v6.json"
 CLUSTERED_MAP_FILE = "/workspaces/ros2_ws/src/yolo11_seg_bringup/config/clustered_map_v5.json"
 ROBOT_COMMAND_FILE = "/workspaces/ros2_ws/src/yolo11_seg_bringup/config/robot_command.json"
 PROMPTS_DIR = os.path.join(os.path.dirname(__file__), "prompts")
@@ -1180,7 +1180,7 @@ def save_robot_command(output_path: str, prompt: str, result: NavResult) -> None
         "goal": result.goal,
         #"related_object": result.related_object,
         "clip_prompts": result.clip_prompts,
-        "text_embedding": result.text_embedding,
+        # "text_embedding": result.text_embedding,
         "goal_objects": _objects_with_coords(result.goal_objects),
         "selected_goal": result.selected_goal,
         "object_similarities": result.object_similarities,
