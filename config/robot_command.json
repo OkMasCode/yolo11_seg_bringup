@@ -1,8 +1,8 @@
 {
     "timestamp": 1774860233.6413026,
     "prompt": "Go to the coffee machine",
-    "goal": "coffee machine",
-    "clip_prompts": "coffee machine",
+    "goal": "microwave",
+    "clip_prompts": "microwave",
     "goal_objects": [
         {
             "id": "map_obj_000010",

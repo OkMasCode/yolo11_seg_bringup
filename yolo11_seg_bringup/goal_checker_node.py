@@ -9,6 +9,7 @@ from std_msgs.msg import Bool
 from geometry_msgs.msg import PoseStamped
 from rclpy.executors import MultiThreadedExecutor
 
+# Custom message imports
 from yolo11_seg_interfaces.msg import SemanticObjectArray
 
 # -------------------- NODE -------------------- #
@@ -22,10 +23,11 @@ class GoalCheckerNode(Node):
 
         # ============= Parameters ============= #
 
-        self.declare_parameter('semantic_map_topic', '/vision/semantic_map')
+        self.declare_parameter('semantic_map_topic', '/vision/semantic_map_v5')
         self.declare_parameter('goal_flag_topic', '/vision/goal_reached')
         self.declare_parameter('goal_position_topic', '/vision/goal_position')
-        self.declare_parameter('similarity_threshold', 5.0)
+        # Updated threshold to 15.0 per requirements
+        self.declare_parameter('similarity_threshold', 15.0)
         self.declare_parameter('command_file_path', '/workspaces/ros2_ws/src/yolo11_seg_bringup/config/robot_command.json')
 
         self.semantic_map_topic = self.get_parameter('semantic_map_topic').value
@@ -112,6 +114,11 @@ class GoalCheckerNode(Node):
         """
         try:
             with self.lock:
+                # --- NEW LOGGER: Log everything the node sees in this frame ---
+                seen_objects = [f"{obj.name} (sim: {obj.similarity:.2f})" for obj in msg.objects]
+                self.get_logger().info(f"Node currently sees: {seen_objects}")
+                # --------------------------------------------------------------
+
                 if self.goal_class is None:
                     return
 
@@ -132,12 +139,13 @@ class GoalCheckerNode(Node):
                             'pose_map': (obj.pose_map.x, obj.pose_map.y, obj.pose_map.z)
                         })
 
-                        # Keep only candidates that exceed threshold
-                        if obj.similarity >= self.similarity_threshold:
+                        # Keep only candidates that exceed threshold (greater than 15)
+                        if obj.similarity > self.similarity_threshold:
                             valid_goal_candidates.append(obj)
 
                 # Select and publish the best valid goal candidate (highest similarity)
                 if valid_goal_candidates:
+                    # Finds the object with the absolute highest similarity score
                     best_goal_obj = max(valid_goal_candidates, key=lambda goal_obj: goal_obj.similarity)
                     goal_seen = True
                     self.current_goal_position = (
@@ -148,26 +156,21 @@ class GoalCheckerNode(Node):
 
                     pose_msg = PoseStamped()
                     
-                    # FIX: Assign the timestamp to the 'stamp' field of the Header object
-                    pose_msg.header.stamp = best_goal_obj.timestamp
-                    
-                    # FIX: Pass the coordinate frame name from the detection to the new message
-                    pose_msg.header.frame_id = best_goal_obj.frame 
+                    # --- FIXED: Corrected the Header assignment to prevent a ROS 2 type mismatch ---
+                    pose_msg.header.stamp = self.get_clock().now().to_msg()
+                    pose_msg.header.frame_id = 'map' # Adjust this frame_id to match your project (e.g., 'camera_link', 'odom')
                     
                     pose_msg.pose.position.x = best_goal_obj.pose_map.x
                     pose_msg.pose.position.y = best_goal_obj.pose_map.y
                     pose_msg.pose.position.z = best_goal_obj.pose_map.z
-                    
-                    # Set a default, unrotated quaternion
                     pose_msg.pose.orientation.x = 0.0
                     pose_msg.pose.orientation.y = 0.0
                     pose_msg.pose.orientation.z = 0.0
                     pose_msg.pose.orientation.w = 1.0
-                    
                     self.goal_position_pub.publish(pose_msg)
 
                     self.get_logger().info(
-                        f"GOAL DETECTED: {best_goal_obj.name} "
+                        f"*** GOAL DETECTED ***: {best_goal_obj.name} "
                         f"(similarity: {best_goal_obj.similarity:.4f}, threshold: {self.similarity_threshold}) "
                         f"at position [x={best_goal_obj.pose_map.x:.3f}, y={best_goal_obj.pose_map.y:.3f}, z={best_goal_obj.pose_map.z:.3f}]"
                     )
@@ -191,9 +194,9 @@ class GoalCheckerNode(Node):
 
                 # Log matching objects (even if below threshold)
                 if matching_objects and not goal_seen:
-                    self.get_logger().debug(
-                        f"Found {len(matching_objects)} {self.goal_class} object(s) "
-                        f"but below similarity threshold {self.similarity_threshold}"
+                    self.get_logger().info(
+                        f"Found {len(matching_objects)} '{self.goal_class}' object(s) "
+                        f"but they were below the > {self.similarity_threshold} similarity threshold."
                     )
 
         except Exception as e:

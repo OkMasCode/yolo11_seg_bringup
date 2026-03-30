@@ -7,6 +7,7 @@ import os
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image
+from std_msgs.msg import Float32MultiArray
 from rclpy.qos import QoSProfile, HistoryPolicy, ReliabilityPolicy, DurabilityPolicy
 
 import torch
@@ -63,8 +64,8 @@ class NoPCVisionNode(Node):
         self.declare_parameter('robot_command_file', '/workspaces/ros2_ws/src/yolo11_seg_bringup/config/robot_command.json')
         self.declare_parameter('prompt_check_interval', 30.0)
         self.declare_parameter('square_crop_scale', 1.2)
-        self.declare_parameter('masked_score_weight', 0.5)
-        self.declare_parameter('unmasked_score_weight', 0.5)
+        self.declare_parameter('masked_score_weight', 0.85)
+        self.declare_parameter('unmasked_score_weight', 0.15)
 
         self.CLIP_model_name = self.get_parameter('CLIP_model_name').value
         self.clip_pretrained = self.get_parameter('clip_pretrained').value
@@ -145,6 +146,7 @@ class NoPCVisionNode(Node):
 
         # Publishers    
         self.detections_pub = self.create_publisher(DetectedObjectV3Array, self.detection_topic, 10)
+        self.text_emb_pub = self.create_publisher(Float32MultiArray, '/vision/text_embedding', 10)
         if self.enable_vis:
             self.vis_pub = self.create_publisher(Image, self.anno_topic, 10)
 
@@ -165,8 +167,15 @@ class NoPCVisionNode(Node):
         }
         self.timing_window = 30  # Print stats every N frames
 
+        # Initialize the prompt immediately on startup
         self._load_clip_prompt()
-        self.command_timer = self.create_timer(self.prompt_check_interval, self._load_clip_prompt)
+        
+        # Replace the old prompt_check_interval with a strict 5.0 second timer
+        self.declare_parameter('prompt_publish_interval', 5.0)
+        publish_interval = float(self.get_parameter('prompt_publish_interval').value)
+        
+        # This timer now handles both checking the file and publishing
+        self.command_timer = self.create_timer(publish_interval, self._timer_publish_embedding)
 
         self.get_logger().info("Vision Node Ready.")
 
@@ -456,6 +465,23 @@ class NoPCVisionNode(Node):
 
         except Exception as e:
             self.get_logger().error(f"Error loading robot_command clip prompt: {e}")
+
+    def _timer_publish_embedding(self):
+        self._load_clip_prompt()
+
+        with self.clip_state_lock:
+            if self.goal_text_embedding is not None:
+                msg = Float32MultiArray()
+                
+                # Flatten the text embedding into a list
+                data_list = [float(val) for val in self.goal_text_embedding.flatten()]
+                
+                # Append the model's specific scale and bias to the end of the array
+                data_list.append(self.clip.cached_logit_scale)
+                data_list.append(self.clip.cached_logit_bias)
+                
+                msg.data = data_list
+                self.text_emb_pub.publish(msg)
 
     def _read_goal_from_command_file(self):
         """Read robot command JSON and return the goal string, if available."""
