@@ -1,12 +1,13 @@
 {
-    "timestamp": 1774629266.398211,
-    "prompt": "go to the coffee machine near the fridge",
+    "timestamp": 1774860233.6413026,
+    "prompt": "Go to the coffee machine",
     "goal": "coffee machine",
     "clip_prompts": "coffee machine",
     "goal_objects": [
         {
             "id": "map_obj_000010",
             "similarity_score": 0.8807672432218984,
+            "cluster": 1,
             "coords": {
                 "x": 0.20814941823482513,
                 "y": 3.106130361557007,
@@ -16,6 +17,7 @@
         {
             "id": "map_obj_000009",
             "similarity_score": 0.048883518560086624,
+            "cluster": 1,
             "coords": {
                 "x": -0.6276340484619141,
                 "y": 3.776634693145752,
@@ -23,65 +25,50 @@
             }
         }
     ],
-    "selected_goal": {
-        "object_id": "map_obj_000010",
-        "decision_basis": "location",
-        "reasoning": "Prompt specifies a location near the fridge, and location_confidence is moderate, so the candidate near the fridge is selected based on location.",
-        "coords": {
-            "x": 0.20814941823482513,
-            "y": 3.106130361557007,
-            "z": 1.0773570537567139
-        },
-        "similarity": 0.8807672432218984,
-        "cluster": null
-    },
-    "object_similarities": [
-        {
-            "object_id": "map_obj_000010",
-            "similarity": 0.8807672432218984
-        },
-        {
-            "object_id": "map_obj_000009",
-            "similarity": 0.048883518560086624
-        }
-    ],
     "cluster_info": {
-        "cluster_id": 0,
+        "cluster_id": 1,
         "objects": [
-            "chair",
+            "pillow",
+            "fireplace",
+            "microwave",
+            "oven",
             "tv",
-            "bottle",
-            "bottle",
-            "mouse",
-            "keyboard"
+            "stove",
+            "kitchen island",
+            "couch",
+            "coffee machine",
+            "couch",
+            "towel",
+            "coffee machine",
+            "fridge",
+            "chair"
         ],
-        "reasoning": "No room mentioned, but coffee machine and fridge are likely in the kitchen, which is not explicitly mentioned, but implied.",
-        "location_confidence": 0.6,
-        "prioritize_location": true,
+        "reasoning": "No room mentioned, but coffee machine is explicitly mentioned in Cluster 1 (kitchen) contents.",
+        "location_confidence": 0.95,
+        "prioritize_location": false,
         "coords": {
-            "x": 0.0823723344753186,
-            "y": 0.11015402401487033,
-            "z": 0.7487100760142008
+            "x": 0.21329531180007116,
+            "y": 6.812225682394845,
+            "z": 0.8570948094129562
         },
         "dimensions": {
             "bounding_box": {
                 "min": {
-                    "x": -0.7035384774208069,
-                    "y": -0.17792820930480957
+                    "x": -0.7333213686943054,
+                    "y": 3.106130361557007
                 },
                 "max": {
-                    "x": 0.4164349436759949,
-                    "y": 0.26219311356544495
+                    "x": 2.1356117725372314,
+                    "y": 11.047714233398438
                 },
                 "dimensions": {
-                    "width": 1.1199734210968018,
-                    "length": 0.4401213228702545
+                    "width": 2.868933141231537,
+                    "length": 7.941583871841431
                 }
             },
-            "radius": 0.7885361942899973
+            "radius": 4.248545215095242
         }
     },
     "action": "go_to_object",
-    "logic": "GENERIC_OBJECT_SPECIFIC_LOCATION",
-    "valid": true
+    "logic": "GENERIC_OBJECT"
 }
