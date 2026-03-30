@@ -476,7 +476,6 @@ def find_goal_objects(goal: str, clip_prompt: str) -> tuple[List[Dict], np.ndarr
 
 class NavResult(BaseModel):
     goal: str # class of the object to navigate to
-    #related_object: str = "" # object related to the goal location, empty if none
     goal_objects: List[Dict] # list of objects of that class in the map
     clip_prompts: str # single CLIP prompt describing the object
     text_embedding: List[float] | None = None # CLIP text embedding for the prompts
@@ -484,11 +483,9 @@ class NavResult(BaseModel):
     action: str # high-level action plan to reach the goal
     logic: str 
     cluster_info: Dict | None = None # information about the most likely cluster
-    # selected_goal: Dict | None = None # final selected object, or None if no match
 
 class Goal(BaseModel):
     goal: str # class of the object to navigate to
-    #related_object: str = "" # object related to the goal location, empty if none
     clip_prompts: str # single CLIP prompt describing the object
     text_embedding: List[float] | None = None # CLIP text embedding for the prompts
 
@@ -500,9 +497,6 @@ class Logic_decision(BaseModel):
 
 class ClipPromptOutput(BaseModel):
     clip_prompt: str = ""  # Single prompt used as seed for validator expansion
-
-#class RelatedObjectOutput(BaseModel):
-#    related_object: str = ""  # related object for location grounding
 
 class ClusterPrediction(BaseModel):
     cluster_id: int | None = None  # ID of the most likely cluster, None when uncertain
@@ -666,12 +660,10 @@ def extract_goal(prompt : str) -> Goal:
     
     # Now generate one CLIP prompt for this goal
     clip_prompts_result = extract_clip_prompt(prompt, goal_text)
-    #related_object_result = extract_related_object(prompt, goal_text)
     
     # Combine goal and clip prompts into the result (text_embedding will be computed later in find_goal_objects)
     result = Goal(
         goal=goal_text, 
-        #related_object=related_object_result.related_object,
         clip_prompts=clip_prompts_result.clip_prompt,
         text_embedding=None  # Will be computed when finding objects
     )
@@ -731,59 +723,6 @@ def extract_clip_prompt(prompt: str, goal: str) -> ClipPromptOutput:
     print(f"Computation time: {elapsed:.2f} seconds\n")
     
     return result
-
-# def extract_related_object(prompt: str, goal: str) -> RelatedObjectOutput:
-#     """
-#     Uses LLM to extract the object that appears in relation with the goal.
-#     Returns empty related_object when the prompt has no location relation.
-#     """
-#     print("1c. .......Extracting related object from prompt.........\n")
-
-#     cluster_descriptions = get_labeled_cluster_descriptions()
-#     clusters_text = "\n".join(cluster_descriptions) if cluster_descriptions else "No cluster data available."
-
-#     SYSTEM_PROMPT = load_prompt('extract_related_object.txt', clusters_text=clusters_text)
-
-#     msgs = [
-#         {"role": "system", "content": SYSTEM_PROMPT},
-#         {"role": "user", "content": f"User prompt: '{prompt}'\nGoal object: '{goal}'"}
-#     ]
-
-#     start_time = time.time()
-#     max_retries = 3
-#     for attempt in range(max_retries):
-#         try:
-#             if attempt > 0:
-#                 print(f"   Retry attempt {attempt + 1}/{max_retries}")
-
-#             response_text = call_llm(msgs, temperature=0.2)
-#             response_json = extract_json_from_response(response_text, expected_keys=["related_object"])
-#             result = RelatedObjectOutput.model_validate(response_json)
-
-#             related = result.related_object.strip()
-#             if related and _normalize_object_label(related) == _normalize_object_label(goal):
-#                 related = ""
-#             result.related_object = related
-#             break
-
-#         except (ValueError, json.JSONDecodeError):
-#             if attempt < max_retries - 1:
-#                 print("   JSON parsing failed, retrying...")
-#                 time.sleep(1)
-#                 continue
-#             print(f"ERROR: Failed to get valid JSON after {max_retries} attempts")
-#             print(f"Last response: {response_text}\n")
-#             raise
-#         except Exception as e:
-#             print(f"ERROR during related-object extraction: {type(e).__name__}")
-#             print(f"Error message: {str(e)}\n")
-#             raise
-
-#     end_time = time.time()
-#     elapsed = end_time - start_time
-#     print(f"Related object: {result.related_object if result.related_object else 'NONE'}")
-#     print(f"Computation time: {elapsed:.2f} seconds\n")
-#     return result
 
 def determine_most_likely_cluster(prompt: str, goal: str) -> ClusterPrediction:
     """
@@ -988,90 +927,6 @@ def _build_goal_candidates(goal_objects: List[Dict]) -> List[Dict]:
         })
     return candidates
 
-# def select_final_goal(prompt: str, goal: str, goal_objects: List[Dict], cluster_info: Dict | None) -> GoalSelection:
-#     """
-#     Final LLM decision over extracted objects.
-#     The model can prioritize location or similarity and can return no selection.
-#     """
-#     print("6. .......Selecting final goal object with LLM.........\n")
-
-#     candidates = _build_goal_candidates(goal_objects)
-#     if not candidates:
-#         return GoalSelection(
-#             selected_object_id="",
-#             decision_basis="none",
-#             reasoning="No candidate objects were found in the map."
-#         )
-
-#     cluster_context = {
-#         "cluster_id": cluster_info.get("cluster_id") if cluster_info else None,
-#         "location_confidence": float(cluster_info.get("location_confidence", 0.0)) if cluster_info else 0.0,
-#         "prioritize_location": bool(cluster_info.get("prioritize_location", False)) if cluster_info else False,
-#         "reasoning": cluster_info.get("reasoning", "") if cluster_info else ""
-#     }
-
-#     SYSTEM_PROMPT = load_prompt('select_goal.txt')
-#     user_payload = {
-#         "user_prompt": prompt,
-#         "goal_class": goal,
-#         "cluster_context": cluster_context,
-#         "candidates": candidates
-#     }
-
-#     msgs = [
-#         {"role": "system", "content": SYSTEM_PROMPT},
-#         {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False, indent=2)}
-#     ]
-
-#     start_time = time.time()
-#     max_retries = 3
-#     for attempt in range(max_retries):
-#         try:
-#             if attempt > 0:
-#                 print(f"   Retry attempt {attempt + 1}/{max_retries}")
-
-#             response_text = call_llm(msgs, temperature=0.2)
-#             response_json = extract_json_from_response(
-#                 response_text,
-#                 expected_keys=["selected_object_id", "decision_basis", "reasoning"]
-#             )
-#             result = GoalSelection.model_validate(response_json)
-
-#             allowed_basis = {"location", "similarity", "mixed", "none"}
-#             if result.decision_basis not in allowed_basis:
-#                 result.decision_basis = "mixed"
-
-#             valid_ids = {c["object_id"] for c in candidates}
-#             if result.selected_object_id and result.selected_object_id not in valid_ids:
-#                 print(f"Warning: LLM returned unknown object id {result.selected_object_id}, returning no match")
-#                 result.selected_object_id = ""
-#                 result.decision_basis = "none"
-
-#             if not result.selected_object_id:
-#                 result.decision_basis = "none"
-
-#             break
-#         except (ValueError, json.JSONDecodeError):
-#             if attempt < max_retries - 1:
-#                 print("   JSON parsing failed, retrying...")
-#                 time.sleep(1)
-#                 continue
-#             print(f"ERROR: Failed to get valid JSON after {max_retries} attempts")
-#             print(f"Last response: {response_text}\n")
-#             raise
-#         except Exception as e:
-#             print(f"ERROR during final goal selection: {type(e).__name__}")
-#             print(f"Error message: {str(e)}\n")
-#             raise
-
-#     end_time = time.time()
-#     elapsed = end_time - start_time
-#     print(f"Selected object id: {result.selected_object_id or 'NONE'}")
-#     print(f"Decision basis: {result.decision_basis}")
-#     print(f"Reasoning: {result.reasoning}")
-#     print(f"Computation time: {elapsed:.2f} seconds\n")
-#     return result
-
 # ---------------- MAIN PIPELINE --------------- #
 
 def process_nav_instruction(prompt : str) -> NavResult:
@@ -1126,7 +981,6 @@ def process_nav_instruction(prompt : str) -> NavResult:
             "objects": cluster_summaries[cluster_prediction.cluster_id],
             "reasoning": cluster_prediction.reasoning,
             "location_confidence": cluster_prediction.location_confidence,
-            # "prioritize_location": cluster_prediction.location_confidence >= 0.5,
             "coords": cluster_coords,
             "dimensions": cluster_dimensions
         }
@@ -1146,16 +1000,6 @@ def process_nav_instruction(prompt : str) -> NavResult:
     action = extract_action(prompt)
 
     logic = decide_logic(prompt)
-
-    # 6. Final object-level goal selection (can return no match)
-    # final_selection = select_final_goal(prompt, effective_goal, goal_objects, cluster_info)
-    # selected_goal = None
-    # if final_selection.selected_object_id:
-    #     selected_goal = next(
-    #         (obj for obj in goal_objects if obj.get("id") == final_selection.selected_object_id),
-    #         None
-    #     )
-
     # Preserve the extracted user-intent goal even if no mapped object is selected.
     final_goal_class = effective_goal
 
@@ -1169,14 +1013,6 @@ def process_nav_instruction(prompt : str) -> NavResult:
         action=action.action,
         logic=logic.logic,
         cluster_info=cluster_info,
-        # selected_goal={
-        #     "object_id": final_selection.selected_object_id,
-        #     "decision_basis": final_selection.decision_basis,
-        #     "reasoning": final_selection.reasoning,
-        #     "coords": selected_goal.get("pose_map") if selected_goal else None,
-        #     "similarity": float(selected_goal.get("similarity_score", 0.0)) if selected_goal else None,
-        #     "cluster": _find_object_cluster(final_selection.selected_object_id) if selected_goal else None
-        # } if selected_goal else None
     )
 
 # ----------------- RESULT SAVING ----------------- #
@@ -1217,7 +1053,6 @@ def save_robot_command(output_path: str, prompt: str, result: NavResult) -> None
     """Serialize navigation result into robot_command.json schema and save."""
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
-    # valid = bool(result.goal) and result.action in {"go_to_object", "bring_back_object"}
     cluster_info: Dict | None = None
     if result.cluster_info:
         cluster_info = {
@@ -1234,16 +1069,11 @@ def save_robot_command(output_path: str, prompt: str, result: NavResult) -> None
         "timestamp": time.time(),
         "prompt": prompt,
         "goal": result.goal,
-        #"related_object": result.related_object,
         "clip_prompts": result.clip_prompts,
-        # "text_embedding": result.text_embedding,
         "goal_objects": _objects_with_coords(result.goal_objects),
-        # "selected_goal": result.selected_goal,
-        # "object_similarities": result.object_similarities,
         "cluster_info": cluster_info,
         "action": result.action,
         "logic": result.logic,
-        # "valid": valid,
     }
 
     with open(output_path, "w", encoding="utf-8") as f:
