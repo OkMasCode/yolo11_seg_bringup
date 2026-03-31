@@ -554,7 +554,9 @@ class NoPCVisionNode(Node):
             with self.clip_state_lock:
                 text_embedding = None if self.goal_text_embedding is None else self.goal_text_embedding.copy()
 
-            msg.embedding = current_emb.tolist() if current_emb is not None else []
+            # Change these to match the .msg file exactly!
+            msg.image_embedding_masked = masked_emb.tolist() if masked_emb is not None else []
+            msg.image_embedding_unmasked = unmasked_emb.tolist() if unmasked_emb is not None else []
             msg.text_embedding = text_embedding.tolist() if text_embedding is not None else []
 
             # Compute goal similarity
