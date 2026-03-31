@@ -90,7 +90,8 @@ class CppMapperJsonExporterNode(Node):
                 "bbox_corners": corners,
                 "occurrences": int(obj.occurrences),
                 "similarity": float(obj.similarity),
-                "image_embedding": [float(v) for v in obj.image_embedding],
+                "image_embedding_masked": [float(v) for v in obj.image_embedding_masked],
+                "image_embedding_unmasked": [float(v) for v in obj.image_embedding_unmasked],
                 "embedding_confidence": float(obj.confidence),
                 "confidence": float(obj.confidence),
             }

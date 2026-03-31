@@ -115,6 +115,8 @@ def initialize_clip_processor():
             device=MODEL_DEVICE,
             model_name='ViT-B-16-SigLIP',
             pretrained='webli',
+            masked_score_weight=1.0,
+            unmasked_score_weight=0.0
         )
         print("Successfully loaded SigLIP CLIP processor!\n")
     except Exception as e:
@@ -179,9 +181,10 @@ def compute_object_similarities(goal_objects: List[Dict], text_embedding) -> Lis
     scored_objects = []
     
     for obj in goal_objects:
-        image_embedding = obj.get("image_embedding")
+        image_embedding_masked = obj.get("image_embedding_masked")
+        image_embedding_unmasked = obj.get("image_embedding_unmasked")
         
-        if image_embedding is None:
+        if image_embedding_masked is None or image_embedding_unmasked is None:
             print(f"Warning: Object {obj.get('id')} has no image embedding")
             scored_objects.append({
                 **obj,
@@ -189,11 +192,13 @@ def compute_object_similarities(goal_objects: List[Dict], text_embedding) -> Lis
             })
             continue
 
-        if isinstance(image_embedding, list):
-            image_embedding = np.array(image_embedding, dtype=np.float32)
+        if isinstance(image_embedding_masked, list):
+            image_embedding_masked = np.array(image_embedding_masked, dtype=np.float32)
+        if isinstance(image_embedding_unmasked, list):
+            image_embedding_unmasked = np.array(image_embedding_unmasked, dtype=np.float32)
 
         try:
-            similarity = clip_processor.compute_match_score(image_embedding, text_embedding)
+            similarity = clip_processor.compute_blended_match_score(image_embedding_masked, image_embedding_unmasked, text_embedding)
             if similarity is None:
                 similarity = 0.0
         except Exception as e:
