@@ -1,5 +1,5 @@
 {
-    "timestamp": 1775046055.1918402,
+    "timestamp": 1775053987.980993,
     "prompt": "go to the fork",
     "goal": "fork",
     "clip_prompts": "metal fork",
@@ -7,7 +7,9 @@
     "cluster_info": {
         "cluster_id": 0,
         "objects": [
+            "tv",
             "stove",
+            "oven",
             "microwave",
             "towel",
             "couch",
@@ -22,30 +24,30 @@
             "tv",
             "chair"
         ],
-        "reasoning": "No room mentioned and fork is highly likely in the kitchen.",
-        "location_confidence": 0.8,
+        "reasoning": "No room mentioned and fork is in Cluster 0 (kitchen) which is a typical place for eating utensils.",
+        "location_confidence": 0.7,
         "prioritize_location": false,
         "coords": {
-            "x": 1.0222224704921246,
-            "y": 5.756500584738595,
-            "z": 0.8251643436295646
+            "x": 0.9179945788346231,
+            "y": 6.163493096828461,
+            "z": 0.8129273671656847
         },
         "dimensions": {
             "bounding_box": {
                 "min": {
-                    "x": -0.732854425907135,
-                    "y": 2.5804495811462402
+                    "x": -0.7153791785240173,
+                    "y": 2.580073356628418
                 },
                 "max": {
                     "x": 4.7728352546691895,
-                    "y": 11.148316383361816
+                    "y": 11.66887092590332
                 },
                 "dimensions": {
-                    "width": 5.5056896805763245,
-                    "length": 8.567866802215576
+                    "width": 5.488214433193207,
+                    "length": 9.088797569274902
                 }
             },
-            "radius": 5.422788014822737
+            "radius": 5.526488239546028
         }
     },
     "action": "go_to_object",

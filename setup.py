@@ -14,7 +14,7 @@ setup(
         ('share/' + package_name, ['package.xml']),
         (os.path.join('share', package_name, 'launch'), glob('launch/*.launch.py')),
     ],
-    install_requires=['setuptools'],
+    install_requires=['setuptools', 'numpy', 'scikit-learn'],
     zip_safe=True,
     maintainer='sensor',
     maintainer_email='sensor@todo.todo',
@@ -33,6 +33,7 @@ setup(
             'mapper_node = yolo11_seg_bringup.mapper_node:main',
             'map_points_node = yolo11_seg_bringup.map_points_node:main',
             'clustered_map_points_node = yolo11_seg_bringup.clustered_map_points_node:main',
+            'clustered_map_preproc_publisher_node = yolo11_seg_bringup.clustered_map_preproc_publisher_node:main',
             'goal_checker_node = yolo11_seg_bringup.goal_checker_node:main',
             'cpp_mapper_json_exporter_node = yolo11_seg_bringup.cpp_mapper_json_exporter_node:main',
             'check_vision_goal = yolo11_seg_bringup.check_vision_goal:main'
