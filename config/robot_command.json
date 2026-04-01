@@ -1,72 +1,51 @@
 {
-    "timestamp": 1774860233.6413026,
-    "prompt": "Go to the coffee machine",
-    "goal": "microwave",
-    "clip_prompts": "microwave",
-    "goal_objects": [
-        {
-            "id": "map_obj_000010",
-            "similarity_score": 0.8807672432218984,
-            "cluster": 1,
-            "coords": {
-                "x": 0.20814941823482513,
-                "y": 3.106130361557007,
-                "z": 1.0773570537567139
-            }
-        },
-        {
-            "id": "map_obj_000009",
-            "similarity_score": 0.048883518560086624,
-            "cluster": 1,
-            "coords": {
-                "x": -0.6276340484619141,
-                "y": 3.776634693145752,
-                "z": 1.1012928485870361
-            }
-        }
-    ],
+    "timestamp": 1775046055.1918402,
+    "prompt": "go to the fork",
+    "goal": "fork",
+    "clip_prompts": "metal fork",
+    "goal_objects": [],
     "cluster_info": {
-        "cluster_id": 1,
+        "cluster_id": 0,
         "objects": [
-            "pillow",
-            "fireplace",
-            "microwave",
-            "oven",
-            "tv",
             "stove",
-            "kitchen island",
+            "microwave",
+            "towel",
             "couch",
             "coffee machine",
             "couch",
-            "towel",
+            "sink",
             "coffee machine",
             "fridge",
+            "kitchen island",
+            "toilet",
+            "fireplace",
+            "tv",
             "chair"
         ],
-        "reasoning": "No room mentioned, but coffee machine is explicitly mentioned in Cluster 1 (kitchen) contents.",
-        "location_confidence": 0.95,
+        "reasoning": "No room mentioned and fork is highly likely in the kitchen.",
+        "location_confidence": 0.8,
         "prioritize_location": false,
         "coords": {
-            "x": 0.21329531180007116,
-            "y": 6.812225682394845,
-            "z": 0.8570948094129562
+            "x": 1.0222224704921246,
+            "y": 5.756500584738595,
+            "z": 0.8251643436295646
         },
         "dimensions": {
             "bounding_box": {
                 "min": {
-                    "x": -0.7333213686943054,
-                    "y": 3.106130361557007
+                    "x": -0.732854425907135,
+                    "y": 2.5804495811462402
                 },
                 "max": {
-                    "x": 2.1356117725372314,
-                    "y": 11.047714233398438
+                    "x": 4.7728352546691895,
+                    "y": 11.148316383361816
                 },
                 "dimensions": {
-                    "width": 2.868933141231537,
-                    "length": 7.941583871841431
+                    "width": 5.5056896805763245,
+                    "length": 8.567866802215576
                 }
             },
-            "radius": 4.248545215095242
+            "radius": 5.422788014822737
         }
     },
     "action": "go_to_object",

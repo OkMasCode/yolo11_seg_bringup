@@ -35,6 +35,7 @@ setup(
             'clustered_map_points_node = yolo11_seg_bringup.clustered_map_points_node:main',
             'goal_checker_node = yolo11_seg_bringup.goal_checker_node:main',
             'cpp_mapper_json_exporter_node = yolo11_seg_bringup.cpp_mapper_json_exporter_node:main',
+            'check_vision_goal = yolo11_seg_bringup.check_vision_goal:main'
         ],
     },
 )

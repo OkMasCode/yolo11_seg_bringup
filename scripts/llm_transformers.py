@@ -210,7 +210,8 @@ def compute_object_similarities(goal_objects: List[Dict], text_embedding) -> Lis
             "similarity_score": float(similarity)
         })
 
-        del image_embedding
+        del image_embedding_masked
+        del image_embedding_unmasked
 
     scored_objects.sort(key=lambda x: x.get("similarity_score", 0.0), reverse=True)
 

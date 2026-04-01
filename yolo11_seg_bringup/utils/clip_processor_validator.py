@@ -23,8 +23,8 @@ class CLIPProcessorValidator:
         model_name="ViT-B-16-SigLIP",
         pretrained="webli",
         square_crop_scale=1.2,
-        masked_score_weight=0.5,
-        unmasked_score_weight=0.5,
+        masked_score_weight=1.0,
+        unmasked_score_weight=0.0,
     ):
         self.device = device
         self.model_name = model_name
