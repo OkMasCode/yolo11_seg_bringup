@@ -82,7 +82,7 @@ class NoPCVisionNode(Node):
 
         self.frame_skip = 5
 
-        self.CLASS_NAMES = ["oven", "fridge", "dining table", "sink", "toilet", "couch", "chair", "tv", "bed", 
+        self.CLASS_NAMES = ["oven", "fridge", "dining table", "sink", "toilet", "couch", "chair", "tv", "bed",
                             "nightstand", "dresser", "stove", "fireplace", "potted plant", "coffee machine", "toaster", "painting", "coffee table", "desk",  
                             "microwave", "kitchen island", "towel", "houseplant", "pillow"]
 

@@ -1,53 +1,37 @@
 {
-    "timestamp": 1775053987.980993,
-    "prompt": "go to the fork",
-    "goal": "fork",
-    "clip_prompts": "metal fork",
-    "goal_objects": [],
+    "timestamp": 1775142051.5087996,
+    "prompt": "go to the couch",
+    "goal": "couch",
+    "clip_prompts": "couch",
     "cluster_info": {
-        "cluster_id": 0,
+        "cluster_id": 3,
         "objects": [
-            "tv",
-            "stove",
-            "oven",
-            "microwave",
-            "towel",
-            "couch",
-            "coffee machine",
-            "couch",
-            "sink",
-            "coffee machine",
-            "fridge",
-            "kitchen island",
-            "toilet",
-            "fireplace",
-            "tv",
-            "chair"
+            "couch"
         ],
-        "reasoning": "No room mentioned and fork is in Cluster 0 (kitchen) which is a typical place for eating utensils.",
-        "location_confidence": 0.7,
+        "reasoning": "User says 'couch' which is explicitly mentioned in Cluster 3 (living room) and Cluster 2 (living room #1). However, Cluster 3 has a higher confidence due to the exact match.",
+        "location_confidence": 0.8,
         "prioritize_location": false,
         "coords": {
-            "x": 0.9179945788346231,
-            "y": 6.163493096828461,
-            "z": 0.8129273671656847
+            "x": 3.1123151779174805,
+            "y": 9.088582992553711,
+            "z": 0.5321447253227234
         },
         "dimensions": {
             "bounding_box": {
                 "min": {
-                    "x": -0.7153791785240173,
-                    "y": 2.580073356628418
+                    "x": 3.1123151779174805,
+                    "y": 9.088582992553711
                 },
                 "max": {
-                    "x": 4.7728352546691895,
-                    "y": 11.66887092590332
+                    "x": 3.1123151779174805,
+                    "y": 9.088582992553711
                 },
                 "dimensions": {
-                    "width": 5.488214433193207,
-                    "length": 9.088797569274902
+                    "width": 0.0,
+                    "length": 0.0
                 }
             },
-            "radius": 5.526488239546028
+            "radius": 0.0
         }
     },
     "action": "go_to_object",

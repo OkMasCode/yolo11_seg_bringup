@@ -35,7 +35,7 @@ class ClipModelValidatorNode(Node):
         super().__init__("clip_model_validator_node")
 
         # --- Parameters ---
-        self.declare_parameter("image_topic", "/camera/rgb")
+        self.declare_parameter("image_topic", "/camera/color/image_raw")
         self.declare_parameter("similarity_topic", "/clip/match_score")
         self.declare_parameter("annotated_image_topic", "/clip/annotated_image")
         self.declare_parameter("clip_model_name", "ViT-B-16-SigLIP")
@@ -44,20 +44,21 @@ class ClipModelValidatorNode(Node):
             "prompt_file",
             "/workspaces/ros2_ws/src/yolo11_seg_bringup/config/clip_prompt.json",
         )
-        self.declare_parameter("prompt_check_interval", 30.0)
+        self.declare_parameter("prompt_check_interval", 5.0)
         self.declare_parameter("yolo_model_path", "/workspaces/yoloe-26l-seg.pt")
         self.declare_parameter("yolo_imgsz", 640)
         self.declare_parameter("yolo_conf", 0.45)
         self.declare_parameter("yolo_iou", 0.35)
         self.declare_parameter("square_crop_scale", 1.2)
-        self.declare_parameter("masked_score_weight", 0.5)
-        self.declare_parameter("unmasked_score_weight", 0.5)
+        self.declare_parameter("masked_score_weight", 1.0)
+        self.declare_parameter("unmasked_score_weight", 0.0)
         self.declare_parameter(
             "reduced_map_output_dir",
             "/workspaces/ros2_ws/src/yolo11_seg_bringup/config",
         )
         self.declare_parameter("reduced_map_file", "reduced_map.json")
         self.declare_parameter("reduced_map_export_interval", 5.0)
+        self.declare_parameter("table_log_interval_frames", 10)
 
         self.image_topic = self.get_parameter("image_topic").value
         self.similarity_topic = self.get_parameter("similarity_topic").value
@@ -77,6 +78,10 @@ class ClipModelValidatorNode(Node):
         self.reduced_map_file = self.get_parameter("reduced_map_file").value
         self.reduced_map_export_interval = float(
             self.get_parameter("reduced_map_export_interval").value
+        )
+        self.table_log_interval_frames = max(
+            1,
+            int(self.get_parameter("table_log_interval_frames").value),
         )
 
         # --- Device & Model Setup ---
@@ -104,7 +109,7 @@ class ClipModelValidatorNode(Node):
                 else 0.0
             )
 
-        self.CLASS_NAMES = ["bottle"]
+        self.CLASS_NAMES = ["person"]
         
         self.get_logger().info(f"Loading YOLO segmentation model: {self.yolo_model_path}")
         self.yolo = YOLO(self.yolo_model_path, task="segment")
@@ -121,6 +126,7 @@ class ClipModelValidatorNode(Node):
         self.avg_score_sum = 0.0
         self.avg_score_count = 0
         self.stable_map = {}
+        self.scored_frame_count = 0
 
         self.timing_stats = {
             "text_encoding": [],
@@ -173,7 +179,59 @@ class ClipModelValidatorNode(Node):
         self.get_logger().info(
             "ClipModelValidatorNode ready. "
             f"reduced_map_path={os.path.join(self.reduced_map_output_dir, self.reduced_map_file)} "
-            f"export_interval={self.reduced_map_export_interval:.1f}s"
+            f"export_interval={self.reduced_map_export_interval:.1f}s "
+            f"table_log_interval_frames={self.table_log_interval_frames}"
+        )
+
+    @staticmethod
+    def _format_similarity_table(rows):
+        if not rows:
+            return "No tracked IDs with similarity yet"
+
+        headers = ["ID", "Class", "Similarity", "DetConf"]
+        formatted_rows = [
+            [
+                str(row["id"]),
+                str(row["class"]),
+                f"{float(row['score']):.2f}",
+                f"{float(row['confidence']):.3f}",
+            ]
+            for row in rows
+        ]
+
+        col_widths = [len(header) for header in headers]
+        for row in formatted_rows:
+            for idx, cell in enumerate(row):
+                col_widths[idx] = max(col_widths[idx], len(cell))
+
+        def _line(values):
+            return " | ".join(
+                value.ljust(col_widths[idx]) for idx, value in enumerate(values)
+            )
+
+        separator = "-+-".join("-" * width for width in col_widths)
+        lines = [_line(headers), separator]
+        for row in formatted_rows:
+            lines.append(_line(row))
+        return "\n".join(lines)
+
+    def _log_similarity_table(self, frame_scores):
+        rows = [
+            {
+                "id": object_id,
+                "class": values.get("class", "unknown"),
+                "score": float(values.get("score", 0.0)),
+                "confidence": float(values.get("confidence", 0.0)),
+            }
+            for object_id, values in frame_scores.items()
+        ]
+
+        rows.sort(
+            key=lambda row: int(row["id"]) if str(row["id"]).isdigit() else str(row["id"])
+        )
+        table = self._format_similarity_table(rows)
+        self.get_logger().info(
+            f"Similarity table (current frame, every {self.table_log_interval_frames} scored frames):\n{table}"
         )
 
     @staticmethod
@@ -624,6 +682,7 @@ class ClipModelValidatorNode(Node):
             score_start = perf_counter()
             best_score = 0.0
             total_score = 0.0
+            latest_scores_this_frame = {}
 
             for idx in range(pair_count):
                 masked_score = self._compute_match_score(masked_embeddings[idx], text_embedding)
@@ -633,15 +692,11 @@ class ClipModelValidatorNode(Node):
                     + (self.unmasked_score_weight * unmasked_score)
                 )
                 meta = detection_meta[idx]
-
-                self.get_logger().info(
-                    "Object similarity: "
-                    f"id={meta['instance_id']} "
-                    f"class='{meta['class_name']}' "
-                    f"conf={meta['confidence']:.3f} "
-                    f"score={match_score:.2f} "
-                    f"(masked={masked_score:.2f}, unmasked={unmasked_score:.2f})"
-                )
+                latest_scores_this_frame[str(meta["instance_id"])] = {
+                    "class": meta["class_name"],
+                    "score": float(match_score),
+                    "confidence": float(meta["confidence"]),
+                }
 
                 fused_detection_embedding = self._combine_detection_embeddings(
                     masked_embeddings[idx],
@@ -664,6 +719,10 @@ class ClipModelValidatorNode(Node):
                 f"Stable map update: objects={stable_count}",
                 throttle_duration_sec=2.0,
             )
+
+            self.scored_frame_count += 1
+            if self.scored_frame_count % self.table_log_interval_frames == 0:
+                self._log_similarity_table(latest_scores_this_frame)
 
             self.timing_stats["match_score_compute"].append((perf_counter() - score_start) * 1000.0)
 

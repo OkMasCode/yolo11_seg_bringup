@@ -19,12 +19,12 @@ class StillImagePublisherNode(Node):
     def __init__(self):
         super().__init__("still_image_publisher_node")
 
-        self.declare_parameter("image_path", "/workspaces/wine_bottles.jpg")
+        self.declare_parameter("image_path", "/workspaces/people.jpg")
         self.declare_parameter("image_topic", "/camera/rgb")
         self.declare_parameter("fps", 30.0)
         self.declare_parameter("frame_id", "camera_rgb_optical_frame")
-        self.declare_parameter("output_height", 360)
-        self.declare_parameter("output_width", 480)
+        self.declare_parameter("output_height", 480)
+        self.declare_parameter("output_width", 640)
 
         self.image_path = str(self.get_parameter("image_path").value)
         self.image_topic = str(self.get_parameter("image_topic").value)
