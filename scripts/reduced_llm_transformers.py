@@ -12,19 +12,14 @@ import re
 import warnings
 import logging
 
-from yolo11_seg_bringup.utils.clip_processor_validator import CLIPProcessorValidator
-
 # Suppress HuggingFace warnings
 warnings.filterwarnings('ignore', category=UserWarning, module='transformers')
 logging.getLogger('transformers').setLevel(logging.ERROR)
 
 # Configure Hugging Face model
 CHAT_MODEL = "meta-llama/Llama-3.1-8B-Instruct" #"mistralai/Mistral-7B-Instruct-v0.3"
-MODEL_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 MODEL_MAX_LENGTH = 8192
-OFFLINE_MODE = False
-
-PRINT_ALL_MAP_SIMILARITIES_TEST = True
+OFFLINE_MODE = True
 
 MAP_FILE = "/workspaces/ros2_ws/src/yolo11_seg_bringup/config/map_v6.json"
 CLUSTERED_MAP_FILE = "/workspaces/ros2_ws/src/yolo11_seg_bringup/config/clustered_map_v6.json"
@@ -32,7 +27,6 @@ ROBOT_COMMAND_FILE = "/workspaces/ros2_ws/src/yolo11_seg_bringup/config/robot_co
 PROMPTS_DIR = os.path.join(os.path.dirname(__file__), "prompts")
 
 llm_pipeline = None
-clip_processor = None
 
 house_map = []
 clustered_map = []
@@ -68,7 +62,6 @@ def initialize_model():
     """Initialize the Hugging Face model and tokenizer."""
     global llm_pipeline
     print(f"Loading language model: {CHAT_MODEL}")
-    print(f"Device: {MODEL_DEVICE}")
     print(f"Offline mode: {OFFLINE_MODE}\n")
     
     try:
@@ -105,120 +98,6 @@ def initialize_model():
             print("\nIf this is your first run, set OFFLINE_MODE=False to download the model.")
             print("After download, the model will be cached locally for offline use.")
         sys.exit(1)
-
-def initialize_clip_processor():
-    """Initialize the CLIPProcessor for text and image embedding."""
-    global clip_processor
-    try:
-        print("Initializing SigLIP CLIP processor...")
-        clip_processor = CLIPProcessorValidator(
-            device=MODEL_DEVICE,
-            model_name='ViT-B-16-SigLIP',
-            pretrained='webli',
-            masked_score_weight=1.0,
-            unmasked_score_weight=0.0
-        )
-        print("Successfully loaded SigLIP CLIP processor!\n")
-    except Exception as e:
-        print(f"Failed to load CLIP processor: {e}")
-        sys.exit(1)
-
-
-def _build_validator_prompt_ensemble(clip_prompt: str) -> List[str]:
-    """Expand one LLM prompt using validator-style prompt templates."""
-    if not isinstance(clip_prompt, str):
-        return []
-
-    clean = clip_prompt.strip()
-    if not clean:
-        return []
-
-    expanded = clip_processor.build_prompt_list(clean)
-    if not expanded:
-        return []
-
-    unique = list(dict.fromkeys(expanded))
-    return unique
-
-def encode_clip_prompt(clip_prompt: str) -> np.ndarray | None:
-    """
-    Encode one CLIP prompt into a single averaged embedding using validator expansion.
-    
-    Args:
-        clip_prompt: One LLM-extracted text prompt
-    
-    Returns:
-        Normalized embedding vector (numpy array) or None if encoding fails
-    """
-    if not clip_prompt or clip_processor is None:
-        return None
-
-    try:
-        prompt_ensemble = _build_validator_prompt_ensemble(clip_prompt)
-        if not prompt_ensemble:
-            return None
-
-        print(f"Encoding {len(prompt_ensemble)} validator-style CLIP prompts")
-        text_embedding = clip_processor.encode_text(prompt_ensemble)
-        if text_embedding is not None:
-            if not isinstance(text_embedding, np.ndarray):
-                text_embedding = np.array(text_embedding)
-        return text_embedding
-    except Exception as e:
-        print(f"Warning: Error encoding CLIP prompts: {e}")
-        print(f"Continuing without text embedding...")
-        return None
-
-def compute_object_similarities(goal_objects: List[Dict], text_embedding) -> List[Dict]:
-    """
-    Compute CLIP similarity scores for all goal objects.
-    Ranks them by similarity score (highest first).
-    """
-    if text_embedding is None:
-        print("Warning: Text embedding is None, cannot compute similarities")
-        return goal_objects
-    
-    scored_objects = []
-    
-    for obj in goal_objects:
-        image_embedding_masked = obj.get("image_embedding_masked")
-        image_embedding_unmasked = obj.get("image_embedding_unmasked")
-        
-        if image_embedding_masked is None or image_embedding_unmasked is None:
-            print(f"Warning: Object {obj.get('id')} has no image embedding")
-            scored_objects.append({
-                **obj,
-                "similarity_score": 0.0
-            })
-            continue
-
-        if isinstance(image_embedding_masked, list):
-            image_embedding_masked = np.array(image_embedding_masked, dtype=np.float32)
-        if isinstance(image_embedding_unmasked, list):
-            image_embedding_unmasked = np.array(image_embedding_unmasked, dtype=np.float32)
-
-        try:
-            similarity = clip_processor.compute_blended_match_score(image_embedding_masked, image_embedding_unmasked, text_embedding)
-            if similarity is None:
-                similarity = 0.0
-        except Exception as e:
-            print(f"Error computing similarity for {obj.get('id')}: {e}")
-            similarity = 0.0
-        
-        scored_objects.append({
-            **obj,
-            "similarity_score": float(similarity)
-        })
-
-        del image_embedding_masked
-        del image_embedding_unmasked
-
-    scored_objects.sort(key=lambda x: x.get("similarity_score", 0.0), reverse=True)
-
-    del text_embedding
-    gc.collect()
-    
-    return scored_objects
 
 def load_house_map(filename):
     """Loads the map.json file containing all objects and their coordinates."""
@@ -410,7 +289,6 @@ class NavResult(BaseModel):
     goal: str # class of the object to navigate to
     #goal_objects: List[Dict] # list of objects of that class in the map
     clip_prompts: str # single CLIP prompt describing the object
-    text_embedding: List[float] | None = None # CLIP text embedding for the prompts
     object_similarities: List[Dict] = [] # similarity scores for each goal object
     action: str # high-level action plan to reach the goal
     logic: str 
@@ -419,7 +297,6 @@ class NavResult(BaseModel):
 class Goal(BaseModel):
     goal: str # class of the object to navigate to
     clip_prompts: str # single CLIP prompt describing the object
-    text_embedding: List[float] | None = None # CLIP text embedding for the prompts
 
 class Action(BaseModel):
     action: str # Action that the robot has to perform
@@ -597,11 +474,10 @@ def extract_goal(prompt : str) -> Goal:
     print(f"CLIP prompt: {clip_prompt_text}")
     print(f"Computation time: {elapsed:.2f} seconds\n")
 
-    # Combine goal and clip prompt into the result (text_embedding will be computed later in find_goal_objects)
+    # Combine goal and clip prompt into the result
     result = Goal(
         goal=goal_text, 
         clip_prompts=clip_prompt_text,
-        text_embedding=None  # Will be computed when finding objects
     )
     
     return result
@@ -880,6 +756,7 @@ def _objects_with_coords(objects: List[Dict]) -> List[Dict]:
         out.append(entry)
     
     return out
+
 def save_robot_command(output_path: str, prompt: str, result: NavResult) -> None:
     """Serialize navigation result into robot_command.json schema and save."""
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -915,7 +792,6 @@ def save_robot_command(output_path: str, prompt: str, result: NavResult) -> None
 def main():
     global house_map, clustered_map, cluster_summaries, clip_processor
     initialize_model()
-    initialize_clip_processor()
 
     house_map = load_house_map(MAP_FILE)
     map_objects = get_map_objects()
