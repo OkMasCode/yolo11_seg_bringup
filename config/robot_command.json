@@ -1,15 +1,15 @@
 {
-    "timestamp": 1775142051.5087996,
-    "prompt": "go to the couch",
-    "goal": "couch",
-    "clip_prompts": "couch",
+    "timestamp": 1775142494.4618132,
+    "prompt": "Go to the person talking to the phone on the couch",
+    "goal": "person",
+    "clip_prompts": "person talking to phone",
     "cluster_info": {
         "cluster_id": 3,
         "objects": [
             "couch"
         ],
-        "reasoning": "User says 'couch' which is explicitly mentioned in Cluster 3 (living room) and Cluster 2 (living room #1). However, Cluster 3 has a higher confidence due to the exact match.",
-        "location_confidence": 0.8,
+        "reasoning": "No room mentioned, but 'couch' is a strong cue for Cluster 3 (living room #1 #2) or Cluster 2 (living room #1 #1), but Cluster 3 has a higher likelihood of having a person.",
+        "location_confidence": 0.65,
         "prioritize_location": false,
         "coords": {
             "x": 3.1123151779174805,
@@ -35,5 +35,5 @@
         }
     },
     "action": "go_to_object",
-    "logic": "GENERIC_OBJECT"
+    "logic": "GENERIC_OBJECT_SPECIFIC_LOCATION"
 }

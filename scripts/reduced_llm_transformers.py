@@ -545,10 +545,10 @@ def extract_json_from_response(response: str, expected_keys: List[str] = None) -
 
 def extract_goal(prompt : str) -> Goal:
 
-    print("1. .......Extracting goal from prompt.........\n")
+    print("1. .......Extracting goal and CLIP prompt from prompt.........\n")
     
     # Load prompt template from file
-    SYSTEM_PROMPT = load_prompt('extract_goal.txt', MAP_OBJECTS=get_map_objects())
+    SYSTEM_PROMPT = load_prompt('extract_goal_and_clip.txt', MAP_OBJECTS=get_map_objects())
 
     # message passed to the LLM
     msgs = [
@@ -560,6 +560,7 @@ def extract_goal(prompt : str) -> Goal:
     # LLM call with error handling and retry logic
     max_retries = 3
     goal_text = ""
+    clip_prompt_text = ""
     for attempt in range(max_retries):
         try:
             if attempt > 0:
@@ -567,8 +568,9 @@ def extract_goal(prompt : str) -> Goal:
             
             response_text = call_llm(msgs, temperature=0.2)  # Low temp for consistent JSON
             
-            response_json = extract_json_from_response(response_text, expected_keys=["goal"])
+            response_json = extract_json_from_response(response_text, expected_keys=["goal", "clip_prompt"])
             goal_text = response_json["goal"]
+            clip_prompt_text = response_json.get("clip_prompt", "")
             break  # Success, exit retry loop
             
         except (ValueError, json.JSONDecodeError) as e:
@@ -587,72 +589,20 @@ def extract_goal(prompt : str) -> Goal:
     end_time = time.time()
     elapsed = end_time - start_time
     goal_text = goal_text.strip()
+    clip_prompt_text = clip_prompt_text.strip()
+    if not clip_prompt_text and goal_text:
+        clip_prompt_text = goal_text
+
     print(f"Goal: {goal_text}")
+    print(f"CLIP prompt: {clip_prompt_text}")
     print(f"Computation time: {elapsed:.2f} seconds\n")
-    
-    # Now generate one CLIP prompt for this goal
-    clip_prompts_result = extract_clip_prompt(prompt, goal_text)
-    
-    # Combine goal and clip prompts into the result (text_embedding will be computed later in find_goal_objects)
+
+    # Combine goal and clip prompt into the result (text_embedding will be computed later in find_goal_objects)
     result = Goal(
         goal=goal_text, 
-        clip_prompts=clip_prompts_result.clip_prompt,
+        clip_prompts=clip_prompt_text,
         text_embedding=None  # Will be computed when finding objects
     )
-    
-    return result
-
-def extract_clip_prompt(prompt: str, goal: str) -> ClipPromptOutput:
-    """
-    Uses LLM to generate one CLIP seed prompt that describes the object
-    based only on features mentioned in the user's prompt.
-    The final embedding ensemble is created by validator template expansion.
-    """
-    print("1b. .......Generating CLIP prompt for visual matching.........\n")
-    
-    SYSTEM_PROMPT = load_prompt('extract_clip_prompts.txt')
-    
-    msgs = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": f"User prompt: '{prompt}'\nGoal object: '{goal}'"}
-    ]
-    
-    start_time = time.time()
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            if attempt > 0:
-                print(f"   Retry attempt {attempt + 1}/{max_retries}")
-            
-            response_text = call_llm(msgs, temperature=0.2)
-            
-            response_json = extract_json_from_response(response_text, expected_keys=["clip_prompt"])
-            result = ClipPromptOutput.model_validate(response_json)
-            result.clip_prompt = result.clip_prompt.strip()
-            if not result.clip_prompt:
-                raise ValueError("LLM returned empty clip_prompt")
-            
-            break
-            
-        except (ValueError, json.JSONDecodeError) as e:
-            if attempt < max_retries - 1:
-                print(f"   JSON parsing failed, retrying...")
-                time.sleep(1)
-                continue
-            else:
-                print(f"ERROR: Failed to get valid JSON after {max_retries} attempts")
-                print(f"Last response: {response_text}\n")
-                raise
-        except Exception as e:
-            print(f"ERROR during CLIP prompt generation: {type(e).__name__}")
-            print(f"Error message: {str(e)}\n")
-            raise
-    
-    end_time = time.time()
-    elapsed = end_time - start_time
-    print("CLIP prompt generated:")
-    print(f"  {result.clip_prompt}")
-    print(f"Computation time: {elapsed:.2f} seconds\n")
     
     return result
 

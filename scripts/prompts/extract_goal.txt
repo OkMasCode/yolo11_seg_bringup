@@ -11,7 +11,7 @@ Rules:
 5. If multiple objects appear, choose the main requested target.
 6. Keep goal to 1-3 words: just the object type/class.
 7. If no concrete object exists, return {{"goal":""}}.
-8. If the goal is a synonymus of one object in the map, provide the class of object in the map (prompt: television, map:tv -> provide tv). 
+8. If the goal is a synonymus of one object in the map, provide the class of object in the map (prompt: television, map:tv -> provide tv).
 
 Examples:
 User: "Bring me a cup of coffee" -> {{"goal":"cup"}}
