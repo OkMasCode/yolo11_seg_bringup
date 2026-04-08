@@ -41,14 +41,14 @@ class NoPCVisionNode(Node):
         # ============= Parameters ============= #
 
         # Communication parameters
-        self.declare_parameter('image_topic', '/camera/rgb') #/camera/camera/color/image_raw
+        self.declare_parameter('image_topic', '/camera/camera/color/image_raw') #/camera/camera/color/image_raw
         self.declare_parameter('enable_visualization', True)
 
         self.image_topic = self.get_parameter('image_topic').value
         self.enable_vis = bool(self.get_parameter('enable_visualization').value)
 
         # YOLO parameters
-        self.declare_parameter('model_path', '/workspaces/yoloe-26l-seg.pt')
+        self.declare_parameter('model_path', '/home/workspace/yoloe-26l-seg.pt')
         self.declare_parameter('imgsz', 640)
         self.declare_parameter('conf', 0.45)
         self.declare_parameter('iou', 0.35)
@@ -61,7 +61,7 @@ class NoPCVisionNode(Node):
         # CLIP parameters
         self.declare_parameter('CLIP_model_name', 'ViT-B-16-SigLIP')
         self.declare_parameter('clip_pretrained', 'webli')
-        self.declare_parameter('robot_command_file', '/workspaces/ros2_ws/src/yolo11_seg_bringup/config/robot_command.json')
+        self.declare_parameter('robot_command_file', '/home/workspace/ros2_ws/src/yolo11_seg_bringup/config/robot_command.json')
         self.declare_parameter('prompt_check_interval', 30.0)
         self.declare_parameter('square_crop_scale', 1.2)
         self.declare_parameter('masked_score_weight', 0.85)
@@ -82,9 +82,11 @@ class NoPCVisionNode(Node):
 
         self.frame_skip = 5
 
-        self.CLASS_NAMES = ["oven", "fridge", "dining table", "sink", "toilet", "couch", "chair", "tv", "bed",
-                            "nightstand", "dresser", "stove", "fireplace", "potted plant", "coffee machine", "toaster", "painting", "coffee table", "desk",  
-                            "microwave", "kitchen island", "towel", "houseplant", "pillow"]
+        self.CLASS_NAMES = ["bottle", "tv", "mouse", "chair", "keyboard", "cabinet", "bin", "whiteboard"]        
+
+        # self.CLASS_NAMES = ["oven", "fridge", "dining table", "sink", "toilet", "couch", "chair", "tv", "bed",
+        #                     "nightstand", "dresser", "stove", "fireplace", "potted plant", "coffee machine", "toaster", "painting", "coffee table", "desk",  
+        #                     "microwave", "kitchen island", "towel", "houseplant", "pillow"]
 
         goal_class = self._read_goal_from_command_file()
         if goal_class:
@@ -362,13 +364,16 @@ class NoPCVisionNode(Node):
         m = masks_np[idx]
         if m.shape[0] != height or m.shape[1] != width:
             m = cv2.resize(m, (width, height), interpolation=cv2.INTER_NEAREST)
+
+        
         
         # 1. Convert to standard uint8 mask (0 or 255) for OpenCV
         mask_uint8 = (m > 0.5).astype(np.uint8) * 255
         
         # 2. SOTA Edge Fix: Erode the mask to prevent depth bleeding.
-        kernel = np.ones((3, 3), np.uint8)
-        eroded_mask = cv2.erode(mask_uint8, kernel, iterations=1)
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+        #kernel = np.ones((5, 5), np.uint8)
+        eroded_mask = cv2.erode(mask_uint8, kernel, iterations=3)
         
         # Create per-detection record shared across publishing stages.
         class_name = class_name

@@ -1,8 +1,8 @@
 {
     "timestamp": 1775143412.5863376,
     "prompt": "Go to the bed with horizontal stripes",
-    "goal": "bed",
-    "clip_prompts": "bed with horizontal stripes",
+    "goal": "bottle",
+    "clip_prompts": "blue glass bottle",
     "cluster_info": {
         "cluster_id": 0,
         "objects": [
