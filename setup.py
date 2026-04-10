@@ -32,6 +32,8 @@ setup(
             'clustered_map_points_node = yolo11_seg_bringup.clustered_map_points_node:main',
             'clustered_map_preproc_publisher_node = yolo11_seg_bringup.clustered_map_preproc_publisher_node:main',
             'cpp_mapper_json_exporter_node = yolo11_seg_bringup.cpp_mapper_json_exporter_node:main',
+            'room_seg_node = yolo11_seg_bringup.room_seg_node:main',
+            'cluster_assignment_node = yolo11_seg_bringup.cluster_assignment_node:main',
         ],
     },
 )
