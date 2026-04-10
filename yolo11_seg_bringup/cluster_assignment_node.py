@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from collections import Counter
 from typing import List
 
 import cv2
@@ -34,13 +35,14 @@ class ClusteredMapPreprocPublisherNode(Node):
         self.declare_parameter("publish_rate_hz", 0.5)
         
         # --- TUNING PARAMETERS ---
-        self.declare_parameter("dist_thresh_multiplier", 0.3)
+        self.declare_parameter("dist_thresh_multiplier", 0.5)
         self.declare_parameter("wall_search_radius_px", 10) 
         
         # NEW: Dilation kernel size. Since pointclouds have gaps between points, 
         # we dilate the footprint by this many pixels to create a solid eraser stamp.
         # 5 pixels * 0.05m = ~25cm dilation.
-        self.declare_parameter("pc_dilation_px", 10) 
+        self.declare_parameter("pc_dilation_px", 8) 
+        self.declare_parameter("enable_object_removal", True)
 
         self.output_clustered_map_file = str(self.get_parameter("output_clustered_map_file").value)
         self.output_topic = str(self.get_parameter("output_topic").value)
@@ -98,40 +100,43 @@ class ClusteredMapPreprocPublisherNode(Node):
         free_space = np.zeros_like(grid, dtype=np.uint8)
         free_space[grid == 0] = 255 
 
-        # 2. POINTCLOUD MASKING (High-Precision Eraser)
-        # We only extract 'x' and 'y' to save processing time
-        generator = point_cloud2.read_points(self.latest_pc_msg, field_names=("x", "y"), skip_nans=True)
-        
-        # FIX: Force strict unpacking into a list of basic floats so numpy doesn't get confused
-        pts_list = [[float(pt[0]), float(pt[1])] for pt in generator]
-        
-        if pts_list:
-            # Explicitly cast to a 32-bit float matrix. This guarantees a 2D shape (N, 2).
-            pts_arr = np.array(pts_list, dtype=np.float32)
-            
-            # Vectorized coordinate conversion: Metric -> Pixel
-            pxs = ((pts_arr[:, 0] - orig_x) / res).astype(np.int32)
-            pys = ((pts_arr[:, 1] - orig_y) / res).astype(np.int32)
-            
-            # Vectorized bounds checking to drop points outside the map
-            valid_mask = (pxs >= 0) & (pxs < width) & (pys >= 0) & (pys < height)
-            pxs = pxs[valid_mask]
-            pys = pys[valid_mask]
-            
-            # Create a blank mask and stamp the points onto it
-            pc_mask = np.zeros_like(free_space, dtype=np.uint8)
-            pc_mask[pys, pxs] = 255
-            
-            # Dilate the mask. Pointclouds have gaps. Dilation melts the points together 
-            # into a solid blob to ensure the object is completely erased.
-            dilation_px = self.get_parameter("pc_dilation_px").value
-            
-            # Using an ellipse kernel prevents unnatural square corners
-            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (dilation_px, dilation_px))
-            solid_mask = cv2.dilate(pc_mask, kernel, iterations=1)
-            
-            # ERASE: Overwrite the map's free space wherever our solid mask is white
-            free_space[solid_mask == 255] = 255
+        # 2. Optional POINTCLOUD MASKING (High-Precision Eraser)
+        # Toggle with parameter: enable_object_removal
+        enable_object_removal = bool(self.get_parameter("enable_object_removal").value)
+        if enable_object_removal:
+            # We only extract 'x' and 'y' to save processing time
+            generator = point_cloud2.read_points(self.latest_pc_msg, field_names=("x", "y"), skip_nans=True)
+
+            # FIX: Force strict unpacking into a list of basic floats so numpy doesn't get confused
+            pts_list = [[float(pt[0]), float(pt[1])] for pt in generator]
+
+            if pts_list:
+                # Explicitly cast to a 32-bit float matrix. This guarantees a 2D shape (N, 2).
+                pts_arr = np.array(pts_list, dtype=np.float32)
+
+                # Vectorized coordinate conversion: Metric -> Pixel
+                pxs = ((pts_arr[:, 0] - orig_x) / res).astype(np.int32)
+                pys = ((pts_arr[:, 1] - orig_y) / res).astype(np.int32)
+
+                # Vectorized bounds checking to drop points outside the map
+                valid_mask = (pxs >= 0) & (pxs < width) & (pys >= 0) & (pys < height)
+                pxs = pxs[valid_mask]
+                pys = pys[valid_mask]
+
+                # Create a blank mask and stamp the points onto it
+                pc_mask = np.zeros_like(free_space, dtype=np.uint8)
+                pc_mask[pys, pxs] = 255
+
+                # Dilate the mask. Pointclouds have gaps. Dilation melts the points together
+                # into a solid blob to ensure the object is completely erased.
+                dilation_px = int(self.get_parameter("pc_dilation_px").value)
+
+                # Using an ellipse kernel prevents unnatural square corners
+                kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (dilation_px, dilation_px))
+                solid_mask = cv2.dilate(pc_mask, kernel, iterations=1)
+
+                # ERASE: Overwrite the map's free space wherever our solid mask is white
+                free_space[solid_mask == 255] = 255
 
         # 3. Distance Transform & Watershed on the CLEANED map
         dist_transform = cv2.distanceTransform(free_space, cv2.DIST_L2, 5)
@@ -148,7 +153,7 @@ class ClusteredMapPreprocPublisherNode(Node):
         cv2.watershed(img_color, markers)
         
         self.room_markers = markers
-        self._publish_visualization(markers, width, height)
+        self._publish_visualization(markers, width, height, map_info)
 
         # 4. Object Assignment
         self._cluster_and_publish_objects(map_info)
@@ -229,16 +234,104 @@ class ClusteredMapPreprocPublisherNode(Node):
                             return self.room_markers[ny, nx]
         return 1 
 
-    def _publish_visualization(self, markers, width, height):
+    def _publish_visualization(self, markers, width, height, map_info):
         vis_img = np.zeros((height, width, 3), dtype=np.uint8)
         unique_markers = np.unique(markers)
         for marker in unique_markers:
             if marker == -1: vis_img[markers == marker] = [0, 0, 255] 
             elif marker == 1: vis_img[markers == marker] = [50, 50, 50] 
             else:
-                np.random.seed(marker)
-                vis_img[markers == marker] = np.random.randint(50, 255, size=3).tolist()
-        self.vis_pub.publish(self.bridge.cv2_to_imgmsg(vis_img, encoding="bgr8"))
+                vis_img[markers == marker] = self._room_color(int(marker))
+
+        legend_panel = self._build_legend_panel(height, markers)
+        combined = np.hstack((vis_img, legend_panel))
+
+        if self.latest_semantic_msg is not None:
+            for obj in self.latest_semantic_msg.objects:
+                px_py = self._world_to_pixel(obj.pose_map.x, obj.pose_map.y, map_info)
+                if px_py is None:
+                    continue
+
+                px, py = px_py
+                cv2.circle(combined, (px, py), 4, (0, 0, 0), thickness=-1)
+                cv2.circle(combined, (px, py), 2, (255, 255, 255), thickness=-1)
+
+        self.vis_pub.publish(self.bridge.cv2_to_imgmsg(combined, encoding="bgr8"))
+
+    def _build_legend_panel(self, height: int, markers) -> np.ndarray:
+        panel_width = 320
+        panel = np.full((height, panel_width, 3), 28, dtype=np.uint8)
+
+        cv2.rectangle(panel, (0, 0), (panel_width - 1, height - 1), (90, 90, 90), 1)
+
+        y = 28
+        left = 16
+        swatch = 18
+        font = cv2.FONT_HERSHEY_SIMPLEX
+
+        cv2.putText(panel, "Legend", (left, y), font, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
+        y += 24
+
+        cv2.putText(panel, "Rooms", (left, y), font, 0.55, (220, 220, 220), 1, cv2.LINE_AA)
+        y += 18
+
+        room_markers = [int(marker) for marker in np.unique(markers) if int(marker) > 1]
+        room_markers.sort()
+        room_markers = [marker for marker in room_markers if marker > 1]
+
+        for marker in room_markers:
+            color = self._room_color(marker)
+            cv2.rectangle(panel, (left, y - 12), (left + swatch, y + 6), color, thickness=-1)
+            cv2.rectangle(panel, (left, y - 12), (left + swatch, y + 6), (0, 0, 0), thickness=1)
+            cv2.putText(panel, f"Room {marker}", (left + swatch + 10, y + 2), font, 0.45, (240, 240, 240), 1, cv2.LINE_AA)
+            y += 22
+
+        if self.latest_semantic_msg is not None and self.latest_semantic_msg.objects:
+            y += 8
+            cv2.putText(panel, "Objects", (left, y), font, 0.55, (220, 220, 220), 1, cv2.LINE_AA)
+            y += 18
+
+            class_counts = Counter(
+                str(obj.name).strip() or str(obj.object_id).strip() or "object"
+                for obj in self.latest_semantic_msg.objects
+            )
+
+            for class_name, count in sorted(class_counts.items(), key=lambda item: (-item[1], item[0])):
+                if y > height - 18:
+                    cv2.putText(panel, "...", (left, height - 14), font, 0.6, (220, 220, 220), 1, cv2.LINE_AA)
+                    break
+
+                cv2.circle(panel, (left + 9, y - 6), 5, (255, 255, 255), thickness=-1)
+                cv2.circle(panel, (left + 9, y - 6), 5, (0, 0, 0), thickness=1)
+                label = f"{class_name} x{count}" if count > 1 else class_name
+                cv2.putText(panel, label, (left + 24, y), font, 0.42, (240, 240, 240), 1, cv2.LINE_AA)
+                y += 20
+
+        cv2.putText(panel, "Map points", (left, height - 18), font, 0.45, (190, 190, 190), 1, cv2.LINE_AA)
+        cv2.circle(panel, (left + 10, height - 32), 4, (255, 255, 255), thickness=-1)
+        cv2.circle(panel, (left + 10, height - 32), 4, (0, 0, 0), thickness=1)
+
+        return panel
+
+    @staticmethod
+    def _room_color(marker: int) -> tuple:
+        np.random.seed(marker)
+        return tuple(int(value) for value in np.random.randint(50, 255, size=3))
+
+    @staticmethod
+    def _world_to_pixel(x: float, y: float, map_info):
+        res = map_info.resolution
+        width = map_info.width
+        height = map_info.height
+        orig_x = map_info.origin.position.x
+        orig_y = map_info.origin.position.y
+
+        px = int((x - orig_x) / res)
+        py = int((y - orig_y) / res)
+
+        if 0 <= px < width and 0 <= py < height:
+            return px, py
+        return None
 
     def _write_map_to_file(self, clustered_map: List[dict], file_path: str) -> None:
         try:
