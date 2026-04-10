@@ -7,8 +7,6 @@ from PIL import Image as PILImage
 
 class CLIPProcessorValidator:
     """
-    CLIP/SigLIP processor that mirrors the logic used in clip_model_validator_node.
-
     Features:
     - Square crop computation shared with detector bounding boxes
     - Masked and unmasked crop preparation

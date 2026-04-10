@@ -87,6 +87,7 @@ class NoPCVisionNode(Node):
                             "microwave", "kitchen island", "towel", "houseplant", "pillow"]
 
         goal_class = self._read_goal_from_command_file()
+        # If a valid goal class is found in the command file, ensure it's included in CLASS_NAMES for detection.
         if goal_class:
             if goal_class in self.CLASS_NAMES:
                 self.get_logger().info(
@@ -101,7 +102,7 @@ class NoPCVisionNode(Node):
             self.get_logger().warn(
                 "No valid goal found in robot_command.json. Using default CLASS_NAMES."
             )
-
+        # Load YOLO model
         self.get_logger().info(f"Loading YOLO model: {self.model_path}")
         self.model = YOLO(self.model_path, task='segment')
         self.model.set_classes(self.CLASS_NAMES)
@@ -185,7 +186,6 @@ class NoPCVisionNode(Node):
         """
         RGB callback.
         """
-
         self.process_frame(rgb_msg)
    
     # --------------- Main Methods ------------- #
@@ -277,7 +277,7 @@ class NoPCVisionNode(Node):
         do_clip_frame = (self.frame_count % max(1, self.frame_skip) == 0)
 
         # ===== DETECTION PROCESSING TIMING =====
-        # Process each instance: mask filtering, 3D centroid, crop prep.
+        # Process each instance: mask filtering, crop prep.
         det_process_start = perf_counter()
         for i in range(len(xyxy)):
             result = self.process_single_detection(
@@ -369,9 +369,6 @@ class NoPCVisionNode(Node):
         # 2. SOTA Edge Fix: Erode the mask to prevent depth bleeding.
         kernel = np.ones((3, 3), np.uint8)
         eroded_mask = cv2.erode(mask_uint8, kernel, iterations=1)
-        
-        # Create per-detection record shared across publishing stages.
-        class_name = class_name
         
         detection_entry = {
             "class_id": int(class_id),

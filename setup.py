@@ -27,16 +27,11 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            'still_image_publisher_node = yolo11_seg_bringup.still_image_publisher_node:main',
             'pc_vision_node_v3 = yolo11_seg_bringup.pc_vision_v3:main',
-            'clip_model_validator_node = yolo11_seg_bringup.clip_model_validator_node:main',
-            'mapper_node = yolo11_seg_bringup.mapper_node:main',
             'map_points_node = yolo11_seg_bringup.map_points_node:main',
             'clustered_map_points_node = yolo11_seg_bringup.clustered_map_points_node:main',
             'clustered_map_preproc_publisher_node = yolo11_seg_bringup.clustered_map_preproc_publisher_node:main',
-            'goal_checker_node = yolo11_seg_bringup.goal_checker_node:main',
             'cpp_mapper_json_exporter_node = yolo11_seg_bringup.cpp_mapper_json_exporter_node:main',
-            'check_vision_goal = yolo11_seg_bringup.check_vision_goal:main'
         ],
     },
 )
