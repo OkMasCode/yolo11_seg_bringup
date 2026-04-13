@@ -152,6 +152,65 @@ def get_labeled_cluster_descriptions() -> List[str]:
         descriptions.append(f"Cluster {cluster_id} ({label}): {', '.join(objects)}")
     return descriptions
 
+def get_cluster_entries_with_ids() -> Dict[int, List[Dict[str, str]]]:
+    """Return per-cluster object candidates with stable {id, class} entries."""
+    entries_by_cluster: Dict[int, List[Dict[str, str]]] = {}
+    seen_ids = set()
+
+    for entry in clustered_map:
+        obj_id = str(entry.get("id", "")).strip()
+        obj_class = str(entry.get("class", "")).strip()
+        cluster_id = entry.get("cluster")
+
+        if not obj_id or cluster_id is None:
+            continue
+
+        key = (cluster_id, obj_id)
+        if key in seen_ids:
+            continue
+        seen_ids.add(key)
+
+        if cluster_id not in entries_by_cluster:
+            entries_by_cluster[cluster_id] = []
+
+        entries_by_cluster[cluster_id].append({
+            "id": obj_id,
+            "class": obj_class
+        })
+
+    for cluster_id in entries_by_cluster:
+        entries_by_cluster[cluster_id] = sorted(entries_by_cluster[cluster_id], key=lambda x: x["id"])
+
+    return entries_by_cluster
+
+def get_labeled_cluster_descriptions_with_ids() -> List[str]:
+    """Build cluster descriptions that include candidate object IDs for anchor selection."""
+    descriptions = []
+    entries_by_cluster = get_cluster_entries_with_ids()
+    for cluster_id in sorted(cluster_summaries.keys()):
+        label = cluster_labels.get(cluster_id, "unknown")
+        objects = entries_by_cluster.get(cluster_id, [])
+        object_text = ", ".join(f"{obj['id']}:{obj['class']}" for obj in objects)
+        descriptions.append(f"Cluster {cluster_id} ({label}): {object_text}")
+    return descriptions
+
+def _cluster_object_ids(cluster_id: int | None) -> set[str]:
+    """Return all object IDs belonging to the given cluster."""
+    if cluster_id is None:
+        return set()
+    return {
+        str(entry.get("id", "")).strip()
+        for entry in clustered_map
+        if entry.get("cluster") == cluster_id and str(entry.get("id", "")).strip()
+    }
+
+def _object_class_from_id(object_id: str) -> str:
+    """Return object class for object id, empty string when unknown."""
+    for entry in clustered_map:
+        if entry.get("id") == object_id:
+            return str(entry.get("class", "")).strip()
+    return ""
+
 # NOT NECESSARY
 def assign_cluster_labels() -> None:
     """
@@ -289,6 +348,8 @@ class NavResult(BaseModel):
     goal: str # class of the object to navigate to
     #goal_objects: List[Dict] # list of objects of that class in the map
     clip_prompts: str # single CLIP prompt describing the object
+    anchor_object_id: str = "" # object id used as spatial anchor for navigation
+    anchor_object_class: str = "" # class name for the selected anchor object id
     object_similarities: List[Dict] = [] # similarity scores for each goal object
     action: str # high-level action plan to reach the goal
     logic: str 
@@ -310,6 +371,7 @@ class ClipPromptOutput(BaseModel):
 class ClusterPrediction(BaseModel):
     cluster_id: int | None = None  # ID of the most likely cluster, None when uncertain
     reasoning: str  # Brief explanation of why this cluster was chosen
+    anchor_object_id: str = ""  # Object ID used as anchor for guiding the goal search
     location_confidence: float = 0.0  # 0.0-1.0 confidence that location cues should be prioritized
 
 class GoalSelection(BaseModel):
@@ -490,7 +552,7 @@ def determine_most_likely_cluster(prompt: str, goal: str) -> ClusterPrediction:
     print("3. .......Determining most likely cluster with LLM.........\n")
     
     # Format cluster information for the LLM
-    cluster_descriptions = get_labeled_cluster_descriptions()
+    cluster_descriptions = get_labeled_cluster_descriptions_with_ids()
     
     clusters_text = "\n".join(cluster_descriptions)
     
@@ -514,6 +576,8 @@ def determine_most_likely_cluster(prompt: str, goal: str) -> ClusterPrediction:
             response_json = extract_json_from_response(response_text, expected_keys=["reasoning"])
             if "location_confidence" not in response_json:
                 response_json["location_confidence"] = 0.0
+            if "anchor_object_id" not in response_json:
+                response_json["anchor_object_id"] = ""
 
             # cluster_id is optional: None means "no confident cluster".
             raw_cluster_id = response_json.get("cluster_id", None)
@@ -527,12 +591,25 @@ def determine_most_likely_cluster(prompt: str, goal: str) -> ClusterPrediction:
                 except (TypeError, ValueError):
                     response_json["cluster_id"] = None
 
+            raw_anchor_object_id = response_json.get("anchor_object_id", "")
+            if raw_anchor_object_id is None:
+                raw_anchor_object_id = ""
+            response_json["anchor_object_id"] = str(raw_anchor_object_id).strip()
+
             # Clamp to [0.0, 1.0] for robustness
             try:
                 response_json["location_confidence"] = float(response_json["location_confidence"])
             except (TypeError, ValueError):
                 response_json["location_confidence"] = 0.0
             response_json["location_confidence"] = max(0.0, min(1.0, response_json["location_confidence"]))
+
+            # Anchor id must belong to selected cluster. If not, clear it.
+            if response_json["cluster_id"] is None:
+                response_json["anchor_object_id"] = ""
+            else:
+                valid_ids = _cluster_object_ids(response_json["cluster_id"])
+                if response_json["anchor_object_id"] not in valid_ids:
+                    response_json["anchor_object_id"] = ""
 
             result = ClusterPrediction.model_validate(response_json)
             break
@@ -557,9 +634,14 @@ def determine_most_likely_cluster(prompt: str, goal: str) -> ClusterPrediction:
     if result.cluster_id is not None and result.cluster_id not in cluster_summaries:
         print(f"Warning: LLM returned invalid cluster_id {result.cluster_id}. Clearing cluster selection.")
         result.cluster_id = None
+        result.anchor_object_id = ""
+
+    anchor_object_class = _object_class_from_id(result.anchor_object_id)
 
     print(f"Selected Cluster: {result.cluster_id if result.cluster_id is not None else 'NONE'}")
     print(f"Reasoning: {result.reasoning}")
+    print(f"Anchor object ID: {result.anchor_object_id if result.anchor_object_id else 'NONE'}")
+    print(f"Anchor object class: {anchor_object_class if anchor_object_class else 'NONE'}")
     print(f"Location confidence: {result.location_confidence:.2f}")
     print(f"Computation time: {elapsed:.2f} seconds\n")
     
@@ -682,6 +764,7 @@ def process_nav_instruction(prompt : str) -> NavResult:
 
     # 4. Determine most likely cluster using LLM
     cluster_prediction = determine_most_likely_cluster(prompt, effective_goal)
+    anchor_object_class = _object_class_from_id(cluster_prediction.anchor_object_id)
     cluster_info = None
     if cluster_prediction.cluster_id is not None and cluster_prediction.cluster_id in cluster_summaries:
         cluster_coords = compute_cluster_coords(cluster_prediction.cluster_id)
@@ -691,6 +774,8 @@ def process_nav_instruction(prompt : str) -> NavResult:
             "cluster_label": cluster_labels.get(cluster_prediction.cluster_id, "unknown"),
             "objects": cluster_summaries[cluster_prediction.cluster_id],
             "reasoning": cluster_prediction.reasoning,
+            "anchor_object_id": cluster_prediction.anchor_object_id,
+            "anchor_object_class": anchor_object_class,
             "location_confidence": cluster_prediction.location_confidence,
             "coords": cluster_coords,
             "dimensions": cluster_dimensions
@@ -701,6 +786,8 @@ def process_nav_instruction(prompt : str) -> NavResult:
             "cluster_label": "",
             "objects": [],
             "reasoning": cluster_prediction.reasoning,
+            "anchor_object_id": cluster_prediction.anchor_object_id,
+            "anchor_object_class": anchor_object_class,
             "location_confidence": cluster_prediction.location_confidence,
             "prioritize_location": False,
             "coords": None,
@@ -717,6 +804,8 @@ def process_nav_instruction(prompt : str) -> NavResult:
     return NavResult(
         goal=final_goal_class,
         clip_prompts=goal.clip_prompts,
+        anchor_object_id=cluster_prediction.anchor_object_id,
+        anchor_object_class=anchor_object_class,
         action=action.action,
         logic=logic.logic,
         cluster_info=cluster_info,
@@ -767,6 +856,8 @@ def save_robot_command(output_path: str, prompt: str, result: NavResult) -> None
             "cluster_id": result.cluster_info.get("cluster_id"),
             "objects": result.cluster_info.get("objects", []),
             "reasoning": result.cluster_info.get("reasoning", ""),
+            "anchor_object_id": result.cluster_info.get("anchor_object_id", ""),
+            "anchor_object_class": result.cluster_info.get("anchor_object_class", ""),
             "location_confidence": float(result.cluster_info.get("location_confidence", 0.0)),
             "prioritize_location": bool(result.cluster_info.get("prioritize_location", False)),
             "coords": result.cluster_info.get("coords"),
@@ -778,6 +869,8 @@ def save_robot_command(output_path: str, prompt: str, result: NavResult) -> None
         "prompt": prompt,
         "goal": result.goal,
         "clip_prompts": result.clip_prompts,
+        "anchor_object_id": result.anchor_object_id,
+        "anchor_object_class": result.anchor_object_class,
         "cluster_info": cluster_info,
         "action": result.action,
         "logic": result.logic,

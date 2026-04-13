@@ -4,12 +4,20 @@ CRITICAL OUTPUT FORMAT:
 - You MUST respond with ONLY a valid JSON object.
 - NO additional text before or after the JSON.
 - NO markdown formatting or code blocks.
-- EXACTLY this format: {{"reasoning": "<string>", "cluster_id": <int or null>, "location_confidence": <float 0.0-1.0>}}
+- EXACTLY this format: {{"reasoning": "<string>", "cluster_id": <int or null>, "anchor_object_id": "<string>", "location_confidence": <float 0.0-1.0>}}
 
 Your task: Analyze the user's navigation prompt and determine which cluster is MOST LIKELY to contain the goal object.
+In the SAME decision, choose an anchor_object_id that should guide navigation toward the goal.
 
 AVAILABLE CLUSTERS IN THE HOUSE:
 {clusters_text}
+
+ANCHOR OBJECT RULES (VERY IMPORTANT):
+1. If the user explicitly gives a spatial relation with another object, use that object's ID as anchor_object_id.
+   - Examples: "near the TV", "next to the sink", "in front of the couch".
+2. If no explicit related object is provided, you MUST infer anchor_object_id from objects in the selected cluster.
+3. anchor_object_id must be one of the IDs listed in the chosen cluster line.
+4. If cluster_id is null, anchor_object_id MUST be empty string.
 
 CLUSTER MATCHING STRATEGY:
 1. Room Name Matching (highest priority):
@@ -31,19 +39,20 @@ DECISION PROCESS & RULES:
 - NEVER invent cluster IDs that don't exist.
 - AMBIGUITY RULE: If two or more clusters are equally plausible, you MUST return cluster_id as null.
 - THRESHOLD RULE: If your location_confidence is below 0.55, you MUST return cluster_id as null.
+- If cluster_id is null, return anchor_object_id as "".
 - YOUR REASONING MUST BE GENERATED FIRST. It should be concise (1-2 sentences) and logically lead to your selected cluster_id.
 
 EXAMPLES:
-Prompt: "Go to the sofa in the living room" | Goal: "sofa" | Clusters: [Cluster 0 (living room): [sofa, tv, coffee table], Cluster 1 (bedroom): [bed, nightstand]]
-→ {{"reasoning": "User says 'living room' which matches Cluster 0 label.", "cluster_id": 0, "location_confidence": 0.95}}
+Prompt: "Go to the sofa in the living room" | Goal: "sofa" | Clusters: [Cluster 0 (living room): [map_obj_000101:sofa, map_obj_000102:tv, map_obj_000103:coffee table], Cluster 1 (bedroom): [map_obj_000201:bed, map_obj_000202:nightstand]]
+→ {{"reasoning": "User says 'living room' which matches Cluster 0 label.", "cluster_id": 0, "anchor_object_id": "map_obj_000102", "location_confidence": 0.95}}
 
-Prompt: "Bring me the remote from near the TV" | Goal: "remote" | Clusters: [Cluster 0 (living room): [tv, sofa], Cluster 1 (bedroom): [bed]]
-→ {{"reasoning": "No room mentioned. TV is in Cluster 0, remote is highly likely near it.", "cluster_id": 0, "location_confidence": 0.8}}
+Prompt: "Bring me the remote from near the TV" | Goal: "remote" | Clusters: [Cluster 0 (living room): [map_obj_000102:tv, map_obj_000101:sofa], Cluster 1 (bedroom): [map_obj_000201:bed]]
+→ {{"reasoning": "No room mentioned. TV is in Cluster 0, remote is highly likely near it.", "cluster_id": 0, "anchor_object_id": "map_obj_000102", "location_confidence": 0.8}}
 
-Prompt: "Go to the red chair" | Goal: "chair" | Clusters: [Cluster 0 (dining area): [chair, table], Cluster 1 (living room): [chair, sofa]]
-→ {{"reasoning": "No room mentioned and chair appears equally in both clusters. Too ambiguous.", "cluster_id": null, "location_confidence": 0.4}}
+Prompt: "Go to the red chair" | Goal: "chair" | Clusters: [Cluster 0 (dining area): [map_obj_000301:chair, map_obj_000302:table], Cluster 1 (living room): [map_obj_000401:chair, map_obj_000402:sofa]]
+→ {{"reasoning": "No room mentioned and chair appears equally in both clusters. Too ambiguous.", "cluster_id": null, "anchor_object_id": "", "location_confidence": 0.4}}
 
-Prompt: "Find the keys" | Goal: "keys" | Clusters: [Cluster 0 (kitchen): [sink], Cluster 1 (bedroom): [bed]]
-→ {{"reasoning": "No location mentioned and keys have no strong semantic tie to these clusters. Confidence is too low.", "cluster_id": null, "location_confidence": 0.2}}
+Prompt: "Find the keys" | Goal: "keys" | Clusters: [Cluster 0 (kitchen): [map_obj_000501:sink], Cluster 1 (bedroom): [map_obj_000601:bed]]
+→ {{"reasoning": "No location mentioned and keys have no strong semantic tie to these clusters. Confidence is too low.", "cluster_id": null, "anchor_object_id": "", "location_confidence": 0.2}}
 
 Return ONLY valid JSON.

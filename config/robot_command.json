@@ -1,43 +1,55 @@
 {
-    "timestamp": 1775816851.3550172,
-    "prompt": "Go to the bed with horizontal stripes",
-    "goal": "bed",
-    "clip_prompts": "bed with horizontal stripes",
+    "timestamp": 1776062863.6172795,
+    "prompt": "Go to the coffee machine next to the frige",
+    "goal": "coffee machine",
+    "clip_prompts": "coffee machine",
+    "anchor_object_id": "map_obj_000007",
+    "anchor_object_class": "fridge",
     "cluster_info": {
-        "cluster_id": 1,
+        "cluster_id": 5,
         "objects": [
-            "dresser",
-            "pillow",
-            "pillow",
-            "nightstand",
-            "nightstand"
+            "sink",
+            "microwave",
+            "towel",
+            "stove",
+            "kitchen island",
+            "fridge",
+            "couch",
+            "couch",
+            "oven",
+            "toilet",
+            "coffee machine",
+            "couch",
+            "fireplace"
         ],
-        "reasoning": "User mentions 'bed' and the prompt includes a specific description 'horizontal stripes' which is a common feature of a bed.",
-        "location_confidence": 0.8,
+        "reasoning": "User explicitly mentions 'coffee machine' and 'fridge', which are in Cluster 5.",
+        "anchor_object_id": "map_obj_000007",
+        "anchor_object_class": "fridge",
+        "location_confidence": 0.95,
         "prioritize_location": false,
         "coords": {
-            "x": 7.888971328735352,
-            "y": -2.112683442234993,
-            "z": 0.6504306435585022
+            "x": 1.1063654941435044,
+            "y": 6.456788411507239,
+            "z": 0.7267502156587747
         },
         "dimensions": {
             "bounding_box": {
                 "min": {
-                    "x": 6.613300323486328,
-                    "y": -3.504964590072632
+                    "x": -0.730689287185669,
+                    "y": 3.109450340270996
                 },
                 "max": {
-                    "x": 8.253801345825195,
-                    "y": -0.22330273687839508
+                    "x": 4.771795749664307,
+                    "y": 11.115035057067871
                 },
                 "dimensions": {
-                    "width": 1.6405010223388672,
-                    "length": 3.2816618531942368
+                    "width": 5.502485036849976,
+                    "length": 8.005584716796875
                 }
             },
-            "radius": 1.911793621788043
+            "radius": 4.711067984869582
         }
     },
     "action": "go_to_object",
-    "logic": "SPECIFIC_OBJECT_WITH_FEATURES"
+    "logic": "GENERIC_OBJECT_SPECIFIC_LOCATION"
 }

@@ -35,7 +35,7 @@ class ClusteredMapPreprocPublisherNode(Node):
         self.declare_parameter("publish_rate_hz", 0.5)
         
         # --- TUNING PARAMETERS ---
-        self.declare_parameter("dist_thresh_multiplier", 0.5)
+        self.declare_parameter("dist_thresh_multiplier", 0.4)
         self.declare_parameter("wall_search_radius_px", 10) 
         
         # NEW: Dilation kernel size. Since pointclouds have gaps between points, 
