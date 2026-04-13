@@ -6,6 +6,7 @@ from typing import List
 import cv2
 import numpy as np
 import rclpy
+import random
 from cv_bridge import CvBridge
 from geometry_msgs.msg import Vector3
 from nav_msgs.msg import OccupancyGrid
@@ -21,6 +22,8 @@ from yolo11_seg_interfaces.msg import (
     ClusteredMapObjectArray,
     SemanticObjectArray
 )
+
+from yolo11_seg_interfaces.srv import GetRoomWaypoint
 
 
 class ClusteredMapPreprocPublisherNode(Node):
@@ -70,6 +73,14 @@ class ClusteredMapPreprocPublisherNode(Node):
         # The Processing Loop
         self.timer = self.create_timer(1.0 / self.publish_rate_hz, self._process_publish_cycle)
 
+        # Create the ROS2 Service Server
+        self.waypoint_service = self.create_service(
+            GetRoomWaypoint, 
+            '/vision/get_room_waypoint', 
+            self._waypoint_service_callback
+        )
+        self.get_logger().info("[DEBUG] Waypoint Service Server is ready.")
+
         self.get_logger().info(f"[DEBUG] PointCloud Semantic Masking Node started at {self.publish_rate_hz} Hz.")
 
     def _map_callback(self, msg: OccupancyGrid):
@@ -80,6 +91,86 @@ class ClusteredMapPreprocPublisherNode(Node):
 
     def _pc_callback(self, msg: PointCloud2):
         self.latest_pc_msg = msg
+
+    def _waypoint_service_callback(self, request, response):
+        """Called whenever the C++ BT Node requests a safe point."""
+        room_id = request.room_id
+        self.get_logger().info(f"BT Node requested waypoint for Room {room_id}")
+
+        # Use the erosion logic we built earlier to get 1 safe point
+        safe_points = self.generate_exploration_waypoints(target_room_id=room_id, num_waypoints=1)
+
+        if not safe_points:
+            self.get_logger().error(f"Failed to generate a safe point for Room {room_id}!")
+            response.success = False
+            return response
+
+        # Pack the response
+        response.success = True
+        response.waypoint.x = float(safe_points[0][0])
+        response.waypoint.y = float(safe_points[0][1])
+        response.waypoint.z = 0.0  # Assuming 2D navigation
+
+        return response
+
+    def generate_exploration_waypoints(self, target_room_id: int, num_waypoints: int = 5) -> list:
+        """
+        Generates safe, random (x,y) metric waypoints strictly inside a specific room.
+        """
+        if self.room_markers is None or self.map_info is None:
+            self.get_logger().error("Cannot generate waypoints: Map not segmented yet.")
+            return []
+
+        # 1. Create a binary mask of ONLY the target room
+        # 255 = Inside the room, 0 = Outside the room
+        room_mask = np.zeros_like(self.room_markers, dtype=np.uint8)
+        room_mask[self.room_markers == target_room_id] = 255
+
+        # Sanity check: Does the room exist?
+        if np.count_nonzero(room_mask) == 0:
+            self.get_logger().error(f"Room {target_room_id} not found in map.")
+            return []
+
+        # 2. Erode the mask by the Robot's Radius (e.g., 35cm)
+        # This prevents generating waypoints right against the wall where the robot would crash
+        ROBOT_RADIUS_M = 0.35
+        res = self.map_info.resolution
+        erosion_px = int(ROBOT_RADIUS_M / res)
+        
+        # Ensure kernel size is odd
+        kernel_size = erosion_px if erosion_px % 2 != 0 else erosion_px + 1
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+        
+        safe_room_mask = cv2.erode(room_mask, kernel, iterations=1)
+
+        # Fallback: If the room is so small that eroding it wipes it out completely,
+        # fallback to the uneroded mask so we at least get *some* point.
+        if np.count_nonzero(safe_room_mask) == 0:
+            self.get_logger().warn(f"Room {target_room_id} is too narrow for safe erosion. Using raw boundaries.")
+            safe_room_mask = room_mask
+
+        # 3. Extract all valid (row, col) pixel coordinates from the safe mask
+        valid_pixels = np.column_stack(np.where(safe_room_mask == 255))
+
+        # 4. Randomly sample N pixels
+        # If the user asks for more waypoints than there are pixels, just take all available pixels
+        sample_size = min(num_waypoints, len(valid_pixels))
+        
+        # np.random.choice requires a 1D array, so we shuffle and slice manually for 2D
+        np.random.shuffle(valid_pixels)
+        chosen_pixels = valid_pixels[:sample_size]
+
+        # 5. Convert Pixel coordinates back to Metric (x, y) map coordinates
+        orig_x = self.map_info.origin.position.x
+        orig_y = self.map_info.origin.position.y
+        waypoints_metric = []
+
+        for py, px in chosen_pixels:
+            metric_x = (px * res) + orig_x
+            metric_y = (py * res) + orig_y
+            waypoints_metric.append((metric_x, metric_y))
+
+        return waypoints_metric
 
     def _process_publish_cycle(self):
         # We need all three data streams to do this properly
