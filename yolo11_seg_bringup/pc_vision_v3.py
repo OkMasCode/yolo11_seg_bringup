@@ -48,7 +48,7 @@ class NoPCVisionNode(Node):
         self.enable_vis = bool(self.get_parameter('enable_visualization').value)
 
         # YOLO parameters
-        self.declare_parameter('model_path', '/workspaces/yoloe-26l-seg.pt')
+        self.declare_parameter('model_path', '/home/workspace/yoloe-26l-seg.pt')
         self.declare_parameter('imgsz', 640)
         self.declare_parameter('conf', 0.45)
         self.declare_parameter('iou', 0.35)
@@ -61,7 +61,7 @@ class NoPCVisionNode(Node):
         # CLIP parameters
         self.declare_parameter('CLIP_model_name', 'ViT-B-16-SigLIP')
         self.declare_parameter('clip_pretrained', 'webli')
-        self.declare_parameter('robot_command_file', '/workspaces/ros2_ws/src/yolo11_seg_bringup/config/robot_command.json')
+        self.declare_parameter('robot_command_file', '/home/workspace/ros2_ws/src/yolo11_seg_bringup/config/robot_command.json')
         self.declare_parameter('prompt_check_interval', 30.0)
         self.declare_parameter('square_crop_scale', 1.2)
         self.declare_parameter('masked_score_weight', 0.85)

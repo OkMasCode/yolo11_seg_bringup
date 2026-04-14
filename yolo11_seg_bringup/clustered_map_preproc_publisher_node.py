@@ -21,11 +21,11 @@ class ClusteredMapPreprocPublisherNode(Node):
 
         self.declare_parameter(
             "input_map_file",
-            "/workspaces/ros2_ws/src/yolo11_seg_bringup/config/map_v6.json",
+            "/home/workspace/ros2_ws/src/yolo11_seg_bringup/config/map_v6.json",
         )
         self.declare_parameter(
             "output_clustered_map_file",
-            "/workspaces/ros2_ws/src/yolo11_seg_bringup/config/clustered_map_v6.json",
+            "/home/workspace/ros2_ws/src/yolo11_seg_bringup/config/clustered_map_v6.json",
         )
         self.declare_parameter("output_topic", "/vision/clustered_map_v6")
         self.declare_parameter("frame_id", "map")

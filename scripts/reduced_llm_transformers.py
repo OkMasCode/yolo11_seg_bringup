@@ -21,9 +21,9 @@ CHAT_MODEL = "meta-llama/Llama-3.1-8B-Instruct" #"mistralai/Mistral-7B-Instruct-
 MODEL_MAX_LENGTH = 8192
 OFFLINE_MODE = True
 
-MAP_FILE = "/workspaces/ros2_ws/src/yolo11_seg_bringup/config/map_v6.json"
-CLUSTERED_MAP_FILE = "/workspaces/ros2_ws/src/yolo11_seg_bringup/config/clustered_map_v6.json"
-ROBOT_COMMAND_FILE = "/workspaces/ros2_ws/src/yolo11_seg_bringup/config/robot_command.json"
+MAP_FILE = "/home/workspace/ros2_ws/src/yolo11_seg_bringup/config/map_v6.json"
+CLUSTERED_MAP_FILE = "/home/workspace/ros2_ws/src/yolo11_seg_bringup/config/clustered_map_v6.json"
+ROBOT_COMMAND_FILE = "/home/workspace/ros2_ws/src/yolo11_seg_bringup/config/robot_command.json"
 PROMPTS_DIR = os.path.join(os.path.dirname(__file__), "prompts")
 
 llm_pipeline = None

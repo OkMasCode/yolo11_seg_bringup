@@ -3,8 +3,8 @@ import argparse
 import numpy as np
 from sklearn.cluster import DBSCAN
 
-MAP_FILE = "/workspaces/ros2_ws/src/yolo11_seg_bringup/config/map_v6.json"
-OUTPUT_FILE = "/workspaces/ros2_ws/src/yolo11_seg_bringup/config/clustered_map_v6.json"
+MAP_FILE = "/home/workspace/ros2_ws/src/yolo11_seg_bringup/config/map_v6.json"
+OUTPUT_FILE = "/home/workspace/ros2_ws/src/yolo11_seg_bringup/config/clustered_map_v6.json"
 
 def load_house_map(file_path):
     print(f"[DEBUG] Loading map from: {file_path}")
