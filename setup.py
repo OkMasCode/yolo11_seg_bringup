@@ -34,6 +34,7 @@ setup(
             'cpp_mapper_json_exporter_node = yolo11_seg_bringup.cpp_mapper_json_exporter_node:main',
             'room_seg_node = yolo11_seg_bringup.room_seg_node:main',
             'cluster_assignment_node = yolo11_seg_bringup.cluster_assignment_node:main',
+            'fast_sam_node = yolo11_seg_bringup.fast_sam_node:main',
         ],
     },
 )
