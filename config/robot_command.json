@@ -2,7 +2,7 @@
     "timestamp": 1776062863.6172795,
     "prompt": "Go to the coffee machine next to the frige",
     "goal": "coffee machine",
-    "clip_prompts": "coffee machine",
+    "clip_prompts": "a laptop",
     "anchor_object_id": "map_obj_000007",
     "anchor_object_class": "fridge",
     "cluster_info": {

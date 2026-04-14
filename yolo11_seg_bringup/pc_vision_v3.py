@@ -21,7 +21,8 @@ from time import perf_counter
 from ultralytics import YOLO
 
 from yolo11_seg_interfaces.msg import DetectedObjectV3, DetectedObjectV3Array
-from .utils.clip_processor_validator import CLIPProcessorValidator
+#from .utils.clip_processor_validator import CLIPProcessorValidator
+from .utils.siglip2_processor import CLIPProcessorValidator
 
 
 # -------------------- CLASS ------------------- #
@@ -59,7 +60,8 @@ class NoPCVisionNode(Node):
         self.iou = float(self.get_parameter('iou').value)
 
         # CLIP parameters
-        self.declare_parameter('CLIP_model_name', 'ViT-B-16-SigLIP')
+        # self.declare_parameter('CLIP_model_name', 'ViT-B-16-SigLIP')
+        self.declare_parameter('CLIP_model_name', 'google/siglip2-large-patch16-384')
         self.declare_parameter('clip_pretrained', 'webli')
         self.declare_parameter('robot_command_file', '/home/workspace/ros2_ws/src/yolo11_seg_bringup/config/robot_command.json')
         self.declare_parameter('prompt_check_interval', 30.0)
@@ -82,11 +84,11 @@ class NoPCVisionNode(Node):
 
         self.frame_skip = 5
 
-        # self.CLASS_NAMES = ["bottle", "tv", "mouse", "chair", "keyboard", "cabinet", "bin", "whiteboard"]        
+        self.CLASS_NAMES = ["bottle", "tv", "mouse", "chair", "keyboard", "cabinet", "bin", "whiteboard", "person", "laptop", "book"]        
 
-        self.CLASS_NAMES = ["oven", "fridge", "dining table", "sink", "toilet", "couch", "chair", "tv",
-                            "nightstand", "dresser", "stove", "fireplace", "potted plant", "coffee machine", "toaster", "painting", "coffee table", "desk",  
-                            "microwave", "kitchen island", "towel", "houseplant", "pillow"]
+        # self.CLASS_NAMES = ["oven", "fridge", "dining table", "sink", "toilet", "couch", "chair", "tv",
+        #                     "nightstand", "dresser", "stove", "fireplace", "potted plant", "coffee machine", "toaster", "painting", "coffee table", "desk",  
+        #                     "microwave", "kitchen island", "towel", "houseplant", "pillow"]
 
         goal_class = self._read_goal_from_command_file()
         # If a valid goal class is found in the command file, ensure it's included in CLASS_NAMES for detection.
@@ -113,11 +115,19 @@ class NoPCVisionNode(Node):
         # Load CLIP model
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.get_logger().info(f"Loading CLIP model on device: {self.device}\n")
+        # self.clip = CLIPProcessorValidator(
+        #     device=self.device, 
+        #     model_name=self.CLIP_model_name, 
+        #     pretrained=self.clip_pretrained,
+        #     square_crop_scale=self.square_crop_scale,
+        #     masked_score_weight=self.masked_score_weight,
+        #     unmasked_score_weight=self.unmasked_score_weight,
+        # )
         self.clip = CLIPProcessorValidator(
             device=self.device, 
             model_name=self.CLIP_model_name, 
-            pretrained=self.clip_pretrained,
-            square_crop_scale=self.square_crop_scale,
+            # pretrained=self.clip_pretrained, <--- REMOVE THIS
+            # square_crop_scale=self.square_crop_scale, <--- REMOVE THIS
             masked_score_weight=self.masked_score_weight,
             unmasked_score_weight=self.unmasked_score_weight,
         )
