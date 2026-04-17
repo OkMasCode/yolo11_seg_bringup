@@ -30,7 +30,7 @@ class ClusteredMapPreprocPublisherNode(Node):
     def __init__(self) -> None:
         super().__init__("clustered_map_preproc_publisher_node")
 
-        self.declare_parameter("output_clustered_map_file", "/home/workspace/ros2_ws/src/yolo11_seg_bringup/config/clustered_map_v6.json")
+        self.declare_parameter("output_clustered_map_file", "/workspaces/ros2_ws/src/yolo11_seg_bringup/config/clustered_map_v6.json")
         self.declare_parameter("output_topic", "/vision/clustered_map_v6")
         self.declare_parameter("input_topic", "/vision/semantic_map_v5")
         self.declare_parameter("pointcloud_topic", "/vision/semantic_map_v5/points")

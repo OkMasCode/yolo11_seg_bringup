@@ -1,12 +1,10 @@
 import os
 import json
 import time
-import numpy as np
 from pydantic import BaseModel
 from typing import List, Dict
 import torch
 import sys
-import gc
 from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
 import re
 import warnings

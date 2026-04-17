@@ -17,13 +17,13 @@ class MapPointsNode(Node):
 
         self.declare_parameter(
             'map_file',
-            '/home/workspace/ros2_ws/src/yolo11_seg_bringup/config/map_v6.json',
+            '/workspaces/ros2_ws/src/yolo11_seg_bringup/config/map_v6.json',
         )
         self.declare_parameter('map_frame', 'map')
         self.declare_parameter('marker_topic', '/vision/map_objects_markers')
         self.declare_parameter('bbox_marker_topic', '/vision/map_objects_bbox_markers')
         self.declare_parameter('publish_rate_hz', 1.0)
-        self.declare_parameter('point_scale', 0.15)
+        self.declare_parameter('point_scale', 0.06)
         self.declare_parameter('label_height_offset', 0.2)
         self.declare_parameter('bbox_alpha', 0.35)
         self.declare_parameter('bbox_min_edge_m', 0.02)
@@ -228,7 +228,7 @@ class MapPointsNode(Node):
             text_marker.pose.position.x = point.x
             text_marker.pose.position.y = point.y
             text_marker.pose.position.z = point.z + self.label_height_offset
-            text_marker.scale.z = 0.2
+            text_marker.scale.z = 0.1
             text_marker.color = class_color
             text_marker.text = label
             text_markers.append(text_marker)
