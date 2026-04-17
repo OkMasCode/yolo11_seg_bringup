@@ -60,11 +60,19 @@ class VisionNode(Node):
         self.declare_parameter('prompt_check_interval', 5.0)
         self.declare_parameter('masked_score_weight', 0.85)
         self.declare_parameter('unmasked_score_weight', 0.15)
+        self.declare_parameter('paper_capture_class', 'bed')
+        self.declare_parameter('paper_images_output_dir', '/workspaces/ros2_ws/src/yolo11_seg_bringup/images')
+        self.declare_parameter('annotated_font_size', 0.6)
+        self.declare_parameter('annotated_line_width', 1)
         self.CLIP_model_name = self.get_parameter('CLIP_model_name').value
         self.robot_command_file = self.get_parameter('robot_command_file').value
         self.prompt_check_interval = float(self.get_parameter('prompt_check_interval').value)
         self.masked_score_weight = float(self.get_parameter('masked_score_weight').value)
         self.unmasked_score_weight = float(self.get_parameter('unmasked_score_weight').value)
+        self.paper_capture_class = str(self.get_parameter('paper_capture_class').value).strip()
+        self.paper_images_output_dir = str(self.get_parameter('paper_images_output_dir').value).strip()
+        self.annotated_font_size = float(self.get_parameter('annotated_font_size').value)
+        self.annotated_line_width = max(1, int(self.get_parameter('annotated_line_width').value))
 
         # =========== Internal Topics / Runtime =========== #
 
@@ -73,7 +81,8 @@ class VisionNode(Node):
         self.text_emb_publish_topic = '/vision/text_embedding'
         self.frame_skip = 5
         self.CLASS_NAMES = ["chair", "fridge", "microwave", "screwdriver", "keyboard", "phone", "mouse", "laptop", "blue coffee machine", 
-                            "coffee cup", "apple", "cup", "tv", "umbrella", "spoon", "knife"]        
+                            "coffee cup", "apple", "cup", "tv", "umbrella", "spoon", "knife", 
+                            "oven", "stove", "towel", "cabinet", "kitchen counter", "coffee machine", "fridge", "bed", "nightstand", "lamp", "dresser", "pillow"]        
         goal_class = self._read_goal_from_command_file()
         # If a valid goal class is found in the command file, ensure it's included in CLASS_NAMES for detection.
         if goal_class:
@@ -136,6 +145,14 @@ class VisionNode(Node):
         self.current_clip_prompt = None
         self.goal_text_embedding = None
         self.clip_state_lock = threading.Lock()
+        self.paper_capture_interval_sec = 5.0
+        self.last_paper_capture_time = -self.paper_capture_interval_sec
+        os.makedirs(self.paper_images_output_dir, exist_ok=True)
+        self.get_logger().info(
+            "Paper image capture configured: "
+            f"class='{self.paper_capture_class}', interval={self.paper_capture_interval_sec:.1f}s, "
+            f"dir='{self.paper_images_output_dir}'"
+        )
         # Timing instrumentation
         self.timing_stats = {
             'yolo_inference': [],
@@ -203,7 +220,10 @@ class VisionNode(Node):
             self._process_detections(res, cv_bgr, rgb_msg, height, width)
             if self.enable_vis:
                 # result.plot() draws boxes, masks, and IDs on the image
-                annotated_frame = res.plot()
+                annotated_frame = res.plot(
+                    font_size=self.annotated_font_size,
+                    line_width=self.annotated_line_width,
+                )
                 vis_msg = self.bridge.cv2_to_imgmsg(annotated_frame, encoding="bgr8")
                 vis_msg.header = rgb_msg.header
                 self.vis_pub.publish(vis_msg)
@@ -243,6 +263,7 @@ class VisionNode(Node):
         batch_queue = []
         # Run CLIP every N frames to reduce compute load.
         do_clip_frame = (self.frame_count % max(1, self.frame_skip) == 0)
+        capture_due = self._is_paper_capture_due()
 
         # ===== detection processing ===== #
 
@@ -253,7 +274,7 @@ class VisionNode(Node):
             result = self.process_single_detection(
                 i, xyxy[i], clss[i], names[i], ids[i], confs[i], masks_np,
                 cv_bgr,
-                height, width, do_clip_frame
+                height, width, do_clip_frame, capture_due
             )
             if result is None:
                 continue
@@ -264,6 +285,9 @@ class VisionNode(Node):
         det_proc_time = (perf_counter() - det_process_start) * 1000
         self.timing_stats['detections_processing'].append(det_proc_time)
         self.get_logger().debug(f"Detection processing ({len(frame_detections)} detections): {det_proc_time:.2f}ms")
+
+        if capture_due:
+            self._maybe_save_paper_images(frame_detections, cv_bgr, res)
             
         # ===== SigLIP encoding ===== #
 
@@ -301,7 +325,7 @@ class VisionNode(Node):
 
     def process_single_detection(self, idx, bbox, class_id, class_name, instance_id, confidence, masks_np,
                                  cv_bgr,
-                                 height, width, do_clip_frame):
+                                 height, width, do_clip_frame, capture_due):
         """ 
         prepare data container. 
         Returns detection_dictionary
@@ -332,6 +356,9 @@ class VisionNode(Node):
             "instance_id": int(instance_id),
             "object_name": class_name,
             "confidence": float(confidence),
+            "bbox": (x1, y1, x2, y2),
+            "mask_uint8": mask_uint8,
+            "embedding": None,
             "masked_embedding": None,
             "unmasked_embedding": None,
             "masked_crop": None,
@@ -339,7 +366,8 @@ class VisionNode(Node):
             "mask_ros": eroded_mask
         }
         # Prepare SigLIP crop (if current frame is scheduled for SigLIP).
-        if do_clip_frame:
+        should_prepare_crop = do_clip_frame or (capture_due and class_name == self.paper_capture_class)
+        if should_prepare_crop:
             masked_crop, unmasked_crop = self.clip.prepare_crops(
                 cv_bgr,
                 mask_uint8,
@@ -349,6 +377,108 @@ class VisionNode(Node):
                 detection_entry["masked_crop"] = masked_crop
                 detection_entry["unmasked_crop"] = unmasked_crop
         return detection_entry
+
+    def _is_paper_capture_due(self):
+        """Return True when a new paper snapshot should be taken."""
+        now = perf_counter()
+        return (now - self.last_paper_capture_time) >= self.paper_capture_interval_sec
+
+    def _maybe_save_paper_images(self, frame_detections, cv_bgr, res):
+        """Save requested intermediate images for one target-class detection every interval."""
+        target_class = self.paper_capture_class
+        if not target_class:
+            self.get_logger().warn("paper_capture_class is empty; skipping paper image capture.")
+            return
+
+        # Always save full-frame views on interval.
+        annotated_image = res.plot(
+            font_size=self.annotated_font_size,
+            line_width=self.annotated_line_width,
+        )
+        saved = []
+        if self._write_debug_image("raw_image_cv_bgr.png", cv_bgr):
+            saved.append("raw")
+        if self._write_debug_image("yolo_overview_annotated_image.png", annotated_image):
+            saved.append("annotated_all_detections")
+
+        matching = [
+            det for det in frame_detections
+            if str(det.get("object_name", "")).strip().lower() == target_class.lower()
+        ]
+        if not matching:
+            self.get_logger().info(
+                f"Paper capture due: saved {saved}. No detection for class '{target_class}' in this frame.",
+                throttle_duration_sec=2.0,
+            )
+            self.last_paper_capture_time = perf_counter()
+            return
+
+        selected = max(matching, key=lambda item: float(item.get("confidence", 0.0)))
+        mask_uint8 = selected.get("mask_uint8")
+        eroded_mask = selected.get("mask_ros")
+        masked_crop = selected.get("masked_crop")
+        unmasked_crop = selected.get("unmasked_crop")
+
+        # Ensure crops exist even when this frame is not part of CLIP cadence.
+        if masked_crop is None or unmasked_crop is None:
+            bbox = selected.get("bbox")
+            if mask_uint8 is not None and bbox is not None:
+                masked_crop, unmasked_crop = self.clip.prepare_crops(cv_bgr, mask_uint8, bbox)
+
+        if mask_uint8 is not None and self._write_debug_image("binary_mask_mask_uint8.png", mask_uint8):
+            saved.append("mask")
+        if eroded_mask is not None and self._write_debug_image("eroded_mask.png", eroded_mask):
+            saved.append("eroded")
+
+        unmasked_crop_bgr = self._to_bgr_image(unmasked_crop)
+        if unmasked_crop_bgr is not None and self._write_debug_image("unmasked_crop.png", unmasked_crop_bgr):
+            saved.append("unmasked_crop")
+
+        masked_crop_bgr = self._to_bgr_image(masked_crop)
+        if masked_crop_bgr is not None and self._write_debug_image("masked_crop.png", masked_crop_bgr):
+            saved.append("masked_crop")
+
+        self.last_paper_capture_time = perf_counter()
+        self.get_logger().info(
+            f"Saved paper images for class '{target_class}' (instance_id={selected.get('instance_id')}) "
+            f"to '{self.paper_images_output_dir}'. Files: {saved}"
+        )
+
+    def _write_debug_image(self, filename, image):
+        """Write image to output directory and overwrite existing file."""
+        if image is None:
+            return False
+        path = os.path.join(self.paper_images_output_dir, filename)
+        try:
+            ok = cv2.imwrite(path, image)
+            if not ok:
+                self.get_logger().warn(f"cv2.imwrite failed for '{path}'")
+            return ok
+        except Exception as e:
+            self.get_logger().error(f"Failed to save image '{path}': {e}")
+            return False
+
+    def _to_bgr_image(self, image):
+        """Convert common crop formats (NumPy/PIL) to OpenCV BGR image."""
+        if image is None:
+            return None
+        try:
+            if isinstance(image, np.ndarray):
+                arr = image
+            else:
+                # Handles PIL images or similar array-compatible objects.
+                arr = np.array(image)
+
+            if arr.ndim == 2:
+                return arr
+            if arr.ndim != 3:
+                return None
+            if arr.shape[2] == 4:
+                return cv2.cvtColor(arr, cv2.COLOR_RGBA2BGR)
+            return cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
+        except Exception as e:
+            self.get_logger().warn(f"Could not convert crop image for saving: {e}")
+            return None
     
     # ----------- Secondary Methods ------------ #
 
@@ -476,7 +606,7 @@ class VisionNode(Node):
             msg.instance_id = int(det["instance_id"]) 
             msg.confidence = float(det.get("confidence", 0.0))
             # Embeddings
-            current_emb = det["embedding"]
+            current_emb = det.get("embedding")
             masked_emb = det.get("masked_embedding")
             unmasked_emb = det.get("unmasked_embedding")
             with self.clip_state_lock:
