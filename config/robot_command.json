@@ -1,10 +1,10 @@
 {
-    "timestamp": 1776062863.6172795,
-    "prompt": "Go to the coffee machine next to the frige",
-    "goal": "blue coffee machine",
-    "clip_prompts": "telephone",
-    "anchor_object_id": "map_obj_000007",
-    "anchor_object_class": "fridge",
+    "timestamp": 1776680533.2865188,
+    "prompt": "go to the microwave",
+    "goal": "microwave",
+    "clip_prompts": "microwave",
+    "anchor_object_id": "map_obj_000001",
+    "anchor_object_class": "microwave",
     "cluster_info": {
         "cluster_id": 5,
         "objects": [
@@ -22,34 +22,12 @@
             "couch",
             "fireplace"
         ],
-        "reasoning": "User explicitly mentions 'coffee machine' and 'fridge', which are in Cluster 5.",
-        "anchor_object_id": "map_obj_000007",
-        "anchor_object_class": "fridge",
+        "reasoning": "No room mentioned, but microwave is explicitly mentioned in the prompt.",
+        "anchor_object_id": "map_obj_000001",
+        "anchor_object_class": "microwave",
         "location_confidence": 0.95,
-        "prioritize_location": false,
-        "coords": {
-            "x": 1.1063654941435044,
-            "y": 6.456788411507239,
-            "z": 0.7267502156587747
-        },
-        "dimensions": {
-            "bounding_box": {
-                "min": {
-                    "x": -0.730689287185669,
-                    "y": 3.109450340270996
-                },
-                "max": {
-                    "x": 4.771795749664307,
-                    "y": 11.115035057067871
-                },
-                "dimensions": {
-                    "width": 5.502485036849976,
-                    "length": 8.005584716796875
-                }
-            },
-            "radius": 4.711067984869582
-        }
+        "prioritize_location": false
     },
     "action": "go_to_object",
-    "logic": "GENERIC_OBJECT_SPECIFIC_LOCATION"
+    "logic": "GENERIC_OBJECT"
 }
