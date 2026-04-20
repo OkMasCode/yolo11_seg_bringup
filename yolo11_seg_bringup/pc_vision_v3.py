@@ -42,8 +42,10 @@ class VisionNode(Node):
 
         # Communication parameters
         self.declare_parameter('image_topic', '/jackal/sensors/camera_0/color/image') #/camera/camera/color/image_raw
+        self.declare_parameter('depth_topic', '/jackal/sensors/camera_0/aligned_depth_to_color/image')
         self.declare_parameter('enable_visualization', True) # Flag for annotated image publisher
         self.image_topic = self.get_parameter('image_topic').value
+        self.depth_topic = self.get_parameter('depth_topic').value
         self.enable_vis = bool(self.get_parameter('enable_visualization').value)
         # YOLO parameters
         self.declare_parameter('model_path', '/workspaces/yoloe-26l-seg.pt')
@@ -60,6 +62,7 @@ class VisionNode(Node):
         self.declare_parameter('prompt_check_interval', 5.0)
         self.declare_parameter('masked_score_weight', 0.85)
         self.declare_parameter('unmasked_score_weight', 0.15)
+        self.declare_parameter('enable_paper_capture', True)
         self.declare_parameter('paper_capture_class', 'bed')
         self.declare_parameter('paper_images_output_dir', '/workspaces/ros2_ws/src/yolo11_seg_bringup/images')
         self.declare_parameter('annotated_font_size', 0.6)
@@ -69,6 +72,7 @@ class VisionNode(Node):
         self.prompt_check_interval = float(self.get_parameter('prompt_check_interval').value)
         self.masked_score_weight = float(self.get_parameter('masked_score_weight').value)
         self.unmasked_score_weight = float(self.get_parameter('unmasked_score_weight').value)
+        self.enable_paper_capture = bool(self.get_parameter('enable_paper_capture').value)
         self.paper_capture_class = str(self.get_parameter('paper_capture_class').value).strip()
         self.paper_images_output_dir = str(self.get_parameter('paper_images_output_dir').value).strip()
         self.annotated_font_size = float(self.get_parameter('annotated_font_size').value)
@@ -133,7 +137,14 @@ class VisionNode(Node):
             self.rgb_callback,
             qos_profile=qos_sensor,
         )
+        self.depth_sub = self.create_subscription(
+            Image,
+            self.depth_topic,
+            self.depth_callback,
+            qos_profile=qos_sensor,
+        )
         self.get_logger().info(f"Subscribed to: {self.image_topic}")
+        self.get_logger().info(f"Subscribed to depth: {self.depth_topic}")
         # Publishers    
         self.detections_pub = self.create_publisher(DetectedObjectV3Array, self.detection_topic, 10)
         self.text_emb_pub = self.create_publisher(Float32MultiArray, self.text_emb_publish_topic, 10)
@@ -145,14 +156,19 @@ class VisionNode(Node):
         self.current_clip_prompt = None
         self.goal_text_embedding = None
         self.clip_state_lock = threading.Lock()
+        self.depth_state_lock = threading.Lock()
+        self.latest_depth_msg = None
         self.paper_capture_interval_sec = 5.0
         self.last_paper_capture_time = -self.paper_capture_interval_sec
-        os.makedirs(self.paper_images_output_dir, exist_ok=True)
-        self.get_logger().info(
-            "Paper image capture configured: "
-            f"class='{self.paper_capture_class}', interval={self.paper_capture_interval_sec:.1f}s, "
-            f"dir='{self.paper_images_output_dir}'"
-        )
+        if self.enable_paper_capture:
+            os.makedirs(self.paper_images_output_dir, exist_ok=True)
+            self.get_logger().info(
+                "Paper image capture configured: "
+                f"class='{self.paper_capture_class}', interval={self.paper_capture_interval_sec:.1f}s, "
+                f"dir='{self.paper_images_output_dir}'"
+            )
+        else:
+            self.get_logger().info("Paper image capture is disabled by parameter 'enable_paper_capture'.")
         # Timing instrumentation
         self.timing_stats = {
             'yolo_inference': [],
@@ -180,6 +196,15 @@ class VisionNode(Node):
             throttle_duration_sec=2.0,
         )
         self.process_frame(rgb_msg)
+
+    def depth_callback(self, depth_msg: Image):
+        """Cache the most recent aligned depth frame for paper-capture exports."""
+        with self.depth_state_lock:
+            self.latest_depth_msg = depth_msg
+        self.get_logger().debug(
+            f"[depth_callback] stamp={depth_msg.header.stamp.sec}.{depth_msg.header.stamp.nanosec:09d} "
+            f"frame_id='{depth_msg.header.frame_id}' encoding='{depth_msg.encoding}' size={depth_msg.width}x{depth_msg.height}"
+        )
    
     # --------------- Main Methods ------------- #
 
@@ -380,11 +405,15 @@ class VisionNode(Node):
 
     def _is_paper_capture_due(self):
         """Return True when a new paper snapshot should be taken."""
+        if not self.enable_paper_capture:
+            return False
         now = perf_counter()
         return (now - self.last_paper_capture_time) >= self.paper_capture_interval_sec
 
     def _maybe_save_paper_images(self, frame_detections, cv_bgr, res):
         """Save requested intermediate images for one target-class detection every interval."""
+        if not self.enable_paper_capture:
+            return
         target_class = self.paper_capture_class
         if not target_class:
             self.get_logger().warn("paper_capture_class is empty; skipping paper image capture.")
@@ -400,6 +429,8 @@ class VisionNode(Node):
             saved.append("raw")
         if self._write_debug_image("yolo_overview_annotated_image.png", annotated_image):
             saved.append("annotated_all_detections")
+        depth_saved = self._save_latest_depth_images()
+        saved.extend(depth_saved)
 
         matching = [
             det for det in frame_detections
@@ -444,6 +475,88 @@ class VisionNode(Node):
             f"to '{self.paper_images_output_dir}'. Files: {saved}"
         )
 
+    def _save_latest_depth_images(self):
+        """Save latest aligned depth frame in raw and visualized forms for paper captures."""
+        with self.depth_state_lock:
+            depth_msg = self.latest_depth_msg
+        if depth_msg is None:
+            self.get_logger().warn(
+                "Paper capture requested but no depth frame received yet.",
+                throttle_duration_sec=2.0,
+            )
+            return []
+        try:
+            depth_img = self.bridge.imgmsg_to_cv2(depth_msg, desired_encoding='passthrough')
+        except Exception as e:
+            self.get_logger().error(f"Failed converting depth image for paper capture: {e}")
+            return []
+        if depth_img is None:
+            return []
+        saved = []
+        depth_mm_u16 = self._depth_to_uint16_mm(depth_img)
+        depth_mm_u16_for_export = self._brighten_depth_uint16_for_export(depth_mm_u16)
+        if depth_mm_u16_for_export is not None and self._write_debug_image("aligned_depth_raw_mm_u16.png", depth_mm_u16_for_export):
+            saved.append("depth_raw_mm_u16")
+        depth_vis = self._depth_to_visualization(depth_img)
+        if depth_vis is not None and self._write_debug_image("aligned_depth_visualization.png", depth_vis):
+            saved.append("depth_visualization")
+        return saved
+
+    def _depth_to_uint16_mm(self, depth_img):
+        """Convert depth image to uint16 millimeters for lossless-ish PNG export."""
+        try:
+            if depth_img.dtype == np.uint16:
+                return depth_img
+            depth = depth_img.astype(np.float32, copy=False)
+            invalid = ~np.isfinite(depth)
+            depth = np.where(invalid | (depth <= 0.0), 0.0, depth)
+            depth_mm = np.clip(depth * 1000.0, 0.0, 65535.0).astype(np.uint16)
+            return depth_mm
+        except Exception as e:
+            self.get_logger().warn(f"Failed converting depth to uint16 mm: {e}")
+            return None
+
+    def _depth_to_visualization(self, depth_img):
+        """Create an 8-bit depth visualization for quick inspection."""
+        try:
+            depth = depth_img.astype(np.float32, copy=False)
+            valid = np.isfinite(depth) & (depth > 0.0)
+            if not np.any(valid):
+                return None
+            vmin = np.percentile(depth[valid], 5)
+            vmax = np.percentile(depth[valid], 95)
+            if vmax <= vmin:
+                vmax = vmin + 1e-3
+            depth_norm = np.zeros(depth.shape, dtype=np.float32)
+            depth_norm[valid] = (depth[valid] - vmin) / (vmax - vmin)
+            depth_norm = np.clip(depth_norm, 0.0, 1.0)
+            depth_u8 = (depth_norm * 255.0).astype(np.uint8)
+            return cv2.applyColorMap(depth_u8, cv2.COLORMAP_TURBO)
+        except Exception as e:
+            self.get_logger().warn(f"Failed generating depth visualization: {e}")
+            return None
+
+    def _brighten_depth_uint16_for_export(self, depth_mm_u16):
+        """Stretch uint16 depth range for brighter PNG viewing."""
+        if depth_mm_u16 is None:
+            return None
+        try:
+            valid = depth_mm_u16 > 0
+            if not np.any(valid):
+                return depth_mm_u16
+            p95 = float(np.percentile(depth_mm_u16[valid], 95))
+            if p95 <= 0.0:
+                return depth_mm_u16
+            target = 55000.0
+            gain = target / p95
+            gain = float(np.clip(gain, 1.0, 20.0))
+            bright = np.clip(depth_mm_u16.astype(np.float32) * gain, 0.0, 65535.0).astype(np.uint16)
+            self.get_logger().debug(f"Depth export brightness gain applied: {gain:.2f}")
+            return bright
+        except Exception as e:
+            self.get_logger().warn(f"Failed brightening uint16 depth export: {e}")
+            return depth_mm_u16
+
     def _write_debug_image(self, filename, image):
         """Write image to output directory and overwrite existing file."""
         if image is None:
@@ -468,7 +581,6 @@ class VisionNode(Node):
             else:
                 # Handles PIL images or similar array-compatible objects.
                 arr = np.array(image)
-
             if arr.ndim == 2:
                 return arr
             if arr.ndim != 3:
