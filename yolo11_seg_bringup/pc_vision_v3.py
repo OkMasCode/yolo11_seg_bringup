@@ -62,7 +62,7 @@ class VisionNode(Node):
         self.declare_parameter('prompt_check_interval', 5.0)
         self.declare_parameter('masked_score_weight', 0.85)
         self.declare_parameter('unmasked_score_weight', 0.15)
-        self.declare_parameter('enable_paper_capture', True)
+        self.declare_parameter('enable_paper_capture', False)
         self.declare_parameter('paper_capture_class', 'bed')
         self.declare_parameter('paper_images_output_dir', '/workspaces/ros2_ws/src/yolo11_seg_bringup/images')
         self.declare_parameter('annotated_font_size', 0.6)

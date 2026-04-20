@@ -46,14 +46,11 @@ def load_prompt(filename: str, **kwargs) -> str:
     prompt_path = os.path.join(PROMPTS_DIR, filename)
     with open(prompt_path, 'r', encoding='utf-8') as f:
         template = f.read()
-
     if not kwargs:
         return template
-
     class _SafeFormatDict(dict):
         def __missing__(self, key):
             return "{" + key + "}"
-
     return template.format_map(_SafeFormatDict(kwargs))
 
 def initialize_model():
@@ -61,13 +58,11 @@ def initialize_model():
     global llm_pipeline
     print(f"Loading language model: {CHAT_MODEL}")
     print(f"Offline mode: {OFFLINE_MODE}\n")
-    
     try:
         tokenizer = AutoTokenizer.from_pretrained(
             CHAT_MODEL,
             local_files_only=OFFLINE_MODE
         )
-        
         print("Loading model weights...")
         model = AutoModelForCausalLM.from_pretrained(
             CHAT_MODEL,
@@ -76,7 +71,6 @@ def initialize_model():
             low_cpu_mem_usage=True,
             local_files_only=OFFLINE_MODE
         )
-        
         print("Creating inference pipeline...")
         # Create text generation pipeline
         llm_pipeline = pipeline(
@@ -88,7 +82,6 @@ def initialize_model():
             temperature=0.7,
             top_p=0.9,
         )
-        
         print("Successfully loaded language model!\n")
     except Exception as e:
         print(f"Failed to load model: {e}")
@@ -101,27 +94,22 @@ def load_house_map(filename):
     """Loads the map.json file containing all objects and their coordinates."""
     if not os.path.exists(filename):
         raise FileNotFoundError(f"Map file not found: {filename}")
-    
     with open(filename, "r", encoding="utf-8") as f:
         data = json.load(f)
-
     if isinstance(data, dict):
         result = []
         for obj_id, obj_data in data.items():
             obj_data["id"] = obj_id
             result.append(obj_data)
         return result
-    
     return data if isinstance(data, list) else []
 
 def load_clustered_map(filename):
     """Loads the clustered_map.json file containing clusters and outliers."""
     if not os.path.exists(filename):
         raise FileNotFoundError(f"Clustered map file not found: {filename}")
-    
     with open(filename, "r", encoding="utf-8") as f:
         data = json.load(f)
-    
     return data if isinstance(data, list) else []
 
 def summarize_clusters(clustered_map_data):
@@ -130,55 +118,36 @@ def summarize_clusters(clustered_map_data):
     Returns a dict mapping cluster_id to list of object classes.
     """
     cluster_objects = {}
-    
     for entry in clustered_map_data:
         cluster_id = entry.get("cluster")
         obj_class = entry.get("class", "")
-        
         if cluster_id not in cluster_objects:
             cluster_objects[cluster_id] = []
-        
         cluster_objects[cluster_id].append(obj_class)
-    
     return cluster_objects
-
-def get_labeled_cluster_descriptions() -> List[str]:
-    """Build cluster descriptions with semantic labels for downstream LLM calls."""
-    descriptions = []
-    for cluster_id, objects in cluster_summaries.items():
-        label = cluster_labels.get(cluster_id, "unknown")
-        descriptions.append(f"Cluster {cluster_id} ({label}): {', '.join(objects)}")
-    return descriptions
 
 def get_cluster_entries_with_ids() -> Dict[int, List[Dict[str, str]]]:
     """Return per-cluster object candidates with stable {id, class} entries."""
     entries_by_cluster: Dict[int, List[Dict[str, str]]] = {}
     seen_ids = set()
-
     for entry in clustered_map:
         obj_id = str(entry.get("id", "")).strip()
         obj_class = str(entry.get("class", "")).strip()
         cluster_id = entry.get("cluster")
-
         if not obj_id or cluster_id is None:
             continue
-
         key = (cluster_id, obj_id)
         if key in seen_ids:
             continue
         seen_ids.add(key)
-
         if cluster_id not in entries_by_cluster:
             entries_by_cluster[cluster_id] = []
-
         entries_by_cluster[cluster_id].append({
             "id": obj_id,
             "class": obj_class
         })
-
     for cluster_id in entries_by_cluster:
         entries_by_cluster[cluster_id] = sorted(entries_by_cluster[cluster_id], key=lambda x: x["id"])
-
     return entries_by_cluster
 
 def get_labeled_cluster_descriptions_with_ids() -> List[str]:
@@ -209,30 +178,24 @@ def _object_class_from_id(object_id: str) -> str:
             return str(entry.get("class", "")).strip()
     return ""
 
-# NOT NECESSARY
 def assign_cluster_labels() -> None:
     """
     Use LLM once to assign semantic names (kitchen/bedroom/etc.) to clusters.
     The labels are reused by all later LLM calls that consume cluster context.
     """
     global cluster_labels
-
     if not cluster_summaries:
         cluster_labels = {}
         return
-
     print("0. .......Assigning semantic labels to clusters.........\n")
-
     raw_clusters = []
     for cluster_id, objects in cluster_summaries.items():
         raw_clusters.append({"cluster_id": cluster_id, "objects": objects})
-
     SYSTEM_PROMPT = load_prompt('label_clusters.txt')
     msgs = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": json.dumps({"clusters": raw_clusters}, ensure_ascii=False)}
     ]
-
     start_time = time.time()
     max_retries = 3
     assigned = {}
@@ -240,34 +203,26 @@ def assign_cluster_labels() -> None:
         try:
             if attempt > 0:
                 print(f"   Retry attempt {attempt + 1}/{max_retries}")
-
             response_text = call_llm(msgs, temperature=0.4)
             response_json = extract_json_from_response(response_text, expected_keys=["cluster_labels"])
             labels_payload = response_json.get("cluster_labels", [])
-
             if not isinstance(labels_payload, list):
                 labels_payload = []
-
             for entry in labels_payload:
                 if not isinstance(entry, dict):
                     continue
-
                 raw_id = entry.get("cluster_id")
                 raw_label = entry.get("label", "")
-
                 try:
                     cluster_id = int(raw_id)
                 except (TypeError, ValueError):
                     continue
-
                 if cluster_id not in cluster_summaries:
                     continue
-
                 label = str(raw_label).strip().lower()
                 if not label:
                     continue
                 assigned[cluster_id] = label
-
             break
         except (ValueError, json.JSONDecodeError):
             if attempt < max_retries - 1:
@@ -278,16 +233,13 @@ def assign_cluster_labels() -> None:
         except Exception as e:
             print(f"WARNING: Error during cluster labeling: {type(e).__name__}: {str(e)}")
             break
-
     cluster_labels = {}
     raw_labels = {}
     for cluster_id in cluster_summaries.keys():
         raw_labels[cluster_id] = assigned.get(cluster_id, f"cluster_{cluster_id}")
-
     label_counts = {}
     for label in raw_labels.values():
         label_counts[label] = label_counts.get(label, 0) + 1
-
     label_counters = {}
     for cluster_id in sorted(raw_labels.keys()):
         label = raw_labels[cluster_id]
@@ -296,40 +248,11 @@ def assign_cluster_labels() -> None:
             cluster_labels[cluster_id] = f"{label} #{label_counters[label]}"
         else:
             cluster_labels[cluster_id] = label
-
     elapsed = time.time() - start_time
     print("Cluster labels:")
     for cluster_id in sorted(cluster_labels.keys()):
         print(f"  Cluster {cluster_id} -> {cluster_labels[cluster_id]}")
     print(f"Computation time: {elapsed:.2f} seconds\n")
-
-def compute_cluster_coords(cluster_id: int) -> Dict | None:
-    """
-    Extract centroid coordinates (x, y, z) for a given cluster_id
-    from the cluster_centroid field in clustered_map. Returns None if not found.
-    """
-    for entry in clustered_map:
-        if entry.get("cluster") != cluster_id:
-            continue
-        centroid = entry.get("cluster_centroid")
-        if isinstance(centroid, dict):
-            return centroid
-    
-    return None
-
-def get_cluster_dimensions(cluster_id: int) -> Dict | None:
-    """
-    Extract cluster dimensions (bounding_box and radius) for a given cluster_id
-    from the cluster_dimensions field in clustered_map. Returns None if not found.
-    """
-    for entry in clustered_map:
-        if entry.get("cluster") != cluster_id:
-            continue
-        dimensions = entry.get("cluster_dimensions")
-        if isinstance(dimensions, dict):
-            return dimensions
-    
-    return None
 
 def get_map_objects():
     """Returns all unique object classes from the map."""
@@ -363,23 +286,15 @@ class Action(BaseModel):
 class Logic_decision(BaseModel):
     logic: str
 
-class ClipPromptOutput(BaseModel):
-    clip_prompt: str = ""  # Single prompt used as seed for validator expansion
-
 class ClusterPrediction(BaseModel):
     cluster_id: int | None = None  # ID of the most likely cluster, None when uncertain
     reasoning: str  # Brief explanation of why this cluster was chosen
     anchor_object_id: str = ""  # Object ID used as anchor for guiding the goal search
     location_confidence: float = 0.0  # 0.0-1.0 confidence that location cues should be prioritized
 
-class GoalSelection(BaseModel):
-    selected_object_id: str = ""  # chosen object id, empty means no match
-    decision_basis: str  # "location", "similarity", "mixed", or "none"
-    reasoning: str  # brief explanation
-
 # ------------------ LLM CALLS ----------------- #
 
-def call_llm(messages: List[Dict[str, str]], max_tokens: int = 512, temperature: float = 0.3) -> str:
+def call_llm(messages: List[Dict[str, str]], max_tokens: int = 512, temperature: float = 0.7) -> str:
     """Call the LLM with a list of messages and return the response.
     
     Args:
@@ -404,7 +319,6 @@ def call_llm(messages: List[Dict[str, str]], max_tokens: int = 512, temperature:
                 prompt += f"[INST] {content} [/INST]\n\n"
             elif role == "user":
                 prompt += f"[INST] {content} [/INST]\n"
-    
     # Generate response with lower temperature for more consistent JSON
     response = llm_pipeline(
         prompt,
@@ -416,7 +330,6 @@ def call_llm(messages: List[Dict[str, str]], max_tokens: int = 512, temperature:
         do_sample=temperature > 0,
         top_p=0.95
     )
-    
     return response[0]["generated_text"].strip()
 
 def extract_json_from_response(response: str, expected_keys: List[str] = None) -> Dict:
@@ -439,14 +352,12 @@ def extract_json_from_response(response: str, expected_keys: List[str] = None) -
                 return parsed
     except json.JSONDecodeError:
         pass
-    
     # Strategy 2: Find JSON object using regex (nested braces support)
     # Match complete JSON objects with proper nesting
     json_patterns = [
         r'\{(?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})*\}',  # Nested JSON
         r'\{[^{}]*\}',  # Simple JSON
     ]
-    
     for pattern in json_patterns:
         matches = re.finditer(pattern, response, re.DOTALL)
         for match in matches:
@@ -462,7 +373,6 @@ def extract_json_from_response(response: str, expected_keys: List[str] = None) -
                         return parsed
             except json.JSONDecodeError:
                 continue
-    
     # Strategy 3: Try to extract JSON between markdown code blocks
     code_block_match = re.search(r'```(?:json)?\s*({[^`]+})\s*```', response, re.DOTALL)
     if code_block_match:
@@ -472,7 +382,6 @@ def extract_json_from_response(response: str, expected_keys: List[str] = None) -
                 return parsed
         except json.JSONDecodeError:
             pass
-    
     # If all strategies fail, raise error with helpful message
     raise ValueError(
         f"Could not extract valid JSON from LLM response.\n"
@@ -486,13 +395,11 @@ def extract_goal(prompt : str) -> Goal:
     
     # Load prompt template from file
     SYSTEM_PROMPT = load_prompt('extract_goal_and_clip.txt', MAP_OBJECTS=get_map_objects())
-
     # message passed to the LLM
     msgs = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": prompt}
     ]
-
     start_time = time.time()
     # LLM call with error handling and retry logic
     max_retries = 3
@@ -502,14 +409,11 @@ def extract_goal(prompt : str) -> Goal:
         try:
             if attempt > 0:
                 print(f"   Retry attempt {attempt + 1}/{max_retries}")
-            
             response_text = call_llm(msgs, temperature=0.2)  # Low temp for consistent JSON
-            
             response_json = extract_json_from_response(response_text, expected_keys=["goal", "clip_prompt"])
             goal_text = response_json["goal"]
             clip_prompt_text = response_json.get("clip_prompt", "")
             break  # Success, exit retry loop
-            
         except (ValueError, json.JSONDecodeError) as e:
             if attempt < max_retries - 1:
                 print(f"   JSON parsing failed, retrying...")
@@ -529,17 +433,14 @@ def extract_goal(prompt : str) -> Goal:
     clip_prompt_text = clip_prompt_text.strip()
     if not clip_prompt_text and goal_text:
         clip_prompt_text = goal_text
-
     print(f"Goal: {goal_text}")
     print(f"CLIP prompt: {clip_prompt_text}")
     print(f"Computation time: {elapsed:.2f} seconds\n")
-
     # Combine goal and clip prompt into the result
     result = Goal(
         goal=goal_text, 
         clip_prompts=clip_prompt_text,
     )
-    
     return result
 
 def determine_most_likely_cluster(prompt: str, goal: str) -> ClusterPrediction:
@@ -551,32 +452,25 @@ def determine_most_likely_cluster(prompt: str, goal: str) -> ClusterPrediction:
     
     # Format cluster information for the LLM
     cluster_descriptions = get_labeled_cluster_descriptions_with_ids()
-    
     clusters_text = "\n".join(cluster_descriptions)
-    
     # Load prompt template from file
     SYSTEM_PROMPT = load_prompt('determine_cluster.txt', clusters_text=clusters_text)
-    
     msgs = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": f"User prompt: '{prompt}'\nGoal object: '{goal}'"}
     ]
-    
     start_time = time.time()
     max_retries = 3
     for attempt in range(max_retries):
         try:
             if attempt > 0:
                 print(f"   Retry attempt {attempt + 1}/{max_retries}")
-            
-            response_text = call_llm(msgs, temperature=0.2)
-            
+            response_text = call_llm(msgs, temperature=0.4)
             response_json = extract_json_from_response(response_text, expected_keys=["reasoning"])
             if "location_confidence" not in response_json:
                 response_json["location_confidence"] = 0.0
             if "anchor_object_id" not in response_json:
                 response_json["anchor_object_id"] = ""
-
             # cluster_id is optional: None means "no confident cluster".
             raw_cluster_id = response_json.get("cluster_id", None)
             if raw_cluster_id in ("", "null", "None"):
@@ -588,19 +482,16 @@ def determine_most_likely_cluster(prompt: str, goal: str) -> ClusterPrediction:
                     response_json["cluster_id"] = int(raw_cluster_id)
                 except (TypeError, ValueError):
                     response_json["cluster_id"] = None
-
             raw_anchor_object_id = response_json.get("anchor_object_id", "")
             if raw_anchor_object_id is None:
                 raw_anchor_object_id = ""
             response_json["anchor_object_id"] = str(raw_anchor_object_id).strip()
-
             # Clamp to [0.0, 1.0] for robustness
             try:
                 response_json["location_confidence"] = float(response_json["location_confidence"])
             except (TypeError, ValueError):
                 response_json["location_confidence"] = 0.0
             response_json["location_confidence"] = max(0.0, min(1.0, response_json["location_confidence"]))
-
             # Anchor id must belong to selected cluster. If not, clear it.
             if response_json["cluster_id"] is None:
                 response_json["anchor_object_id"] = ""
@@ -608,10 +499,8 @@ def determine_most_likely_cluster(prompt: str, goal: str) -> ClusterPrediction:
                 valid_ids = _cluster_object_ids(response_json["cluster_id"])
                 if response_json["anchor_object_id"] not in valid_ids:
                     response_json["anchor_object_id"] = ""
-
             result = ClusterPrediction.model_validate(response_json)
             break
-            
         except (ValueError, json.JSONDecodeError) as e:
             if attempt < max_retries - 1:
                 print(f"   JSON parsing failed, retrying...")
@@ -627,22 +516,18 @@ def determine_most_likely_cluster(prompt: str, goal: str) -> ClusterPrediction:
             raise
     end_time = time.time()
     elapsed = end_time - start_time
-    
     # Validate cluster_id exists when provided
     if result.cluster_id is not None and result.cluster_id not in cluster_summaries:
         print(f"Warning: LLM returned invalid cluster_id {result.cluster_id}. Clearing cluster selection.")
         result.cluster_id = None
         result.anchor_object_id = ""
-
     anchor_object_class = _object_class_from_id(result.anchor_object_id)
-
     print(f"Selected Cluster: {result.cluster_id if result.cluster_id is not None else 'NONE'}")
     print(f"Reasoning: {result.reasoning}")
     print(f"Anchor object ID: {result.anchor_object_id if result.anchor_object_id else 'NONE'}")
     print(f"Anchor object class: {anchor_object_class if anchor_object_class else 'NONE'}")
     print(f"Location confidence: {result.location_confidence:.2f}")
     print(f"Computation time: {elapsed:.2f} seconds\n")
-    
     return result
  
 def extract_action(prompt : str) -> Action:
@@ -651,25 +536,20 @@ def extract_action(prompt : str) -> Action:
     
     # Load prompt template from file
     SYSTEM_PROMPT = load_prompt('extract_action.txt')
-    
     msgs = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": prompt}
     ]
-
     start_time = time.time()
     max_retries = 3
     for attempt in range(max_retries):
         try:
             if attempt > 0:
                 print(f"   Retry attempt {attempt + 1}/{max_retries}")
-            
             response_text = call_llm(msgs, temperature=0.1)  # Very low temp for binary choice
-            
             response_json = extract_json_from_response(response_text, expected_keys=["action"])
             result = Action.model_validate(response_json)
             break
-            
         except (ValueError, json.JSONDecodeError) as e:
             if attempt < max_retries - 1:
                 print(f"   JSON parsing failed, retrying...")
@@ -695,25 +575,20 @@ def decide_logic(prompt : str) -> Logic_decision:
     
     # Load prompt template from file
     SYSTEM_PROMPT = load_prompt('decide_logic.txt')
-    
     msgs = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": prompt}
     ]
-
     start_time = time.time()
     max_retries = 3
     for attempt in range(max_retries):
         try:
             if attempt > 0:
-                print(f"   Retry attempt {attempt + 1}/{max_retries}")
-            
+                print(f"   Retry attempt {attempt + 1}/{max_retries}")       
             response_text = call_llm(msgs, temperature=0.1)  # Very low temp for binary choice
-            
             response_json = extract_json_from_response(response_text, expected_keys=["logic"])
             result = Logic_decision.model_validate(response_json)
             break
-            
         except (ValueError, json.JSONDecodeError) as e:
             if attempt < max_retries - 1:
                 print(f"   JSON parsing failed, retrying...")
@@ -733,17 +608,6 @@ def decide_logic(prompt : str) -> Logic_decision:
     print(f"Computation time: {elapsed:.2f} seconds\n")
     return result
 
-def _find_object_cluster(object_id: str) -> int | None:
-    """Return cluster id for a given object id from clustered_map."""
-    for entry in clustered_map:
-        if entry.get("id") == object_id:
-            try:
-                return int(entry.get("cluster"))
-            except (TypeError, ValueError):
-                return None
-    return None
-
-
 # ---------------- MAIN PIPELINE --------------- #
 
 def process_nav_instruction(prompt : str) -> NavResult:
@@ -751,22 +615,17 @@ def process_nav_instruction(prompt : str) -> NavResult:
     print("\n" + "="*60)
     print("PROCESSING REQUEST")
     print("="*60 + "\n") 
-
     # 1. Extract goal from prompt
     goal = extract_goal(prompt)
-
     effective_goal = goal.goal.strip() if goal.goal else ""
     if not effective_goal and goal.clip_prompts:
         effective_goal = _normalize_object_label(goal.clip_prompts)
         print(f"No explicit goal returned. Using CLIP prompt as goal hint: {effective_goal}")
-
     # 4. Determine most likely cluster using LLM
     cluster_prediction = determine_most_likely_cluster(prompt, effective_goal)
     anchor_object_class = _object_class_from_id(cluster_prediction.anchor_object_id)
     cluster_info = None
     if cluster_prediction.cluster_id is not None and cluster_prediction.cluster_id in cluster_summaries:
-        cluster_coords = compute_cluster_coords(cluster_prediction.cluster_id)
-        cluster_dimensions = get_cluster_dimensions(cluster_prediction.cluster_id)
         cluster_info = {
             "cluster_id": cluster_prediction.cluster_id,
             "cluster_label": cluster_labels.get(cluster_prediction.cluster_id, "unknown"),
@@ -775,8 +634,6 @@ def process_nav_instruction(prompt : str) -> NavResult:
             "anchor_object_id": cluster_prediction.anchor_object_id,
             "anchor_object_class": anchor_object_class,
             "location_confidence": cluster_prediction.location_confidence,
-            "coords": cluster_coords,
-            "dimensions": cluster_dimensions
         }
     else:
         cluster_info = {
@@ -788,17 +645,12 @@ def process_nav_instruction(prompt : str) -> NavResult:
             "anchor_object_class": anchor_object_class,
             "location_confidence": cluster_prediction.location_confidence,
             "prioritize_location": False,
-            "coords": None,
-            "dimensions": None
         }
-    
     # 5. Determine action plan
     action = extract_action(prompt)
-
     logic = decide_logic(prompt)
     # Preserve the extracted user-intent goal even if no mapped object is selected.
     final_goal_class = effective_goal
-
     return NavResult(
         goal=final_goal_class,
         clip_prompts=goal.clip_prompts,
@@ -811,43 +663,9 @@ def process_nav_instruction(prompt : str) -> NavResult:
 
 # ----------------- RESULT SAVING ----------------- #
 
-def _objects_with_coords(objects: List[Dict]) -> List[Dict]:
-    """Reduce map objects to schema {id, coords, similarity_score, cluster}."""
-    out = []
-    for obj in objects:
-        obj_id = obj.get("id")
-        coords = obj.get("pose_map")
-        similarity = obj.get("similarity_score", 0.0)
-        
-        if not obj_id:
-            continue
-        
-        # Look up the cluster ID using your existing helper function
-        cluster_id = _find_object_cluster(obj_id)
-        
-        # Build the dictionary with the new cluster key
-        entry = {
-            "id": obj_id,
-            "similarity_score": float(similarity),
-            "cluster": cluster_id
-        }
-        
-        # Add coordinates if they exist
-        if isinstance(coords, dict):
-            entry["coords"] = {
-                "x": float(coords.get("x", 0.0)),
-                "y": float(coords.get("y", 0.0)),
-                "z": float(coords.get("z", 0.0))
-            }
-        
-        out.append(entry)
-    
-    return out
-
 def save_robot_command(output_path: str, prompt: str, result: NavResult) -> None:
     """Serialize navigation result into robot_command.json schema and save."""
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
-
     cluster_info: Dict | None = None
     if result.cluster_info:
         cluster_info = {
@@ -858,10 +676,7 @@ def save_robot_command(output_path: str, prompt: str, result: NavResult) -> None
             "anchor_object_class": result.cluster_info.get("anchor_object_class", ""),
             "location_confidence": float(result.cluster_info.get("location_confidence", 0.0)),
             "prioritize_location": bool(result.cluster_info.get("prioritize_location", False)),
-            "coords": result.cluster_info.get("coords"),
-            "dimensions": result.cluster_info.get("dimensions")
         }
-
     payload = {
         "timestamp": time.time(),
         "prompt": prompt,
@@ -873,7 +688,6 @@ def save_robot_command(output_path: str, prompt: str, result: NavResult) -> None
         "action": result.action,
         "logic": result.logic,
     }
-
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=4)
     print(f"Saved robot command to: {output_path}")
@@ -883,10 +697,8 @@ def save_robot_command(output_path: str, prompt: str, result: NavResult) -> None
 def main():
     global house_map, clustered_map, cluster_summaries, clip_processor
     initialize_model()
-
     house_map = load_house_map(MAP_FILE)
     map_objects = get_map_objects()
-    
     # Load clustered map and generate summaries
     try:
         clustered_map = load_clustered_map(CLUSTERED_MAP_FILE)
@@ -901,22 +713,17 @@ def main():
     except FileNotFoundError as e:
         print(f"Warning: {e}")
         print("Continuing without cluster information\n")
-
     print(f"Number of objects in the house map: {len(house_map)}")
     print(f"Number of unique classes in the map: {len(map_objects)}")
     print(f"Goal extraction can target all classes in the loaded map\n")
-
     while True:
         user_prompt = input("Navigation Instruction: ").strip()
         if not user_prompt:
             continue
-        
         process_start = time.time()
         result = process_nav_instruction(user_prompt)
         process_end = time.time()
-        
         print(f"\nTotal processing time: {process_end - process_start:.2f} seconds")
-        
         # Persist the result to the configured output JSON
         save_robot_command(ROBOT_COMMAND_FILE, user_prompt, result)
 

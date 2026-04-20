@@ -13,6 +13,10 @@ Main updates versus older docs:
 - The LLM helper script is now `scripts/reduced_llm_transformers.py` (Transformers-based), not an Ollama script.
 - There is currently no `launch/` directory in this package.
 
+## What is missing
+
+- In the LLM the model does not compare the extracted goal with what it's in the map (if extracted goal is television and the map contains TV, the output will still be television)
+
 ## Package Layout
 
 ```text
