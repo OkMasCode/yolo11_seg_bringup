@@ -17,7 +17,7 @@ class SIGLIPProcessor:
     def __init__(
         self,
         device="cuda",
-        model_name="google/siglip2-large-patch16-384",
+        model_name="/home/workspace/local_siglip_model_base_256",
         masked_score_weight=0.85,
         unmasked_score_weight=0.15,
     ):
@@ -31,8 +31,8 @@ class SIGLIPProcessor:
             self.masked_score_weight = float(masked_score_weight) / total_weight
             self.unmasked_score_weight = float(unmasked_score_weight) / total_weight
         print(f"[CLIPProcessor] Loading SOTA model: {self.model_name} on {self.device}")
-        self.processor = AutoProcessor.from_pretrained(self.model_name)
-        self.model = AutoModel.from_pretrained(self.model_name).to(self.device)
+        self.processor = AutoProcessor.from_pretrained(self.model_name, local_files_only=True)
+        self.model = AutoModel.from_pretrained(self.model_name, local_files_only=True).to(self.device)
         self.model.eval()
         with torch.no_grad():
             self.cached_logit_scale = (

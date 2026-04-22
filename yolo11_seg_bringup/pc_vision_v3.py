@@ -48,7 +48,7 @@ class VisionNode(Node):
         self.depth_topic = self.get_parameter('depth_topic').value
         self.enable_vis = bool(self.get_parameter('enable_visualization').value)
         # YOLO parameters
-        self.declare_parameter('model_path', '/workspaces/yoloe-26l-seg.pt')
+        self.declare_parameter('model_path', '/home/workspace/yoloe-26m-seg.pt')
         self.declare_parameter('imgsz', 640)
         self.declare_parameter('conf', 0.45)
         self.declare_parameter('iou', 0.35)
@@ -57,14 +57,14 @@ class VisionNode(Node):
         self.conf = float(self.get_parameter('conf').value)
         self.iou = float(self.get_parameter('iou').value)
         # CLIP parameters
-        self.declare_parameter('CLIP_model_name', 'google/siglip2-large-patch16-384')
-        self.declare_parameter('robot_command_file', '/workspaces/ros2_ws/src/yolo11_seg_bringup/config/robot_command.json')
+        self.declare_parameter('CLIP_model_name', '/home/workspace/local_siglip_model')
+        self.declare_parameter('robot_command_file', '/home/workspace/ros2_ws/src/yolo11_seg_bringup/config/robot_command.json')
         self.declare_parameter('prompt_check_interval', 5.0)
         self.declare_parameter('masked_score_weight', 0.85)
         self.declare_parameter('unmasked_score_weight', 0.15)
         self.declare_parameter('enable_paper_capture', False)
         self.declare_parameter('paper_capture_class', 'bed')
-        self.declare_parameter('paper_images_output_dir', '/workspaces/ros2_ws/src/yolo11_seg_bringup/images')
+        self.declare_parameter('paper_images_output_dir', '/home/workspace/ros2_ws/src/yolo11_seg_bringup/images')
         self.declare_parameter('annotated_font_size', 0.6)
         self.declare_parameter('annotated_line_width', 1)
         self.CLIP_model_name = self.get_parameter('CLIP_model_name').value
@@ -83,10 +83,10 @@ class VisionNode(Node):
         self.anno_topic = '/vision/annotated_image'
         self.detection_topic = '/vision/detections'
         self.text_emb_publish_topic = '/vision/text_embedding'
-        self.frame_skip = 5
-        self.CLASS_NAMES = ["chair", "fridge", "microwave", "screwdriver", "keyboard", "phone", "mouse", "laptop", "blue coffee machine", 
-                            "coffee cup", "apple", "cup", "tv", "umbrella", "spoon", "knife", 
-                            "oven", "stove", "towel", "cabinet", "kitchen counter", "coffee machine", "fridge", "bed", "nightstand", "lamp", "dresser", "pillow"]        
+        self.frame_skip = 10
+        self.CLASS_NAMES = ["person", "chair", "fridge", "microwave", "screwdriver", "drill", "keyboard", "phone", "mouse", "laptop", "blue coffee machine", 
+                            "coffee cup", "apple", "cup", "tv", "umbrella", "spoon", "knife"]
+                            #"oven", "stove", "towel", "cabinet", "kitchen counter", "coffee machine", "fridge", "bed", "nightstand", "lamp", "dresser", "pillow"]        
         goal_class = self._read_goal_from_command_file()
         # If a valid goal class is found in the command file, ensure it's included in CLASS_NAMES for detection.
         if goal_class:
@@ -147,9 +147,9 @@ class VisionNode(Node):
         self.get_logger().info(f"Subscribed to depth: {self.depth_topic}")
         # Publishers    
         self.detections_pub = self.create_publisher(DetectedObjectV3Array, self.detection_topic, 10)
-        self.text_emb_pub = self.create_publisher(Float32MultiArray, self.text_emb_publish_topic, 10)
+        self.text_emb_pub = self.create_publisher(Float32MultiArray, self.text_emb_publish_topic, qos_profile=qos_sensor,)
         if self.enable_vis:
-            self.vis_pub = self.create_publisher(Image, self.anno_topic, 10)
+            self.vis_pub = self.create_publisher(Image, self.anno_topic, qos_profile=qos_sensor)
         # State Variables
         self.frame_count = 0
         self.class_colors = {}
@@ -711,6 +711,7 @@ class VisionNode(Node):
             throttle_duration_sec=2.0,
         )
         published_rows = []
+        sim_comp_print = False
         for det in detections:
             msg = DetectedObjectV3() 
             # Basic Info
@@ -729,15 +730,20 @@ class VisionNode(Node):
             msg.text_embedding = text_embedding.tolist() if text_embedding is not None else []
             # Compute goal similarity
             prob_goal = 0.0
+            sim_comp = False
             if masked_emb is not None and unmasked_emb is not None and text_embedding is not None:
                 prob_goal = self.clip.compute_blended_match_score(masked_emb, unmasked_emb, text_embedding)
                 msg.similarity = float(prob_goal)
+                sim_comp = True
             elif current_emb is not None and text_embedding is not None:
                 # Fallback for detections that only have one embedding.
                 prob_goal = self.clip.compute_match_score(current_emb, text_embedding)
                 msg.similarity = float(prob_goal)
+                sim_comp = True
             else:
                 msg.similarity = 0.0
+            if sim_comp:
+                sim_comp_print = True
             published_rows.append({
                 "instance_id": int(det["instance_id"]),
                 "class_name": det["object_name"],
@@ -754,7 +760,8 @@ class VisionNode(Node):
             array_msg.detections.append(msg)
         # Publish the entire frame of detections simultaneously
         self.detections_pub.publish(array_msg)
-        self._log_published_detections_table(published_rows, array_msg.header)
+        if sim_comp_print:
+            self._log_published_detections_table(published_rows, array_msg.header)
 
     def _log_published_detections_table(self, rows, header):
         """Log a compact table of the detections that were actually published."""

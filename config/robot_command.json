@@ -2,7 +2,7 @@
     "timestamp": 1776680533.2865188,
     "prompt": "go to the microwave",
     "goal": "microwave",
-    "clip_prompts": "microwave",
+    "clip_prompts": "open fridge",
     "anchor_object_id": "map_obj_000001",
     "anchor_object_class": "microwave",
     "cluster_info": {
