@@ -102,6 +102,13 @@ class SIGLIPProcessor:
             image_features = image_features / image_features.norm(p=2, dim=-1, keepdim=True)
         return [embedding for embedding in image_features.detach().cpu().numpy()]
 
+    def encode_image(self, image_bgr):
+        """Encode one BGR image and return a single embedding vector."""
+        embeddings = self.encode_images_batch([image_bgr])
+        if not embeddings:
+            return None
+        return embeddings[0]
+
     def prepare_crops(self, cv_bgr, mask_uint8, bbox_xyxy):
         """
         SigLIP 2 handles the native aspect ratio via its processor.
@@ -132,11 +139,20 @@ class SIGLIPProcessor:
         clipped = np.clip(value, -60.0, 60.0)
         return float(1.0 / (1.0 + np.exp(-clipped)))
 
-    def compute_match_score(self, image_embedding, text_embedding) -> float:
-        image_vec = np.asarray(image_embedding, dtype=np.float32).flatten()
-        text_vec = np.asarray(text_embedding, dtype=np.float32).flatten()
+    def compute_match_logit(self, image_embedding, text_embedding) -> float:
+        """Return the raw SigLIP logit before sigmoid conversion."""
+        image_vec = np.asarray(image_embedding, dtype=np.float64).flatten()
+        text_vec = np.asarray(text_embedding, dtype=np.float64).flatten()
         dot_product = float(np.dot(image_vec, text_vec))
-        logits = (dot_product * self.cached_logit_scale) + self.cached_logit_bias
+        logits = (dot_product * float(self.cached_logit_scale)) + float(self.cached_logit_bias)
+        return float(np.float64(logits))
+
+    def compute_match_score_raw(self, image_embedding, text_embedding) -> float:
+        """Backward-friendly alias for the raw similarity computation."""
+        return self.compute_match_logit(image_embedding, text_embedding)
+
+    def compute_match_score(self, image_embedding, text_embedding) -> float:
+        logits = self.compute_match_logit(image_embedding, text_embedding)
         return self._safe_sigmoid(logits) * 100.0
 
     def compute_blended_match_score(

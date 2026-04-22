@@ -8,6 +8,7 @@ This README reflects the current repository state.
 
 Main updates versus older docs:
 - The active vision node is now `pc_vision_v3.py` (RGB only, no depth subscription).
+- `scene_embedding_node.py` computes a scene embedding every 15 frames and compares it against `config/scene_prompt.json` using raw SigLIP logits.
 - The package exports JSON through `cpp_mapper_json_exporter_node.py` from a semantic map topic.
 - Cluster preprocessing and clustered map publishing are available both as a script and as a ROS node.
 - The LLM helper script is now `scripts/reduced_llm_transformers.py` (Transformers-based), not an Ollama script.
@@ -91,6 +92,36 @@ Important parameters:
 Notes:
 - CLIP text prompt source key is `clip_prompts` inside `robot_command.json`.
 - This node does not subscribe to depth or camera info in its current version.
+
+### 1b) scene_embedding_node
+
+Entry point:
+- `ros2 run yolo11_seg_bringup scene_embedding_node`
+
+Purpose:
+- Samples the RGB stream every 15 frames by default.
+- Computes a full-scene SigLIP embedding.
+- Compares the scene embedding against the prompt stored in `config/scene_prompt.json`.
+- Publishes the raw similarity as a `Float64` instead of a percentage so small changes remain visible.
+
+Subscriptions:
+- `/jackal/sensors/camera_0/color/image` (`sensor_msgs/Image`) by default.
+
+Publications:
+- `/vision/scene_embedding` (`std_msgs/Float64MultiArray`)
+- `/vision/scene_similarity_raw` (`yolo11_seg_interfaces/Similarity`, similarity in `similarity`, timestamp in `header.stamp` from RGB frame)
+
+Important parameters:
+- `image_topic`
+- `scene_prompt_file`
+- `CLIP_model_name`
+- `sample_every_n_frames` (default: `15`)
+- `prompt_check_interval` (default: `2.0` seconds)
+
+Scene prompt file format:
+- `scene_prompt`: a single prompt string
+- `scene_prompts`: a list of prompt strings
+- `prompt` or `clip_prompts`: accepted as fallback keys
 
 ### 2) cpp_mapper_json_exporter_node
 
