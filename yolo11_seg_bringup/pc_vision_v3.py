@@ -63,6 +63,7 @@ class VisionNode(Node):
         self.declare_parameter('prompt_check_interval', 5.0)
         self.declare_parameter('masked_score_weight', 0.85)
         self.declare_parameter('unmasked_score_weight', 0.15)
+        self.declare_parameter('compute_unmasked_embeddings', False)
         self.declare_parameter('enable_paper_capture', False)
         self.declare_parameter('paper_capture_class', 'bed')
         self.declare_parameter('paper_images_output_dir', '/home/workspace/ros2_ws/src/yolo11_seg_bringup/images')
@@ -74,6 +75,7 @@ class VisionNode(Node):
         self.prompt_check_interval = float(self.get_parameter('prompt_check_interval').value)
         self.masked_score_weight = float(self.get_parameter('masked_score_weight').value)
         self.unmasked_score_weight = float(self.get_parameter('unmasked_score_weight').value)
+        self.compute_unmasked_embeddings = bool(self.get_parameter('compute_unmasked_embeddings').value)
         self.enable_paper_capture = bool(self.get_parameter('enable_paper_capture').value)
         self.paper_capture_class = str(self.get_parameter('paper_capture_class').value).strip()
         self.paper_images_output_dir = str(self.get_parameter('paper_images_output_dir').value).strip()
@@ -85,7 +87,7 @@ class VisionNode(Node):
         self.anno_topic = '/vision/annotated_image'
         self.detection_topic = '/vision/detections'
         self.text_emb_publish_topic = '/vision/text_embedding'
-        self.frame_skip = 5
+        self.frame_skip = 10
         self.CLASS_NAMES = ["person", "bus", "tree"]        
         goal_class = self._read_goal_from_command_file()
         # If a valid goal class is found in the command file, ensure it's included in CLASS_NAMES for detection.
@@ -121,6 +123,9 @@ class VisionNode(Node):
             "CLIP blend weights normalized to: "
             f"masked={self.clip.masked_score_weight:.2f}, "
             f"unmasked={self.clip.unmasked_score_weight:.2f}"
+        )
+        self.get_logger().info(
+            f"Unmasked embedding computation enabled: {self.compute_unmasked_embeddings}"
         )
         # CV bridge and camera intrinsics placeholders.
         self.bridge = CvBridge()
@@ -174,6 +179,15 @@ class VisionNode(Node):
             'yolo_inference': [],
             'detections_processing': [],
             'clip_encoding': [],
+            'clip_preprocess': [],
+            'clip_set_shape_and_host_copy': [],
+            'clip_htod_enqueue': [],
+            'clip_inference_enqueue': [],
+            'clip_inference_host_call_only': [],
+            'clip_dtoh_enqueue': [],
+            'clip_stream_sync': [],
+            'clip_postprocess': [],
+            'clip_total_internal': [],
             'publishing': [],
             'total_frame': []
         }
@@ -305,7 +319,10 @@ class VisionNode(Node):
                 continue
             det_entry = result
             frame_detections.append(det_entry)
-            if det_entry.get("masked_crop") is not None and det_entry.get("unmasked_crop") is not None:
+            if self.compute_unmasked_embeddings:
+                if det_entry.get("masked_crop") is not None and det_entry.get("unmasked_crop") is not None:
+                    batch_queue.append(det_entry)
+            elif det_entry.get("masked_crop") is not None:
                 batch_queue.append(det_entry)
         det_proc_time = (perf_counter() - det_process_start) * 1000
         self.timing_stats['detections_processing'].append(det_proc_time)
@@ -321,22 +338,44 @@ class VisionNode(Node):
             try:
                 clip_start = perf_counter()
                 masked_images = [item["masked_crop"] for item in batch_queue]
-                unmasked_images = [item["unmasked_crop"] for item in batch_queue]
-                all_images = masked_images + unmasked_images
-                all_embeddings = self.clip.encode_images_batch(all_images)
-                half_idx = len(masked_images)
-                masked_embeddings = all_embeddings[:half_idx]
-                unmasked_embeddings = all_embeddings[half_idx:]
-                pair_count = min(len(masked_embeddings), len(unmasked_embeddings), len(batch_queue))
-                for i in range(pair_count):
-                    batch_queue[i]["masked_embedding"] = masked_embeddings[i]
-                    batch_queue[i]["unmasked_embedding"] = unmasked_embeddings[i]
-                    batch_queue[i]["masked_crop"] = None
-                    batch_queue[i]["unmasked_crop"] = None
+                if self.compute_unmasked_embeddings:
+                    unmasked_images = [item["unmasked_crop"] for item in batch_queue]
+                    all_images = masked_images + unmasked_images
+                else:
+                    all_images = masked_images
+                all_embeddings, clip_step_timing = self.clip.encode_images_batch(all_images, return_timing=True)
+                self._append_timing_stat('clip_preprocess', clip_step_timing.get('preprocess_ms', 0.0))
+                self._append_timing_stat('clip_set_shape_and_host_copy', clip_step_timing.get('set_shape_and_host_copy_ms', 0.0))
+                self._append_timing_stat('clip_htod_enqueue', clip_step_timing.get('htod_enqueue_ms', 0.0))
+                self._append_timing_stat('clip_inference_enqueue', clip_step_timing.get('inference_enqueue_ms', 0.0))
+                self._append_timing_stat('clip_inference_host_call_only', clip_step_timing.get('inference_host_call_only_ms', 0.0))
+                self._append_timing_stat('clip_dtoh_enqueue', clip_step_timing.get('dtoh_enqueue_ms', 0.0))
+                self._append_timing_stat('clip_stream_sync', clip_step_timing.get('stream_sync_ms', 0.0))
+                self._append_timing_stat('clip_postprocess', clip_step_timing.get('postprocess_ms', 0.0))
+                self._append_timing_stat('clip_total_internal', clip_step_timing.get('total_ms', 0.0))
+                if self.compute_unmasked_embeddings:
+                    half_idx = len(masked_images)
+                    masked_embeddings = all_embeddings[:half_idx]
+                    unmasked_embeddings = all_embeddings[half_idx:]
+                    pair_count = min(len(masked_embeddings), len(unmasked_embeddings), len(batch_queue))
+                    for i in range(pair_count):
+                        batch_queue[i]["masked_embedding"] = masked_embeddings[i]
+                        batch_queue[i]["unmasked_embedding"] = unmasked_embeddings[i]
+                        batch_queue[i]["embedding"] = masked_embeddings[i]
+                        batch_queue[i]["masked_crop"] = None
+                        batch_queue[i]["unmasked_crop"] = None
+                else:
+                    pair_count = min(len(all_embeddings), len(batch_queue))
+                    for i in range(pair_count):
+                        batch_queue[i]["masked_embedding"] = all_embeddings[i]
+                        batch_queue[i]["embedding"] = all_embeddings[i]
+                        batch_queue[i]["unmasked_embedding"] = None
+                        batch_queue[i]["masked_crop"] = None
                 clip_time = (perf_counter() - clip_start) * 1000
                 self.timing_stats['clip_encoding'].append(clip_time)
                 self.get_logger().info(
-                    f"SigLIP encoding completed: paired={pair_count}/{len(batch_queue)} crops in {clip_time:.2f}ms",
+                    f"SigLIP encoding completed: processed={pair_count}/{len(batch_queue)} crops in {clip_time:.2f}ms "
+                    f"(inference_host_call_only={clip_step_timing.get('inference_host_call_only_ms', 0.0):.3f}ms)",
                     throttle_duration_sec=2.0,
                 )
             except Exception as e:
@@ -696,6 +735,11 @@ class VisionNode(Node):
         # Reset timing stats
         for key in self.timing_stats:
             self.timing_stats[key] = []
+
+    def _append_timing_stat(self, stat_name, value):
+        if stat_name not in self.timing_stats:
+            self.timing_stats[stat_name] = []
+        self.timing_stats[stat_name].append(float(value))
     
     # ---------------- Publishers -------------- #
 

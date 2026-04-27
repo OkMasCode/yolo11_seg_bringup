@@ -4,6 +4,7 @@ import torch
 import tensorrt as trt
 import pycuda.driver as cuda
 import pycuda.autoinit
+from time import perf_counter
 from transformers import AutoProcessor, AutoModel
 
 class SIGLIPProcessor:
@@ -68,8 +69,8 @@ class SIGLIPProcessor:
                 self.outputs[name] = {'host': host_mem, 'device': device_mem, 'shape': shape}
 
         # Pre-compute SigLIP preprocessing constants
-        self.mean = np.array([0.5, 0.5, 0.5], dtype=np.float32).reshape(1, 1, 3)
-        self.std = np.array([0.5, 0.5, 0.5], dtype=np.float32).reshape(1, 1, 3)
+        self.mean_gpu = torch.tensor([0.5, 0.5, 0.5], device='cuda').view(1, 1, 1, 3)
+        self.std_gpu = torch.tensor([0.5, 0.5, 0.5], device='cuda').view(1, 1, 1, 3)
 
         # --- 2. Load PyTorch Text Encoder ---
         print(f"[SIGLIPProcessor] Loading PyTorch Text Encoder: {self.model_name}")
@@ -80,6 +81,7 @@ class SIGLIPProcessor:
         with torch.no_grad():
             self.cached_logit_scale = float(self.text_model.logit_scale.exp().item()) if hasattr(self.text_model, "logit_scale") else 1.0
             self.cached_logit_bias = float(self.text_model.logit_bias.item()) if hasattr(self.text_model, "logit_bias") else -10.0
+        self.last_batch_timing_ms = {}
 
     # --- TEXT ENCODING (PyTorch) ---
     @staticmethod
@@ -117,67 +119,120 @@ class SIGLIPProcessor:
         return self.encode_text(self.build_prompt_list(label))
 
     def _preprocess_images(self, images_bgr: list):
-        """Vectorized NumPy batch preprocessing."""
+        """PyTorch GPU-Accelerated batch preprocessing."""
         batch_resized = []
         for img in images_bgr:
             if img is None or img.size == 0: continue
             
-            # 1. Resize and color convert (Keep as uint8 for now)
+            # Fast CPU resize (uint8)
             img_resized = cv2.resize(img, (384, 384), interpolation=cv2.INTER_LINEAR)
             img_rgb = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
             batch_resized.append(img_rgb)
             
         if not batch_resized: return None
         
-        # 2. Stack into a single continuous memory block (Fast)
+        # 1. Stack as raw bytes (uint8)
         stacked_uint8 = np.stack(batch_resized) # Shape: (B, 384, 384, 3)
         
-        # 3. Vectorized Math: Apply float conversion and normalization to the whole batch at once
-        stacked_float = stacked_uint8.astype(np.float32) / 255.0
-        stacked_normalized = (stacked_float - self.mean) / self.std
+        # 2. Transfer bytes to GPU immediately (Very fast because uint8 is small)
+        tensor_gpu = torch.from_numpy(stacked_uint8).to('cuda', non_blocking=True)
         
-        # 4. Transpose the entire batch: (B, H, W, C) -> (B, C, H, W)
-        return np.transpose(stacked_normalized, (0, 3, 1, 2))
+        # 3. Vectorized Math ON THE GPU (Zero CPU overhead)
+        tensor_gpu = tensor_gpu.float() / 255.0
+        tensor_gpu = (tensor_gpu - self.mean_gpu) / self.std_gpu
+        
+        # 4. Transpose on GPU: (B, H, W, C) -> (B, C, H, W)
+        tensor_gpu = tensor_gpu.permute(0, 3, 1, 2).contiguous()
+        
+        return tensor_gpu # Returns a PyTorch CUDA Tensor
 
-    def encode_images_batch(self, images_bgr: list):
-        """Encodes a batch of images (e.g., YOLO crops or full scenes) using TensorRT."""
-        input_data = self._preprocess_images(images_bgr)
-        if input_data is None: return []
-        
-        batch_size = input_data.shape[0]
+    def encode_images_batch(self, images_bgr: list, return_timing: bool = False):
+        """Encodes a batch using PyTorch GPU preprocessing + TensorRT.
+
+        Set return_timing=True to also receive a per-step host-side timing dictionary.
+        """
+        total_start = perf_counter()
+        timing = {
+            "preprocess_ms": 0.0,
+            "set_shape_ms": 0.0,
+            "torch_sync_ms": 0.0,
+            "dtod_enqueue_ms": 0.0,
+            "inference_enqueue_ms": 0.0,
+            "inference_host_call_only_ms": 0.0,
+            "dtoh_enqueue_ms": 0.0,
+            "stream_sync_ms": 0.0,
+            "postprocess_ms": 0.0,
+            "total_ms": 0.0,
+            "batch_size": 0,
+        }
+
+        # 1. Get the preprocessed PyTorch tensor (already on GPU)
+        t0 = perf_counter()
+        tensor_gpu = self._preprocess_images(images_bgr)
+        timing["preprocess_ms"] = (perf_counter() - t0) * 1000.0
+        if tensor_gpu is None:
+            timing["total_ms"] = (perf_counter() - total_start) * 1000.0
+            self.last_batch_timing_ms = timing
+            if return_timing:
+                return [], timing
+            return []
+
+        batch_size = tensor_gpu.size(0)
         if batch_size > self.max_batch_size:
-            print(f"Warning: Batch size {batch_size} exceeds max {self.max_batch_size}. Truncating.")
-            input_data = input_data[:self.max_batch_size]
+            tensor_gpu = tensor_gpu[:self.max_batch_size]
             batch_size = self.max_batch_size
-            
-        # 1. Update TRT Context with current batch size
+        timing["batch_size"] = int(batch_size)
+
+        # 2. Update TRT Context shape
+        t1 = perf_counter()
         self.context.set_input_shape("pixel_values", (batch_size, 3, 384, 384))
-        
-        # 2. Copy data to pinned memory
-        np.copyto(self.inputs['pixel_values']['host'][:batch_size], input_data)
-        
-        # 3. Async Host -> Device
-        cuda.memcpy_htod_async(
-            self.inputs['pixel_values']['device'], 
-            self.inputs['pixel_values']['host'], 
+        timing["set_shape_ms"] = (perf_counter() - t1) * 1000.0
+
+        # 3. Synchronize PyTorch to ensure math is finished before TRT starts
+        t2 = perf_counter()
+        torch.cuda.current_stream().synchronize()
+        timing["torch_sync_ms"] = (perf_counter() - t2) * 1000.0
+
+        # 4. Device-to-Device Copy (GPU to GPU, bypassing CPU completely)
+        t3 = perf_counter()
+        cuda.memcpy_dtod_async(
+            self.inputs['pixel_values']['device'],  # Destination TRT Buffer
+            tensor_gpu.data_ptr(),                  # Source PyTorch Tensor Pointer
+            tensor_gpu.numel() * tensor_gpu.element_size(), # Size in bytes
             self.stream
         )
-        
-        # 4. Execute TRT Graph
+        timing["dtod_enqueue_ms"] = (perf_counter() - t3) * 1000.0
+
+        # 5. Execute TRT Graph
+        t4 = perf_counter()
         self.context.execute_async_v3(stream_handle=self.stream.handle)
-        
-        # 5. Async Device -> Host
+        timing["inference_enqueue_ms"] = (perf_counter() - t4) * 1000.0
+        timing["inference_host_call_only_ms"] = timing["inference_enqueue_ms"]
+
+        # 6. Async Device -> Host for the tiny output embeddings
+        t5 = perf_counter()
         cuda.memcpy_dtoh_async(
-            self.outputs['image_embedding']['host'], 
-            self.outputs['image_embedding']['device'], 
+            self.outputs['image_embedding']['host'],
+            self.outputs['image_embedding']['device'],
             self.stream
         )
-        
+        timing["dtoh_enqueue_ms"] = (perf_counter() - t5) * 1000.0
+
+        t6 = perf_counter()
         self.stream.synchronize()
-        
-        # Output shape is [batch_size, 768]. Return as list of numpy arrays
+        timing["stream_sync_ms"] = (perf_counter() - t6) * 1000.0
+
+        # Reshape and return
+        t7 = perf_counter()
         embeddings = self.outputs['image_embedding']['host'].reshape(self.max_batch_size, -1)
-        return [embeddings[i].copy() for i in range(batch_size)]
+        output_embeddings = [embeddings[i].copy() for i in range(batch_size)]
+        timing["postprocess_ms"] = (perf_counter() - t7) * 1000.0
+        timing["total_ms"] = (perf_counter() - total_start) * 1000.0
+        self.last_batch_timing_ms = timing
+
+        if return_timing:
+            return output_embeddings, timing
+        return output_embeddings
 
     def encode_image(self, image_bgr):
         embeddings = self.encode_images_batch([image_bgr])
