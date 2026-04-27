@@ -29,11 +29,13 @@ setup(
         'console_scripts': [
             'pc_vision_node_v3 = yolo11_seg_bringup.pc_vision_v3:main',
             'scene_embedding_node = yolo11_seg_bringup.scene_embedding_node:main',
+            'scene_similarity_node = yolo11_seg_bringup.scene_similarity_node:main',
             'semantic_grid_mapper = yolo11_seg_bringup.sem_mapper:main',
             'map_points_node = yolo11_seg_bringup.map_points_node:main',
             'clustered_map_points_node = yolo11_seg_bringup.clustered_map_points_node:main',
             'cpp_mapper_json_exporter_node = yolo11_seg_bringup.cpp_mapper_json_exporter_node:main',
             'cluster_assignment_node = yolo11_seg_bringup.cluster_assignment_node:main',
+            'semantic_navigator = yolo11_seg_bringup.semantic_navigator:main',
         ],
     },
 )

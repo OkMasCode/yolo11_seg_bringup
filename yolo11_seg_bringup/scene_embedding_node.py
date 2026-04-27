@@ -28,7 +28,7 @@ class SceneEmbeddingNode(Node):
         self.declare_parameter('image_topic', '/jackal/sensors/camera_0/color/image')
         self.declare_parameter(
             'scene_prompt_file',
-            '/workspaces/ros2_ws/src/yolo11_seg_bringup/config/scene_prompt.json',
+            '/home/workspace/ros2_ws/src/yolo11_seg_bringup/config/scene_prompt.json',
         )
         self.declare_parameter('CLIP_model_name', 'google/siglip2-large-patch16-384')
         self.declare_parameter('sample_every_n_frames', 15)
@@ -103,7 +103,7 @@ class SceneEmbeddingNode(Node):
             self.get_logger().warn('Scene embedding computation returned no result.')
             return
 
-        similarity_raw = self.clip.compute_match_logit(scene_embedding, prompt_embedding)
+        similarity_raw = -self.clip.compute_match_logit(scene_embedding, prompt_embedding)
         self.last_scene_embedding = np.asarray(scene_embedding, dtype=np.float64)
         self.last_scene_similarity = float(similarity_raw)
 
