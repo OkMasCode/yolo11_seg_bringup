@@ -49,7 +49,7 @@ class VisionNode(Node):
         self.depth_topic = self.get_parameter('depth_topic').value
         self.enable_vis = bool(self.get_parameter('enable_visualization').value)
         # YOLO parameters
-        self.declare_parameter('model_path', '/home/workspace/yoloe-26l-seg.pt')
+        self.declare_parameter('model_path', '/home/workspace/yoloe-26m-seg.pt')
         self.declare_parameter('imgsz', 640)
         self.declare_parameter('conf', 0.45)
         self.declare_parameter('iou', 0.35)
@@ -447,14 +447,26 @@ class VisionNode(Node):
         if masks_np is None or idx >= masks_np.shape[0]:
             return None
         # Get mask for this instance (already on CPU).
+        # Get the raw YOLO mask for this instance (Usually 160x160)
         m = masks_np[idx]
-        if m.shape[0] != height or m.shape[1] != width:
-            m = cv2.resize(m, (width, height), interpolation=cv2.INTER_NEAREST)
-        # Convert to standard uint8 mask (0 or 255) for OpenCV
-        mask_uint8 = (m > 0.5).astype(np.uint8) * 255
-        # Erode the mask to prevent depth bleeding.
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
-        eroded_mask = cv2.erode(mask_uint8, kernel, iterations=1)
+        
+        # 1. Convert to uint8 immediately at the small resolution
+        mask_uint8_small = (m > 0.5).astype(np.uint8) * 255
+        
+        # 2. ERODE THE SMALL MASK (Lightning Fast)
+        # We drop iterations to 1 because eroding a small image has a much larger relative effect
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        eroded_small = cv2.erode(mask_uint8_small, kernel, iterations=1)
+        
+        # 3. Resize the ALREADY ERODED mask to the full image dimensions
+        if eroded_small.shape[0] != height or eroded_small.shape[1] != width:
+            eroded_mask = cv2.resize(eroded_small, (width, height), interpolation=cv2.INTER_NEAREST)
+        else:
+            eroded_mask = eroded_small
+            
+        # We use the eroded mask as the standard mask for the rest of the pipeline
+        mask_uint8 = eroded_mask
+
         detection_entry = {
             "class_id": int(class_id),
             "instance_id": int(instance_id),
