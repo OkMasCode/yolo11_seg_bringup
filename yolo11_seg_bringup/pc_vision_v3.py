@@ -17,6 +17,7 @@ from cv_bridge import CvBridge
 import json
 import threading
 from time import perf_counter
+import queue # Built-in library for thread-safe data pipelines
 
 from ultralytics import YOLO
 
@@ -48,7 +49,7 @@ class VisionNode(Node):
         self.depth_topic = self.get_parameter('depth_topic').value
         self.enable_vis = bool(self.get_parameter('enable_visualization').value)
         # YOLO parameters
-        self.declare_parameter('model_path', '/home/workspace/yoloe-26m-seg.pt')
+        self.declare_parameter('model_path', '/home/workspace/yoloe-26l-seg.pt')
         self.declare_parameter('imgsz', 640)
         self.declare_parameter('conf', 0.45)
         self.declare_parameter('iou', 0.35)
@@ -88,7 +89,7 @@ class VisionNode(Node):
         self.detection_topic = '/vision/detections'
         self.text_emb_publish_topic = '/vision/text_embedding'
         self.frame_skip = 10
-        self.CLASS_NAMES = ["person", "bus", "tree"]        
+        self.CLASS_NAMES = ["bus", "person"]        
         goal_class = self._read_goal_from_command_file()
         # If a valid goal class is found in the command file, ensure it's included in CLASS_NAMES for detection.
         if goal_class:
@@ -195,6 +196,12 @@ class VisionNode(Node):
         # Initialize the prompt immediately on startup
         self._load_clip_prompt()
         self.command_timer = self.create_timer(self.prompt_check_interval, self._timer_publish_embedding)
+
+        # Pipeline Parallelism Setup
+        self.inference_queue = queue.Queue(maxsize=2)
+        self.worker_thread = threading.Thread(target=self.clip_worker_loop, daemon=True)
+        self.worker_thread.start()
+
         self.get_logger().info("Vision Node Ready.")
 
     # ---------------- Callbacks --------------- #
@@ -241,7 +248,7 @@ class VisionNode(Node):
                 imgsz=self.imgsz,
                 conf=self.conf,
                 iou=self.iou,
-                retina_masks=True,
+                retina_masks=False,
                 stream=False,
                 verbose=False,
                 persist=True,
@@ -330,65 +337,95 @@ class VisionNode(Node):
 
         if capture_due:
             self._maybe_save_paper_images(frame_detections, cv_bgr, res)
-            
-        # ===== SigLIP encoding ===== #
 
-        # Batch SigLIP image encoding for all prepared crops.
-        if batch_queue:
-            try:
-                clip_start = perf_counter()
-                masked_images = [item["masked_crop"] for item in batch_queue]
-                if self.compute_unmasked_embeddings:
-                    unmasked_images = [item["unmasked_crop"] for item in batch_queue]
-                    all_images = masked_images + unmasked_images
-                else:
-                    all_images = masked_images
-                all_embeddings, clip_step_timing = self.clip.encode_images_batch(all_images, return_timing=True)
-                self._append_timing_stat('clip_preprocess', clip_step_timing.get('preprocess_ms', 0.0))
-                self._append_timing_stat('clip_set_shape_and_host_copy', clip_step_timing.get('set_shape_and_host_copy_ms', 0.0))
-                self._append_timing_stat('clip_htod_enqueue', clip_step_timing.get('htod_enqueue_ms', 0.0))
-                self._append_timing_stat('clip_inference_enqueue', clip_step_timing.get('inference_enqueue_ms', 0.0))
-                self._append_timing_stat('clip_inference_host_call_only', clip_step_timing.get('inference_host_call_only_ms', 0.0))
-                self._append_timing_stat('clip_dtoh_enqueue', clip_step_timing.get('dtoh_enqueue_ms', 0.0))
-                self._append_timing_stat('clip_stream_sync', clip_step_timing.get('stream_sync_ms', 0.0))
-                self._append_timing_stat('clip_postprocess', clip_step_timing.get('postprocess_ms', 0.0))
-                self._append_timing_stat('clip_total_internal', clip_step_timing.get('total_ms', 0.0))
-                if self.compute_unmasked_embeddings:
-                    half_idx = len(masked_images)
-                    masked_embeddings = all_embeddings[:half_idx]
-                    unmasked_embeddings = all_embeddings[half_idx:]
-                    pair_count = min(len(masked_embeddings), len(unmasked_embeddings), len(batch_queue))
-                    for i in range(pair_count):
-                        batch_queue[i]["masked_embedding"] = masked_embeddings[i]
-                        batch_queue[i]["unmasked_embedding"] = unmasked_embeddings[i]
-                        batch_queue[i]["embedding"] = masked_embeddings[i]
-                        batch_queue[i]["masked_crop"] = None
-                        batch_queue[i]["unmasked_crop"] = None
-                else:
-                    pair_count = min(len(all_embeddings), len(batch_queue))
-                    for i in range(pair_count):
-                        batch_queue[i]["masked_embedding"] = all_embeddings[i]
-                        batch_queue[i]["embedding"] = all_embeddings[i]
-                        batch_queue[i]["unmasked_embedding"] = None
-                        batch_queue[i]["masked_crop"] = None
-                clip_time = (perf_counter() - clip_start) * 1000
-                self.timing_stats['clip_encoding'].append(clip_time)
-                self.get_logger().info(
-                    f"SigLIP encoding completed: processed={pair_count}/{len(batch_queue)} crops in {clip_time:.2f}ms "
-                    f"(inference_host_call_only={clip_step_timing.get('inference_host_call_only_ms', 0.0):.3f}ms)",
-                    throttle_duration_sec=2.0,
-                )
-            except Exception as e:
-                self.get_logger().error(f"Batch SigLIP inference failed: {e}")
-
-        # ======== Publishing ========= #
+        # ===== Push to Pipeline Queue ===== #
+        # Package everything the background thread needs to finish the job
+        payload = (
+            rgb_msg.header, 
+            frame_detections, 
+            batch_queue
+        )
         
-        # Publish structured detections and visualization markers.
-        pub_start = perf_counter()
-        self.publish_custom_detections(frame_detections, rgb_msg.header)
-        pub_time = (perf_counter() - pub_start) * 1000
-        self.timing_stats['publishing'].append(pub_time)
-        self.get_logger().debug(f"Publishing: {pub_time:.2f}ms")
+        try:
+            self.inference_queue.put(payload, block=False)
+        except queue.Full:
+            self.get_logger().warn("SigLIP pipeline full. Dropping frame to maintain latency.", throttle_duration_sec=1.0)
+
+
+    def clip_worker_loop(self):
+        while True:
+            # 1. Wait for data from YOLO (blocks efficiently until data arrives)
+            header, frame_detections, batch_queue = self.inference_queue.get()
+
+            try:
+            
+                # ===== SigLIP encoding ===== #
+
+                # Batch SigLIP image encoding for all prepared crops.
+                if batch_queue:
+                    try:
+                        clip_start = perf_counter()
+                        masked_images = [item["masked_crop"] for item in batch_queue]
+                        if self.compute_unmasked_embeddings:
+                            unmasked_images = [item["unmasked_crop"] for item in batch_queue]
+                            all_images = masked_images + unmasked_images
+                        else:
+                            all_images = masked_images
+                        all_embeddings, clip_step_timing = self.clip.encode_images_batch(all_images, return_timing=True)
+                        self._append_timing_stat('clip_preprocess', clip_step_timing.get('preprocess_ms', 0.0))
+                        self._append_timing_stat('clip_set_shape_and_host_copy', clip_step_timing.get('set_shape_and_host_copy_ms', 0.0))
+                        self._append_timing_stat('clip_htod_enqueue', clip_step_timing.get('htod_enqueue_ms', 0.0))
+                        self._append_timing_stat('clip_inference_enqueue', clip_step_timing.get('inference_enqueue_ms', 0.0))
+                        self._append_timing_stat('clip_inference_host_call_only', clip_step_timing.get('inference_host_call_only_ms', 0.0))
+                        self._append_timing_stat('clip_dtoh_enqueue', clip_step_timing.get('dtoh_enqueue_ms', 0.0))
+                        self._append_timing_stat('clip_stream_sync', clip_step_timing.get('stream_sync_ms', 0.0))
+                        self._append_timing_stat('clip_postprocess', clip_step_timing.get('postprocess_ms', 0.0))
+                        self._append_timing_stat('clip_total_internal', clip_step_timing.get('total_ms', 0.0))
+                        if self.compute_unmasked_embeddings:
+                            half_idx = len(masked_images)
+                            masked_embeddings = all_embeddings[:half_idx]
+                            unmasked_embeddings = all_embeddings[half_idx:]
+                            pair_count = min(len(masked_embeddings), len(unmasked_embeddings), len(batch_queue))
+                            for i in range(pair_count):
+                                batch_queue[i]["masked_embedding"] = masked_embeddings[i]
+                                batch_queue[i]["unmasked_embedding"] = unmasked_embeddings[i]
+                                batch_queue[i]["embedding"] = masked_embeddings[i]
+                                batch_queue[i]["masked_crop"] = None
+                                batch_queue[i]["unmasked_crop"] = None
+                        else:
+                            pair_count = min(len(all_embeddings), len(batch_queue))
+                            for i in range(pair_count):
+                                batch_queue[i]["masked_embedding"] = all_embeddings[i]
+                                batch_queue[i]["embedding"] = all_embeddings[i]
+                                batch_queue[i]["unmasked_embedding"] = None
+                                batch_queue[i]["masked_crop"] = None
+                        clip_time = (perf_counter() - clip_start) * 1000
+                        self.timing_stats['clip_encoding'].append(clip_time)
+                        self.get_logger().info(
+                            f"SigLIP encoding completed: processed={pair_count}/{len(batch_queue)} crops in {clip_time:.2f}ms "
+                            f"(inference_host_call_only={clip_step_timing.get('inference_host_call_only_ms', 0.0):.3f}ms)",
+                            throttle_duration_sec=2.0,
+                        )
+                    except Exception as e:
+                        self.get_logger().error(f"Batch SigLIP inference failed: {e}")
+
+                # ======== Publishing ========= #
+        
+                # Publish structured detections and visualization markers.
+                pub_start = perf_counter()
+                self.publish_custom_detections(frame_detections, header)
+                pub_time = (perf_counter() - pub_start) * 1000
+                self.timing_stats['publishing'].append(pub_time)
+                self.get_logger().debug(f"Publishing: {pub_time:.2f}ms")
+
+            except Exception as e:
+                self.get_logger().error(f"Background SigLIP Error: {e}")
+            finally:
+                # Tell the queue this frame is officially done
+                self.inference_queue.task_done()
+                pub_time = (perf_counter() - pub_start) * 1000
+                self.timing_stats['publishing'].append(pub_time)
+                self.get_logger().debug(f"Publishing: {pub_time:.2f}ms")
 
     def process_single_detection(self, idx, bbox, class_id, class_name, instance_id, confidence, masks_np,
                                  cv_bgr,
@@ -417,7 +454,7 @@ class VisionNode(Node):
         mask_uint8 = (m > 0.5).astype(np.uint8) * 255
         # Erode the mask to prevent depth bleeding.
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
-        eroded_mask = cv2.erode(mask_uint8, kernel, iterations=3)
+        eroded_mask = cv2.erode(mask_uint8, kernel, iterations=1)
         detection_entry = {
             "class_id": int(class_id),
             "instance_id": int(instance_id),
