@@ -21,7 +21,7 @@ from time import perf_counter
 from ultralytics import YOLO
 
 from yolo11_seg_interfaces.msg import DetectedObjectV3, DetectedObjectV3Array
-from .utils.siglip2_processor import SIGLIPProcessor
+from .utils.siglip2_processor_2 import SIGLIPProcessor
 
 
 # -------------------- CLASS ------------------- #
@@ -57,7 +57,8 @@ class VisionNode(Node):
         self.conf = float(self.get_parameter('conf').value)
         self.iou = float(self.get_parameter('iou').value)
         # CLIP parameters
-        self.declare_parameter('CLIP_model_name', 'g/home/workspace/local_siglip_model_base')
+        self.declare_parameter('CLIP_model_name', '/home/workspace/local_siglip_model')
+        self.declare_parameter('CLIP_model_path', '/home/workspace/siglip_vision_pooled_384_fp16.engine') 
         self.declare_parameter('robot_command_file', '/home/workspace/ros2_ws/src/yolo11_seg_bringup/config/robot_command.json')
         self.declare_parameter('prompt_check_interval', 5.0)
         self.declare_parameter('masked_score_weight', 0.85)
@@ -68,6 +69,7 @@ class VisionNode(Node):
         self.declare_parameter('annotated_font_size', 0.6)
         self.declare_parameter('annotated_line_width', 1)
         self.CLIP_model_name = self.get_parameter('CLIP_model_name').value
+        self.CLIP_model_path = self.get_parameter('CLIP_model_path').value
         self.robot_command_file = self.get_parameter('robot_command_file').value
         self.prompt_check_interval = float(self.get_parameter('prompt_check_interval').value)
         self.masked_score_weight = float(self.get_parameter('masked_score_weight').value)
@@ -84,9 +86,7 @@ class VisionNode(Node):
         self.detection_topic = '/vision/detections'
         self.text_emb_publish_topic = '/vision/text_embedding'
         self.frame_skip = 5
-        self.CLASS_NAMES = ["chair", "fridge", "microwave", "screwdriver", "keyboard", "phone", "mouse", "laptop", "blue coffee machine", 
-                            "coffee cup", "apple", "cup", "tv", "umbrella", "spoon", "knife", 
-                            "oven", "stove", "towel", "cabinet", "kitchen counter", "coffee machine", "fridge", "bed", "nightstand", "lamp", "dresser", "pillow"]        
+        self.CLASS_NAMES = ["person", "bus", "tree"]        
         goal_class = self._read_goal_from_command_file()
         # If a valid goal class is found in the command file, ensure it's included in CLASS_NAMES for detection.
         if goal_class:
@@ -112,11 +112,10 @@ class VisionNode(Node):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.get_logger().info(f"Loading CLIP model on device: {self.device}\n")
         self.clip = SIGLIPProcessor(
-            device=self.device, 
-            model_name=self.CLIP_model_name, 
+            engine_path=self.CLIP_model_path,
+            model_name=self.CLIP_model_name,
             masked_score_weight=self.masked_score_weight,
             unmasked_score_weight=self.unmasked_score_weight,
-            offline_mode=True,
         )
         self.get_logger().info(
             "CLIP blend weights normalized to: "
@@ -323,8 +322,11 @@ class VisionNode(Node):
                 clip_start = perf_counter()
                 masked_images = [item["masked_crop"] for item in batch_queue]
                 unmasked_images = [item["unmasked_crop"] for item in batch_queue]
-                masked_embeddings = self.clip.encode_images_batch(masked_images)
-                unmasked_embeddings = self.clip.encode_images_batch(unmasked_images)
+                all_images = masked_images + unmasked_images
+                all_embeddings = self.clip.encode_images_batch(all_images)
+                half_idx = len(masked_images)
+                masked_embeddings = all_embeddings[:half_idx]
+                unmasked_embeddings = all_embeddings[half_idx:]
                 pair_count = min(len(masked_embeddings), len(unmasked_embeddings), len(batch_queue))
                 for i in range(pair_count):
                     batch_queue[i]["masked_embedding"] = masked_embeddings[i]

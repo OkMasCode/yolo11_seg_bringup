@@ -28,6 +28,7 @@ setup(
     entry_points={
         'console_scripts': [
             'pc_vision_node_v3 = yolo11_seg_bringup.pc_vision_v3:main',
+            'bus_image_publisher_node = yolo11_seg_bringup.bus_image_publisher_node:main',
             'scene_embedding_node = yolo11_seg_bringup.scene_embedding_node:main',
             'scene_similarity_node = yolo11_seg_bringup.scene_similarity_node:main',
             'semantic_grid_mapper = yolo11_seg_bringup.sem_mapper:main',
