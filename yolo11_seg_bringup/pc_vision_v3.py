@@ -239,10 +239,9 @@ class VisionNode(Node):
         try:
             # Convert ROS Image to OpenCV BGR frame.
             cv_bgr = self.bridge.imgmsg_to_cv2(rgb_msg, desired_encoding='bgr8')
-            height, width = cv_bgr.shape[:2]
-
+            height, width, channel = cv_bgr.shape
+            print(height, width, channel)
             # ======== YOLO inference ======== #
-
             yolo_start = perf_counter()
             results = self.model.track(
                 source=cv_bgr,

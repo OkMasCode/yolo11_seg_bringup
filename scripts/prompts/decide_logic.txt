@@ -27,7 +27,7 @@ Prompt: "Go to the microwave"
 Prompt: "bring me the bottle on the top of the nightstand"
 → {"logic": "GENERIC_OBJECT_SPECIFIC_LOCATION"}
 
-Prompt: "Go to the couch with yellow stripes"
+Prompt: "Go to the yellow couch"
 → {"logic": "SPECIFIC_OBJECT_WITH_FEATURES"}
 
 Return ONLY valid JSON.
