@@ -19,7 +19,7 @@ class SIGLIPProcessor:
         self,
         device="cuda",
         # Default changed to the Base model for better FPS on Jetson
-        model_name="/home/workspace/local_siglip_model_base_256",
+        model_name="google/siglip2-large-patch16-384",
         masked_score_weight=0.85,
         unmasked_score_weight=0.15,
         # Added offline flag for Jetson deployment

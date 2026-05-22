@@ -49,7 +49,7 @@ class VisionNode(Node):
         self.depth_topic = self.get_parameter('depth_topic').value
         self.enable_vis = bool(self.get_parameter('enable_visualization').value)
         # YOLO parameters
-        self.declare_parameter('model_path', '/home/workspace/yoloe-26m-seg.pt')
+        self.declare_parameter('model_path', '/workspaces/yoloe-26m-seg.pt')
         self.declare_parameter('imgsz', 640)
         self.declare_parameter('conf', 0.45)
         self.declare_parameter('iou', 0.35)
@@ -58,20 +58,20 @@ class VisionNode(Node):
         self.conf = float(self.get_parameter('conf').value)
         self.iou = float(self.get_parameter('iou').value)
         # CLIP parameters
-        self.declare_parameter('CLIP_model_name', '/home/workspace/local_siglip_model')
-        self.declare_parameter('CLIP_model_path', '/home/workspace/siglip_vision_pooled_384_fp16.engine') 
-        self.declare_parameter('robot_command_file', '/home/workspace/ros2_ws/src/yolo11_seg_bringup/config/robot_command.json')
+        self.declare_parameter('CLIP_model_name', '/google/siglip2-large-patch16-384') # Default to the Base model for better FPS on Jetson
+        #self.declare_parameter('CLIP_model_path', '/home/workspace/siglip_vision_pooled_384_fp16.engine') 
+        self.declare_parameter('robot_command_file', '/workspaces/ros2_ws/src/yolo11_seg_bringup/config/robot_command.json')
         self.declare_parameter('prompt_check_interval', 5.0)
         self.declare_parameter('masked_score_weight', 0.85)
         self.declare_parameter('unmasked_score_weight', 0.15)
         self.declare_parameter('compute_unmasked_embeddings', False)
         self.declare_parameter('enable_paper_capture', False)
         self.declare_parameter('paper_capture_class', 'bed')
-        self.declare_parameter('paper_images_output_dir', '/home/workspace/ros2_ws/src/yolo11_seg_bringup/images')
+        self.declare_parameter('paper_images_output_dir', '/workspaces/ros2_ws/src/yolo11_seg_bringup/images')
         self.declare_parameter('annotated_font_size', 0.6)
         self.declare_parameter('annotated_line_width', 1)
         self.CLIP_model_name = self.get_parameter('CLIP_model_name').value
-        self.CLIP_model_path = self.get_parameter('CLIP_model_path').value
+        #self.CLIP_model_path = self.get_parameter('CLIP_model_path').value
         self.robot_command_file = self.get_parameter('robot_command_file').value
         self.prompt_check_interval = float(self.get_parameter('prompt_check_interval').value)
         self.masked_score_weight = float(self.get_parameter('masked_score_weight').value)
@@ -89,7 +89,8 @@ class VisionNode(Node):
         self.detection_topic = '/vision/detections'
         self.text_emb_publish_topic = '/vision/text_embedding'
         self.frame_skip = 10
-        self.CLASS_NAMES = ["bus", "person"]        
+        self.CLASS_NAMES = ["fridge", "microwave", "cup", "apple", "screwdriver", 
+                            "keyboard", "mouse", "tv", "bottle", "telephone", "laptop"]        
         goal_class = self._read_goal_from_command_file()
         # If a valid goal class is found in the command file, ensure it's included in CLASS_NAMES for detection.
         if goal_class:
@@ -115,7 +116,7 @@ class VisionNode(Node):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.get_logger().info(f"Loading CLIP model on device: {self.device}\n")
         self.clip = SIGLIPProcessor(
-            engine_path=self.CLIP_model_path,
+            #engine_path=self.CLIP_model_path,
             model_name=self.CLIP_model_name,
             masked_score_weight=self.masked_score_weight,
             unmasked_score_weight=self.unmasked_score_weight,
