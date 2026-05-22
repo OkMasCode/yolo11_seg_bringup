@@ -49,7 +49,7 @@ class VisionNode(Node):
         self.depth_topic = self.get_parameter('depth_topic').value
         self.enable_vis = bool(self.get_parameter('enable_visualization').value)
         # YOLO parameters
-        self.declare_parameter('model_path', '/home/workspace/yoloe-26m-seg.pt')
+        self.declare_parameter('model_path', '/home/workspace/yoloe-26l-seg.pt')
         self.declare_parameter('imgsz', 640)
         self.declare_parameter('conf', 0.45)
         self.declare_parameter('iou', 0.35)
@@ -89,7 +89,7 @@ class VisionNode(Node):
         self.detection_topic = '/vision/detections'
         self.text_emb_publish_topic = '/vision/text_embedding'
         self.frame_skip = 10
-        self.CLASS_NAMES = ["bus", "person"]        
+        self.CLASS_NAMES = ["microwave", "keyboard", "mouse", "bottle", "mug", "tv", "fridge", "apple", "laptop", "screwdriver", "coffee cup", "canteen"]        
         goal_class = self._read_goal_from_command_file()
         # If a valid goal class is found in the command file, ensure it's included in CLASS_NAMES for detection.
         if goal_class:
@@ -238,10 +238,9 @@ class VisionNode(Node):
         try:
             # Convert ROS Image to OpenCV BGR frame.
             cv_bgr = self.bridge.imgmsg_to_cv2(rgb_msg, desired_encoding='bgr8')
-            height, width = cv_bgr.shape[:2]
-
+            height, width, channel = cv_bgr.shape
+            print(height, width, channel)
             # ======== YOLO inference ======== #
-
             yolo_start = perf_counter()
             results = self.model.track(
                 source=cv_bgr,
