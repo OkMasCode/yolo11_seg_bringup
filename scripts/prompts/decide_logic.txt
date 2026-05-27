@@ -9,9 +9,9 @@ CRITICAL OUTPUT FORMAT:
 YOUR TASK: Analyze the user's navigation prompt and classify the target object into one of three specific categories.
 
 AVAILABLE LOGIC CATEGORIES:
-1. "SPECIFIC_OBJECT_WITH_FEATURES": The object is described with distinct physical characteristics (e.g., color, pattern, texture).
+1. "SPECIFIC_OBJECT_WITH_FEATURES": The object is described with distinct physical characteristics (e.g., color, pattern, texture), location information (e.g. on top, near, on the left) are NOT considered phisical characteristics.
    - Example cues: "yellow stripes", "red", "wooden".
-2. "GENERIC_OBJECT_SPECIFIC_LOCATION": The object is standard, but the user provides a specific spatial location, surface, or landmark.
+2. "GENERIC_OBJECT_SPECIFIC_LOCATION": The object is standard, but the user provides a specific spatial location (e.g., near, on top, under).
    - Example cues: "on the nightstand", "next to the TV", "under the table".
 3. "GENERIC_OBJECT": The object is standard and no specific features or locations are provided.
    - Example cues: "the microwave", "a cup", "the sofa".

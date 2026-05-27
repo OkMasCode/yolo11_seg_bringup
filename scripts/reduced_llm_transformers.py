@@ -585,7 +585,7 @@ def decide_logic(prompt : str) -> Logic_decision:
         try:
             if attempt > 0:
                 print(f"   Retry attempt {attempt + 1}/{max_retries}")       
-            response_text = call_llm(msgs, temperature=0.1)  # Very low temp for binary choice
+            response_text = call_llm(msgs, temperature=0.2)  # Very low temp for binary choice
             response_json = extract_json_from_response(response_text, expected_keys=["logic"])
             result = Logic_decision.model_validate(response_json)
             break

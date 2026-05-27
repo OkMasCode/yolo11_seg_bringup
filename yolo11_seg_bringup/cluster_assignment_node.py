@@ -35,7 +35,7 @@ class ClusteredMapPreprocPublisherNode(Node):
         self.declare_parameter("publish_rate_hz", 0.5)
         self.declare_parameter("dist_thresh_multiplier", 0.4)
         self.declare_parameter("wall_search_radius_px", 10) 
-        self.declare_parameter("min_radius", 0.5)
+        self.declare_parameter("min_radius", 0.1)
         self.declare_parameter("max_radius", 2.5)
         self.declare_parameter("radius_step", 0.1)
         self.declare_parameter("angle_step_deg", 5.0)
@@ -60,6 +60,7 @@ class ClusteredMapPreprocPublisherNode(Node):
         self.local_semantic_map = SemanticObjectArray()
         self.room_markers = None
         self.map_info = None
+        self.room_assignments: dict = {}  # object_id → room_id
         self.bridge = CvBridge()
         # Subscribers
         self.map_sub = self.create_subscription(OccupancyGrid, "/jackal/map", self._map_callback, 10)
@@ -68,8 +69,9 @@ class ClusteredMapPreprocPublisherNode(Node):
         # Publishers
         self.publisher = self.create_publisher(ClusteredMapObjectArray, self.output_topic, 10)
         self.vis_pub = self.create_publisher(Image, self.vis_topic, 10)
-        # The Processing Loop
-        self.timer = self.create_timer(1.0 / self.publish_rate_hz, self._process_publish_cycle)
+        # Publishing loop (always runs, reads from JSON file)
+        self.process_timer = self.create_timer(1.0 / self.publish_rate_hz, self._process_cycle)
+        self.publish_timer = self.create_timer(1.0 / self.publish_rate_hz, self._publish_cycle)
         # Create the ROS2 Service Server
         self.waypoint_service = self.create_service(
             GetRoomWaypoint, 
@@ -276,81 +278,68 @@ class ClusteredMapPreprocPublisherNode(Node):
             waypoints_metric.append((metric_x, metric_y))
         return waypoints_metric
 
-    def _process_publish_cycle(self):
-        # We need all three data streams to do this properly
-        if self.latest_map_msg is None or self.latest_semantic_msg is None:
-            return 
-        if not self.latest_semantic_msg.objects:
-            return 
-        # Setup Base Map
+    def _process_cycle(self):
+        if self.latest_map_msg is None:
+            return
+        # Room segmentation only needs the map — compute it regardless of semantic messages
         map_info = self.latest_map_msg.info
         self.map_info = map_info
         width, height = map_info.width, map_info.height
-        res = map_info.resolution
-        orig_x = map_info.origin.position.x
-        orig_y = map_info.origin.position.y
         grid = np.array(self.latest_map_msg.data, dtype=np.int8).reshape((height, width))
         free_space = np.zeros_like(grid, dtype=np.uint8)
-        free_space[grid == 0] = 255 
-        # Distance Transform & Watershed
+        free_space[grid == 0] = 255
         dist_transform = cv2.distanceTransform(free_space, cv2.DIST_L2, 5)
         thresh_mult = self.get_parameter("dist_thresh_multiplier").value
         _, room_seeds = cv2.threshold(dist_transform, thresh_mult * dist_transform.max(), 255, 0)
         room_seeds = np.uint8(room_seeds)
         _, markers = cv2.connectedComponents(room_seeds)
-        markers = markers + 1 # Background is 1
+        markers = markers + 1
         unknown = cv2.subtract(free_space, room_seeds)
         markers[unknown == 255] = 0
         img_color = cv2.cvtColor(free_space, cv2.COLOR_GRAY2BGR)
         cv2.watershed(img_color, markers)
         self.room_markers = markers
         self._publish_visualization(markers, width, height, map_info)
+        # Cluster assignment requires semantic messages — skip if mapper is not running
+        if self.latest_semantic_msg is None or not self.latest_semantic_msg.objects:
+            return
         self._cluster_and_publish_objects(map_info)
 
     def _cluster_and_publish_objects(self, map_info):
-        """Looks up the room ID for each object and publishes the JSON/ROS Msg."""
-        res = map_info.resolution
-        orig_x = map_info.origin.position.x
-        orig_y = map_info.origin.position.y
-        height, width = self.room_markers.shape
-        search_radius = self.get_parameter("wall_search_radius_px").value
-        labels, coords, obj_ids, names, similarities = [], [], [], [], []
+        """Assigns room IDs to new objects via robot pose at detection time, then publishes all accumulated objects."""
+        # --- Process only NEW objects ---
         existing_ids = {o.object_id for o in self.local_semantic_map.objects}
         for obj in self.latest_semantic_msg.objects:
-            if obj.object_id not in existing_ids:
-                self.local_semantic_map.objects.append(obj)
-                x, y, z = obj.pose_map.x, obj.pose_map.y, obj.pose_map.z
-                px = int((x - orig_x) / res)
-                py = int((y - orig_y) / res)
-                stamp = obj.timestamp
-                if 0 <= px < width and 0 <= py < height:
-                    room_id = self._get_current_room_id(stamp)
-                    labels.append(room_id)
-                else:
-                    labels.append(-1)
-            coords.append([x, y, z])
+            if obj.object_id in existing_ids:
+                continue
+            room_id = self._get_current_room_id(obj.timestamp)
+            self.room_assignments[obj.object_id] = room_id
+            self.local_semantic_map.objects.append(obj)
+
+        # --- Build output from ALL accumulated objects ---
+        if not self.local_semantic_map.objects:
+            return
+
+        labels, coords, obj_ids, names, similarities = [], [], [], [], []
+        for obj in self.local_semantic_map.objects:
             obj_ids.append(obj.object_id)
             names.append(obj.name)
+            coords.append([obj.pose_map.x, obj.pose_map.y, obj.pose_map.z])
+            labels.append(self.room_assignments.get(obj.object_id, -1))
             similarities.append(obj.similarity)
-        # Generate Clusters
-        X = np.array(coords)
+
         labels = np.array(labels)
         unique_labels = sorted(set(labels.tolist()))
         centroid_by_label = {}
         for lbl in unique_labels:
-            indices = np.where(labels == lbl)[0]
             centroid = self.generate_exploration_waypoints(target_room_id=lbl, num_waypoints=1)
             if not centroid:
                 self.get_logger().error(f"Failed to generate a safe point for Room {lbl}!")
-                # Provide a fallback zero-coordinate if generation fails
                 centroid_by_label[int(lbl)] = {"x": 0.0, "y": 0.0, "z": 0.0}
             else:
-                # centroid is a list of tuples containing (x, y). 
-                # We access the first tuple at index 0, then the x [0] and y [1] values.
-                # Since 2D maps have no Z, we safely set it to 0.0
                 centroid_by_label[int(lbl)] = {
-                    "x": float(centroid[0][0]), 
-                    "y": float(centroid[0][1]), 
+                    "x": float(centroid[0][0]),
+                    "y": float(centroid[0][1]),
                     "z": 0.0
                 }
         final_output = []
@@ -362,7 +351,21 @@ class ClusteredMapPreprocPublisherNode(Node):
             })
         if self.output_clustered_map_file:
             self._write_map_to_file(final_output, self.output_clustered_map_file)
-        out_msg = self._to_msg(final_output)
+
+    def _publish_cycle(self):
+        """Reads the clustered map JSON and publishes it. Runs independently of semantic messages."""
+        if not self.output_clustered_map_file:
+            return
+        path = Path(self.output_clustered_map_file)
+        if not path.exists():
+            return
+        try:
+            with path.open("r", encoding="utf-8") as f:
+                clustered_map = json.load(f)
+        except Exception as exc:
+            self.get_logger().error(f"Failed reading clustered map json: {exc}")
+            return
+        out_msg = self._to_msg(clustered_map)
         self.publisher.publish(out_msg)
 
     def _get_current_room_id(self, timestamp) -> int:
@@ -374,18 +377,7 @@ class ClusteredMapPreprocPublisherNode(Node):
             return robot_room_id
         except TransformException as e:
             self.get_logger().warn(f'Could not get robot pose: {e}')
-            return 1   
-
-    def _get_nearest_valid_room(self, px: int, py: int, width: int, height: int, max_radius: int) -> int:
-        if self.room_markers[py, px] > 1: return self.room_markers[py, px]
-        for r in range(1, max_radius + 1):
-            for dx in range(-r, r + 1):
-                for dy in range(-r, r + 1):
-                    if abs(dx) == r or abs(dy) == r:
-                        nx, ny = px + dx, py + dy
-                        if 0 <= nx < width and 0 <= ny < height and self.room_markers[ny, nx] > 1:
-                            return self.room_markers[ny, nx]
-        return 1 
+            return -1   
 
     def _publish_visualization(self, markers, width, height, map_info):
         vis_img = np.zeros((height, width, 3), dtype=np.uint8)
