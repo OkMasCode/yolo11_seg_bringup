@@ -374,7 +374,7 @@ class ClusteredMapPreprocPublisherNode(Node):
             return robot_room_id
         except TransformException as e:
             self.get_logger().warn(f'Could not get robot pose: {e}')
-            return -1   
+            return 1   
 
     def _get_nearest_valid_room(self, px: int, py: int, width: int, height: int, max_radius: int) -> int:
         if self.room_markers[py, px] > 1: return self.room_markers[py, px]
