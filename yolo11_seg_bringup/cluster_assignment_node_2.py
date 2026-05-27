@@ -5,10 +5,8 @@ from typing import List
 import cv2
 import numpy as np
 import rclpy
-import tf2_ros
-from tf2_ros import TransformException
 from cv_bridge import CvBridge
-from geometry_msgs.msg import Vector3
+from geometry_msgs.msg import Point, Quaternion, Vector3
 from nav_msgs.msg import OccupancyGrid
 from rclpy.node import Node
 from sensor_msgs.msg import Image, PointCloud2
@@ -18,6 +16,7 @@ from yolo11_seg_interfaces.msg import (
     ClusterBoundingBox2D,
     ClusteredMapObject,
     ClusteredMapObjectArray,
+    SemanticObject,
     SemanticObjectArray
 )
 
@@ -29,25 +28,24 @@ class ClusteredMapPreprocPublisherNode(Node):
         super().__init__("clustered_map_preproc_publisher_node")
         self.declare_parameter("output_clustered_map_file", "/home/workspace/ros2_ws/src/yolo11_seg_bringup/config/clustered_map_v6.json")
         self.declare_parameter("output_topic", "/vision/clustered_map_v6")
-        self.declare_parameter("input_topic", "/vision/semantic_map_v5")
+        self.declare_parameter("input_map_file", "/home/workspace/ros2_ws/src/yolo11_seg_bringup/config/map_v6.json")
         self.declare_parameter("visualization_topic", "/vision/clustered_map_vis")
         self.declare_parameter("frame_id", "map")
         self.declare_parameter("publish_rate_hz", 0.5)
+        # --- TUNING PARAMETERS ---
         self.declare_parameter("dist_thresh_multiplier", 0.4)
         self.declare_parameter("wall_search_radius_px", 10) 
-        self.declare_parameter("min_radius", 0.5)
+        self.declare_parameter("min_radius", 1.3)
         self.declare_parameter("max_radius", 2.5)
         self.declare_parameter("radius_step", 0.1)
-        self.declare_parameter("angle_step_deg", 5.0)
+        self.declare_parameter("angle_step_deg", 10.0)
         self.declare_parameter("free_threshold", 0)
-        self.declare_parameter("enable_object_removal", True)
         self.output_clustered_map_file = str(self.get_parameter("output_clustered_map_file").value)
         self.output_topic = str(self.get_parameter("output_topic").value)
-        self.input_topic = str(self.get_parameter("input_topic").value)
+        self.input_map_file = str(self.get_parameter("input_map_file").value)
         self.vis_topic = str(self.get_parameter("visualization_topic").value)
         self.frame_id = str(self.get_parameter("frame_id").value)
         self.publish_rate_hz = float(self.get_parameter("publish_rate_hz").value)
-        self.enable_object_removal = bool(self.get_parameter("enable_object_removal").value)
         self.min_radius = float(self.get_parameter("min_radius").value)
         self.max_radius = float(self.get_parameter("max_radius").value)
         self.radius_step = float(self.get_parameter("radius_step").value)
@@ -56,15 +54,13 @@ class ClusteredMapPreprocPublisherNode(Node):
         # State Variables
         self.latest_map_msg = None
         self.latest_costmap_msg = None
-        self.latest_semantic_msg = None
-        self.local_semantic_map = SemanticObjectArray()
+        self.latest_sem_map = None
         self.room_markers = None
         self.map_info = None
         self.bridge = CvBridge()
         # Subscribers
         self.map_sub = self.create_subscription(OccupancyGrid, "/jackal/map", self._map_callback, 10)
         self.costmap_sub = self.create_subscription(OccupancyGrid, "/jackal/global_costmap/costmap", self._costmap_callback, 10)
-        self.semantic_sub = self.create_subscription(SemanticObjectArray, self.input_topic, self._semantic_callback, 10)
         # Publishers
         self.publisher = self.create_publisher(ClusteredMapObjectArray, self.output_topic, 10)
         self.vis_pub = self.create_publisher(Image, self.vis_topic, 10)
@@ -81,8 +77,7 @@ class ClusteredMapPreprocPublisherNode(Node):
             '/vision/get_approach_pose',
             self._approach_service_callback
         )
-        self.tf_buffer = tf2_ros.Buffer()
-        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
+        self._read_map_from_file()
         self.get_logger().info("[DEBUG] Waypoint Service Server is ready.")
         self.get_logger().info(f"[DEBUG] PointCloud Semantic Masking Node started at {self.publish_rate_hz} Hz.")
 
@@ -91,9 +86,6 @@ class ClusteredMapPreprocPublisherNode(Node):
 
     def _costmap_callback(self, msg: OccupancyGrid):
         self.latest_costmap_msg = msg
-
-    def _semantic_callback(self, msg: SemanticObjectArray):
-        self.latest_semantic_msg = msg
 
     def _waypoint_service_callback(self, request, response):
         """Called whenever the C++ BT Node requests a safe point."""
@@ -186,6 +178,7 @@ class ClusteredMapPreprocPublisherNode(Node):
         response.approach_pose.pose.orientation.w = float(np.cos(yaw * 0.5))
         return response
 
+
     def _room_id_at_world(self, wx: float, wy: float) -> int:
         """Return the watershed room label at world coordinates, or 1 (background sentinel) if invalid."""
         if self.room_markers is None or self.map_info is None:
@@ -228,6 +221,7 @@ class ClusteredMapPreprocPublisherNode(Node):
             return False
 
         return int(self.room_markers[py, px]) == int(room_id)
+
 
     def generate_exploration_waypoints(self, target_room_id: int, num_waypoints: int = 5) -> list:
         """
@@ -278,9 +272,7 @@ class ClusteredMapPreprocPublisherNode(Node):
 
     def _process_publish_cycle(self):
         # We need all three data streams to do this properly
-        if self.latest_map_msg is None or self.latest_semantic_msg is None:
-            return 
-        if not self.latest_semantic_msg.objects:
+        if self.latest_map_msg is None:
             return 
         # Setup Base Map
         map_info = self.latest_map_msg.info
@@ -292,7 +284,7 @@ class ClusteredMapPreprocPublisherNode(Node):
         grid = np.array(self.latest_map_msg.data, dtype=np.int8).reshape((height, width))
         free_space = np.zeros_like(grid, dtype=np.uint8)
         free_space[grid == 0] = 255 
-        # Distance Transform & Watershed
+        # Distance Transform & Watershed on the CLEANED map
         dist_transform = cv2.distanceTransform(free_space, cv2.DIST_L2, 5)
         thresh_mult = self.get_parameter("dist_thresh_multiplier").value
         _, room_seeds = cv2.threshold(dist_transform, thresh_mult * dist_transform.max(), 255, 0)
@@ -305,7 +297,70 @@ class ClusteredMapPreprocPublisherNode(Node):
         cv2.watershed(img_color, markers)
         self.room_markers = markers
         self._publish_visualization(markers, width, height, map_info)
+        # Object Assignment
         self._cluster_and_publish_objects(map_info)
+
+    def _read_map_from_file(self):
+        """Reads map and store semantic objects on latest_sem_map"""
+        try:
+            with open(self.input_map_file, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+                semantic_map = SemanticObjectArray()
+
+                for object_id, entry in data.items():
+                    obj = SemanticObject()
+                    obj.object_id = str(object_id)
+                    obj.name = str(entry.get("name", ""))
+                    obj.frame = str(entry.get("frame", ""))
+
+                    timestamp = entry.get("timestamp", {})
+                    obj.timestamp.sec = int(timestamp.get("sec", 0))
+                    obj.timestamp.nanosec = int(timestamp.get("nanosec", 0))
+
+                    pose_map = entry.get("pose_map", {})
+                    obj.pose_map = self._vec3(
+                        pose_map.get("x", 0.0),
+                        pose_map.get("y", 0.0),
+                        pose_map.get("z", 0.0),
+                    )
+                    obj.pose_cam = self._vec3(0.0, 0.0, 0.0)
+
+                    obj.bbox_type = str(entry.get("bbox_type", ""))
+                    box_size = entry.get("box_size", {})
+                    obj.box_size = self._vec3(
+                        box_size.get("x", 0.0),
+                        box_size.get("y", 0.0),
+                        box_size.get("z", 0.0),
+                    )
+
+                    bbox_orientation = entry.get("bbox_orientation", {})
+                    obj.bbox_orientation = Quaternion()
+                    obj.bbox_orientation.x = float(bbox_orientation.get("x", 0.0))
+                    obj.bbox_orientation.y = float(bbox_orientation.get("y", 0.0))
+                    obj.bbox_orientation.z = float(bbox_orientation.get("z", 0.0))
+                    obj.bbox_orientation.w = float(bbox_orientation.get("w", 1.0))
+
+                    obj.bbox_corners = []
+                    for corner in entry.get("bbox_corners", []):
+                        corner_point = Point()
+                        corner_point.x = float(corner.get("x", 0.0))
+                        corner_point.y = float(corner.get("y", 0.0))
+                        corner_point.z = float(corner.get("z", 0.0))
+                        obj.bbox_corners.append(corner_point)
+
+                    obj.occurrences = int(entry.get("occurrences", 0))
+                    obj.similarity = float(entry.get("similarity", 0.0))
+                    obj.confidence = float(entry.get("confidence", entry.get("embedding_confidence", 0.0)))
+                    obj.image_embedding_masked = [float(value) for value in entry.get("image_embedding_masked", [])]
+                    obj.image_embedding_unmasked = [float(value) for value in entry.get("image_embedding_unmasked", [])]
+
+                    semantic_map.objects.append(obj)
+
+                self.latest_sem_map = semantic_map
+
+        except Exception as exc:
+            self.get_logger().error(f"Failed reading map file: {exc}")
+            self.latest_sem_map = None
 
     def _cluster_and_publish_objects(self, map_info):
         """Looks up the room ID for each object and publishes the JSON/ROS Msg."""
@@ -315,19 +370,15 @@ class ClusteredMapPreprocPublisherNode(Node):
         height, width = self.room_markers.shape
         search_radius = self.get_parameter("wall_search_radius_px").value
         labels, coords, obj_ids, names, similarities = [], [], [], [], []
-        existing_ids = {o.object_id for o in self.local_semantic_map.objects}
-        for obj in self.latest_semantic_msg.objects:
-            if obj.object_id not in existing_ids:
-                self.local_semantic_map.objects.append(obj)
-                x, y, z = obj.pose_map.x, obj.pose_map.y, obj.pose_map.z
-                px = int((x - orig_x) / res)
-                py = int((y - orig_y) / res)
-                stamp = obj.timestamp
-                if 0 <= px < width and 0 <= py < height:
-                    room_id = self._get_current_room_id(stamp)
-                    labels.append(room_id)
-                else:
-                    labels.append(-1)
+        for obj in self.latest_sem_map.objects:
+            x, y, z = obj.pose_map.x, obj.pose_map.y, obj.pose_map.z
+            px = int((x - orig_x) / res)
+            py = int((y - orig_y) / res)
+            if 0 <= px < width and 0 <= py < height:
+                room_id = self._get_nearest_valid_room(px, py, width, height, search_radius)
+                labels.append(room_id)
+            else:
+                labels.append(-1)
             coords.append([x, y, z])
             obj_ids.append(obj.object_id)
             names.append(obj.name)
@@ -364,17 +415,6 @@ class ClusteredMapPreprocPublisherNode(Node):
             self._write_map_to_file(final_output, self.output_clustered_map_file)
         out_msg = self._to_msg(final_output)
         self.publisher.publish(out_msg)
-
-    def _get_current_room_id(self, timestamp) -> int:
-        try:
-            t = self.tf_buffer.lookup_transform('map','base_link', timestamp)
-            robot_x = t.transform.translation.x
-            robot_y = t.transform.translation.y
-            robot_room_id = self._room_id_at_world(robot_x, robot_y)
-            return robot_room_id
-        except TransformException as e:
-            self.get_logger().warn(f'Could not get robot pose: {e}')
-            return -1   
 
     def _get_nearest_valid_room(self, px: int, py: int, width: int, height: int, max_radius: int) -> int:
         if self.room_markers[py, px] > 1: return self.room_markers[py, px]
