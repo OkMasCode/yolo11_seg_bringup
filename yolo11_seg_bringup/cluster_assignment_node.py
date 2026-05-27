@@ -20,11 +20,12 @@ from yolo11_seg_interfaces.msg import (
 )
 
 from yolo11_seg_interfaces.srv import GetRoomWaypoint
+from yolo11_seg_interfaces.srv import GetApproachPose
 
 class ClusteredMapPreprocPublisherNode(Node):
     def __init__(self) -> None:
         super().__init__("clustered_map_preproc_publisher_node")
-        self.declare_parameter("output_clustered_map_file", "/workspaces/ros2_ws/src/yolo11_seg_bringup/config/clustered_map_v6.json")
+        self.declare_parameter("output_clustered_map_file", "/home/workspace/ros2_ws/src/yolo11_seg_bringup/config/clustered_map_v6.json")
         self.declare_parameter("output_topic", "/vision/clustered_map_v6")
         self.declare_parameter("input_topic", "/vision/semantic_map_v5")
         self.declare_parameter("pointcloud_topic", "/vision/semantic_map_v5/points")
@@ -38,6 +39,11 @@ class ClusteredMapPreprocPublisherNode(Node):
         # we dilate the footprint by this many pixels to create a solid eraser stamp.
         # 5 pixels * 0.05m = ~25cm dilation.
         self.declare_parameter("pc_dilation_px", 8) 
+        self.declare_parameter("min_radius", 0.5)
+        self.declare_parameter("max_radius", 1.5)
+        self.declare_parameter("radius_step", 0.1)
+        self.declare_parameter("angle_step_deg", 10.0)
+        self.declare_parameter("free_threshold", 0)
         self.declare_parameter("enable_object_removal", True)
         self.output_clustered_map_file = str(self.get_parameter("output_clustered_map_file").value)
         self.output_topic = str(self.get_parameter("output_topic").value)
@@ -47,15 +53,20 @@ class ClusteredMapPreprocPublisherNode(Node):
         self.frame_id = str(self.get_parameter("frame_id").value)
         self.publish_rate_hz = float(self.get_parameter("publish_rate_hz").value)
         self.enable_object_removal = bool(self.get_parameter("enable_object_removal").value)
-
+        self.min_radius = float(self.get_parameter("min_radius").value)
+        self.max_radius = float(self.get_parameter("max_radius").value)
+        self.radius_step = float(self.get_parameter("radius_step").value)
+        self.angle_step_deg = float(self.get_parameter("angle_step_deg").value)
+        self.free_threshold = int(self.get_parameter("free_threshold").value)
         # State Variables
         self.latest_map_msg = None
         self.latest_semantic_msg = None
         self.latest_pc_msg = None
         self.room_markers = None
+        self.map_info = None
         self.bridge = CvBridge()
         # Subscribers
-        self.map_sub = self.create_subscription(OccupancyGrid, "/map", self._map_callback, 10)
+        self.map_sub = self.create_subscription(OccupancyGrid, "/jackal/map", self._map_callback, 10)
         self.semantic_sub = self.create_subscription(SemanticObjectArray, self.input_topic, self._semantic_callback, 10)
         self.pc_sub = self.create_subscription(PointCloud2, self.pc_topic, self._pc_callback, 10)
         # Publishers
@@ -68,6 +79,11 @@ class ClusteredMapPreprocPublisherNode(Node):
             GetRoomWaypoint, 
             '/vision/get_room_waypoint', 
             self._waypoint_service_callback
+        )
+        self.approach_service = self.create_service(
+            GetApproachPose,
+            '/vision/get_approach_pose',
+            self._approach_service_callback
         )
         self.get_logger().info("[DEBUG] Waypoint Service Server is ready.")
         self.get_logger().info(f"[DEBUG] PointCloud Semantic Masking Node started at {self.publish_rate_hz} Hz.")
@@ -97,6 +113,126 @@ class ClusteredMapPreprocPublisherNode(Node):
         response.waypoint.y = float(safe_points[0][1])
         response.waypoint.z = 0.0
         return response
+
+
+    def _approach_service_callback(self, request, response):
+        if self.latest_map_msg is None or self.room_markers is None or self.map_info is None:
+            self.get_logger().error("Cannot compute approach pose: room segmentation or map is not ready.")
+            response.success = False
+            return response
+
+        goal_pose = request.goal_pose
+        start_pose = request.start_pose
+        object_room_id = int(request.room_id)
+        goal_x = float(goal_pose.pose.position.x)
+        goal_y = float(goal_pose.pose.position.y)
+        robot_x = float(start_pose.pose.position.x)
+        robot_y = float(start_pose.pose.position.y)
+        self.get_logger().info(f"BT Node requested approach pose for the goal in Room {object_room_id}")
+
+        min_radius = float(self.min_radius)
+        max_radius = float(self.max_radius)
+        radius_step = float(self.radius_step)
+        angle_step_deg = float(self.angle_step_deg)
+        free_threshold = int(self.free_threshold)
+
+        if min_radius < 0.0 or max_radius < min_radius or radius_step <= 0.0 or angle_step_deg <= 0.0:
+            self.get_logger().error("Invalid approach pose sampling parameters.")
+            response.success = False
+            return response
+
+        best_pose = None
+        best_robot_distance = float("inf")
+        best_goal_distance = float("inf")
+
+        for radius in np.arange(min_radius, max_radius + 1e-6, radius_step):
+            for angle_deg in np.arange(0.0, 360.0, angle_step_deg):
+                angle_rad = np.deg2rad(angle_deg)
+                candidate_x = goal_x + radius * float(np.cos(angle_rad))
+                candidate_y = goal_y + radius * float(np.sin(angle_rad))
+
+                if not self._point_in_room(candidate_x, candidate_y, object_room_id):
+                    continue
+                if not self.isFree(self.latest_map_msg, candidate_x, candidate_y, free_threshold):
+                    continue
+
+                robot_distance = float(np.hypot(candidate_x - robot_x, candidate_y - robot_y))
+                goal_distance = float(np.hypot(candidate_x - goal_x, candidate_y - goal_y))
+
+                if (
+                    best_pose is None
+                    or robot_distance < best_robot_distance
+                    or (
+                        abs(robot_distance - best_robot_distance) < 0.01
+                        and goal_distance < best_goal_distance
+                    )
+                ):
+                    best_pose = (candidate_x, candidate_y)
+                    best_robot_distance = robot_distance
+                    best_goal_distance = goal_distance
+
+        if best_pose is None:
+            self.get_logger().warn("No valid approach pose found inside the goal room.")
+            response.success = False
+            return response
+
+        approach_x, approach_y = best_pose
+        yaw = float(np.arctan2(goal_y - approach_y, goal_x - approach_x))
+
+        response.success = True
+        response.approach_pose.pose.position.x = float(approach_x)
+        response.approach_pose.pose.position.y = float(approach_y)
+        response.approach_pose.pose.position.z = 0.0
+        response.approach_pose.pose.orientation.x = 0.0
+        response.approach_pose.pose.orientation.y = 0.0
+        response.approach_pose.pose.orientation.z = float(np.sin(yaw * 0.5))
+        response.approach_pose.pose.orientation.w = float(np.cos(yaw * 0.5))
+        return response
+
+
+    def _room_id_at_world(self, wx: float, wy: float) -> int:
+        """Return the watershed room label at world coordinates, or 1 (background sentinel) if invalid."""
+        if self.room_markers is None or self.map_info is None:
+            return 1
+        res = float(self.map_info.resolution)
+        if res <= 0.0:
+            return 1
+        ox = float(self.map_info.origin.position.x)
+        oy = float(self.map_info.origin.position.y)
+        px = int((wx - ox) / res)
+        py = int((wy - oy) / res)
+        h, w = self.room_markers.shape
+        if px < 0 or py < 0 or px >= w or py >= h:
+            return 1
+        return int(self.room_markers[py, px])
+
+    def isFree(self, map_msg: OccupancyGrid, wx: float, wy: float, threshold: int = 0) -> bool:
+        """Return True if the occupancy grid cell at world (wx, wy) has value == threshold (0 = free)."""
+        info = map_msg.info
+        px = int((wx - info.origin.position.x) / info.resolution)
+        py = int((wy - info.origin.position.y) / info.resolution)
+        if px < 0 or py < 0 or px >= info.width or py >= info.height:
+            return False
+        return map_msg.data[py * info.width + px] == threshold
+
+    def _point_in_room(self, wx: float, wy: float, room_id: int) -> bool:
+        if self.room_markers is None or self.map_info is None:
+            return False
+
+        res = float(self.map_info.resolution)
+        if res <= 0.0:
+            return False
+
+        origin_x = float(self.map_info.origin.position.x)
+        origin_y = float(self.map_info.origin.position.y)
+        px = int((wx - origin_x) / res)
+        py = int((wy - origin_y) / res)
+
+        if px < 0 or py < 0 or py >= self.room_markers.shape[0] or px >= self.room_markers.shape[1]:
+            return False
+
+        return int(self.room_markers[py, px]) == int(room_id)
+
 
     def generate_exploration_waypoints(self, target_room_id: int, num_waypoints: int = 5) -> list:
         """
@@ -153,6 +289,7 @@ class ClusteredMapPreprocPublisherNode(Node):
             return 
         # Setup Base Map
         map_info = self.latest_map_msg.info
+        self.map_info = map_info
         width, height = map_info.width, map_info.height
         res = map_info.resolution
         orig_x = map_info.origin.position.x
@@ -235,7 +372,17 @@ class ClusteredMapPreprocPublisherNode(Node):
             centroid = self.generate_exploration_waypoints(target_room_id=lbl, num_waypoints=1)
             if not centroid:
                 self.get_logger().error(f"Failed to generate a safe point for Room {lbl}!")
-            centroid_by_label[int(lbl)] = {"x": float(centroid[0]), "y": float(centroid[1]), "z": float(centroid[2])}
+                # Provide a fallback zero-coordinate if generation fails
+                centroid_by_label[int(lbl)] = {"x": 0.0, "y": 0.0, "z": 0.0}
+            else:
+                # centroid is a list of tuples containing (x, y). 
+                # We access the first tuple at index 0, then the x [0] and y [1] values.
+                # Since 2D maps have no Z, we safely set it to 0.0
+                centroid_by_label[int(lbl)] = {
+                    "x": float(centroid[0][0]), 
+                    "y": float(centroid[0][1]), 
+                    "z": 0.0
+                }
         final_output = []
         for obj_id, name, coord, label, similarity in zip(obj_ids, names, coords, labels, similarities):
             final_output.append({
@@ -300,8 +447,10 @@ class ClusteredMapPreprocPublisherNode(Node):
             obj_msg.coords = self._vec3(c.get("x", 0.0), c.get("y", 0.0), c.get("z", 0.0))
             obj_msg.cluster_centroid = self._vec3(cent.get("x", 0.0), cent.get("y", 0.0), cent.get("z", 0.0))
             bbox_msg = ClusterBoundingBox2D()
-            bbox_msg.min_x, bbox_msg.min_y = float(bbox.get("min", {}).get("x", 0.0)), float(bbox.get("min", {}).get("y", 0.0))
-            bbox_msg.max_x, bbox_msg.max_y = float(bbox.get("max", {}).get("x", 0.0)), float(bbox.get("max", {}).get("y", 0.0))
+            #bbox_msg.min_x, bbox_msg.min_y = float(bbox.get("min", {}).get("x", 0.0)), float(bbox.get("min", {}).get("y", 0.0))
+            #bbox_msg.max_x, bbox_msg.max_y = float(bbox.get("max", {}).get("x", 0.0)), float(bbox.get("max", {}).get("y", 0.0))
+            bbox_msg.min_x, bbox_msg.min_y = 0.0, 0.0
+            bbox_msg.max_x, bbox_msg.max_y = 0.0, 0.0
             out_msg.objects.append(obj_msg)
         return out_msg
 

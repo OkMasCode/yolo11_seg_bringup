@@ -16,7 +16,7 @@ class SiglipHeatmapPublisher(Node):
         self.declare_parameter('image_topic', '/jackal/sensors/camera_0/color/image')
         self.declare_parameter(
             'scene_prompt_file',
-            '/workspaces/ros2_ws/src/yolo11_seg_bringup/config/scene_prompt.json',
+            '/home/workspace/ros2_ws/src/yolo11_seg_bringup/config/scene_prompt.json',
         )
         self.declare_parameter('prompt_check_interval', 2.0)
         self.declare_parameter('clip_model_name', 'google/siglip2-large-patch16-384')

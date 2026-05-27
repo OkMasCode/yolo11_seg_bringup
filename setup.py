@@ -37,6 +37,7 @@ setup(
             'cpp_mapper_json_exporter_node = yolo11_seg_bringup.cpp_mapper_json_exporter_node:main',
             'cluster_assignment_node = yolo11_seg_bringup.cluster_assignment_node:main',
             'semantic_navigator = yolo11_seg_bringup.semantic_navigator:main',
+            'map_clustering = yolo11_seg_bringup.map_clustering:main',
         ],
     },
 )
