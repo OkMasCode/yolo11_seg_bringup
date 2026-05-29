@@ -1,6 +1,5 @@
 """
-ROS2 vision node for RGB + PointCloud segmentation, 3D centroid extraction,
-CLIP embedding, and detection publishing.
+ROS2 vision node for CLIP embedding, and detection publishing.
 """
 
 import os
@@ -9,7 +8,6 @@ from rclpy.node import Node
 from sensor_msgs.msg import Image
 from std_msgs.msg import Float32MultiArray
 from rclpy.qos import QoSProfile, HistoryPolicy, ReliabilityPolicy, DurabilityPolicy
-
 import torch
 import cv2
 import numpy as np
@@ -17,10 +15,8 @@ from cv_bridge import CvBridge
 import json
 import threading
 from time import perf_counter
-import queue # Built-in library for thread-safe data pipelines
-
+import queue
 from ultralytics import YOLO
-
 from yolo11_seg_interfaces.msg import DetectedObjectV3, DetectedObjectV3Array
 from .utils.siglip2_processor_2 import SIGLIPProcessor
 
@@ -42,9 +38,9 @@ class VisionNode(Node):
         # ============= Parameters ============= #
 
         # Communication parameters
-        self.declare_parameter('image_topic', '/jackal/sensors/camera_0/color/image') #/camera/camera/color/image_raw
+        self.declare_parameter('image_topic', '/jackal/sensors/camera_0/color/image')
         self.declare_parameter('depth_topic', '/jackal/sensors/camera_0/aligned_depth_to_color/image')
-        self.declare_parameter('enable_visualization', True) # Flag for annotated image publisher
+        self.declare_parameter('enable_visualization', True)
         self.image_topic = self.get_parameter('image_topic').value
         self.depth_topic = self.get_parameter('depth_topic').value
         self.enable_vis = bool(self.get_parameter('enable_visualization').value)
@@ -65,11 +61,6 @@ class VisionNode(Node):
         self.declare_parameter('masked_score_weight', 0.85)
         self.declare_parameter('unmasked_score_weight', 0.15)
         self.declare_parameter('compute_unmasked_embeddings', False)
-        self.declare_parameter('enable_paper_capture', False)
-        self.declare_parameter('paper_capture_class', 'bed')
-        self.declare_parameter('paper_images_output_dir', '/home/workspace/ros2_ws/src/yolo11_seg_bringup/images')
-        self.declare_parameter('annotated_font_size', 0.6)
-        self.declare_parameter('annotated_line_width', 1)
         self.CLIP_model_name = self.get_parameter('CLIP_model_name').value
         self.CLIP_model_path = self.get_parameter('CLIP_model_path').value
         self.robot_command_file = self.get_parameter('robot_command_file').value
@@ -77,6 +68,12 @@ class VisionNode(Node):
         self.masked_score_weight = float(self.get_parameter('masked_score_weight').value)
         self.unmasked_score_weight = float(self.get_parameter('unmasked_score_weight').value)
         self.compute_unmasked_embeddings = bool(self.get_parameter('compute_unmasked_embeddings').value)
+        # Visualization and paper capture parameters
+        self.declare_parameter('enable_paper_capture', False)
+        self.declare_parameter('paper_capture_class', 'bed')
+        self.declare_parameter('paper_images_output_dir', '/home/workspace/ros2_ws/src/yolo11_seg_bringup/images')
+        self.declare_parameter('annotated_font_size', 1.0)
+        self.declare_parameter('annotated_line_width', 2)
         self.enable_paper_capture = bool(self.get_parameter('enable_paper_capture').value)
         self.paper_capture_class = str(self.get_parameter('paper_capture_class').value).strip()
         self.paper_images_output_dir = str(self.get_parameter('paper_images_output_dir').value).strip()
@@ -89,8 +86,8 @@ class VisionNode(Node):
         self.detection_topic = '/vision/detections'
         self.text_emb_publish_topic = '/vision/text_embedding'
         self.frame_skip = 10
-        self.CLASS_NAMES = ["microwave", "keyboard", "mouse", "bottle", "mug", "tv", "fridge", "sunglasses", "telephone", "headphones", "kettle",
-                            "apple", "laptop", "screwdriver", "coffee cup", "drill", "game controller", "blue coffee machine", "coat hanger", "ping pong racket"]        
+        self.CLASS_NAMES = ["microwave", "keyboard", "mouse", "bottle", "mug", "tv", "fridge", "sunglasses", "telephone", "headphones", "kettle", "blue coffee machine"
+                            "apple", "laptop", "screwdriver", "coffee cup", "drill", "game controller", "coat hanger", "ping pong racket"]        
         goal_class = self._read_goal_from_command_file()
         # If a valid goal class is found in the command file, ensure it's included in CLASS_NAMES for detection.
         if goal_class:
@@ -108,31 +105,20 @@ class VisionNode(Node):
                 "No valid goal found in robot_command.json. Using default CLASS_NAMES."
             )
         # Load YOLO model
-        self.get_logger().info(f"Loading YOLO model: {self.model_path}")
         self.model = YOLO(self.model_path, task='segment')
         self.model.set_classes(self.CLASS_NAMES)
-        self.get_logger().info(f"YOLO classes set to: {self.CLASS_NAMES}")
         # Load CLIP model
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.get_logger().info(f"Loading CLIP model on device: {self.device}\n")
         self.clip = SIGLIPProcessor(
             engine_path=self.CLIP_model_path,
             model_name=self.CLIP_model_name,
             masked_score_weight=self.masked_score_weight,
             unmasked_score_weight=self.unmasked_score_weight,
         )
-        self.get_logger().info(
-            "CLIP blend weights normalized to: "
-            f"masked={self.clip.masked_score_weight:.2f}, "
-            f"unmasked={self.clip.unmasked_score_weight:.2f}"
-        )
-        self.get_logger().info(
-            f"Unmasked embedding computation enabled: {self.compute_unmasked_embeddings}"
-        )
         # CV bridge and camera intrinsics placeholders.
         self.bridge = CvBridge()
         qos_sensor = QoSProfile(
-            depth=1,
+            depth=5,
             history=HistoryPolicy.KEEP_LAST,
             reliability=ReliabilityPolicy.BEST_EFFORT,
             durability=DurabilityPolicy.VOLATILE
@@ -150,8 +136,6 @@ class VisionNode(Node):
             self.depth_callback,
             qos_profile=qos_sensor,
         )
-        self.get_logger().info(f"Subscribed to: {self.image_topic}")
-        self.get_logger().info(f"Subscribed to depth: {self.depth_topic}")
         # Publishers    
         self.detections_pub = self.create_publisher(DetectedObjectV3Array, self.detection_topic, 10)
         self.text_emb_pub = self.create_publisher(Float32MultiArray, self.text_emb_publish_topic, 10)
@@ -159,7 +143,6 @@ class VisionNode(Node):
             self.vis_pub = self.create_publisher(Image, self.anno_topic, qos_profile=qos_sensor)
         # State Variables
         self.frame_count = 0
-        self.class_colors = {}
         self.current_clip_prompt = None
         self.goal_text_embedding = None
         self.clip_state_lock = threading.Lock()
@@ -174,8 +157,6 @@ class VisionNode(Node):
                 f"class='{self.paper_capture_class}', interval={self.paper_capture_interval_sec:.1f}s, "
                 f"dir='{self.paper_images_output_dir}'"
             )
-        else:
-            self.get_logger().info("Paper image capture is disabled by parameter 'enable_paper_capture'.")
         # Timing instrumentation
         self.timing_stats = {
             'yolo_inference': [],
@@ -197,7 +178,6 @@ class VisionNode(Node):
         # Initialize the prompt immediately on startup
         self._load_clip_prompt()
         self.command_timer = self.create_timer(self.prompt_check_interval, self._timer_publish_embedding)
-
         # Pipeline Parallelism Setup
         self.inference_queue = queue.Queue(maxsize=2)
         self.worker_thread = threading.Thread(target=self.clip_worker_loop, daemon=True)
@@ -223,10 +203,6 @@ class VisionNode(Node):
         """Cache the most recent aligned depth frame for paper-capture exports."""
         with self.depth_state_lock:
             self.latest_depth_msg = depth_msg
-        self.get_logger().debug(
-            f"[depth_callback] stamp={depth_msg.header.stamp.sec}.{depth_msg.header.stamp.nanosec:09d} "
-            f"frame_id='{depth_msg.header.frame_id}' encoding='{depth_msg.encoding}' size={depth_msg.width}x{depth_msg.height}"
-        )
    
     # --------------- Main Methods ------------- #
 
@@ -273,7 +249,6 @@ class VisionNode(Node):
                 vis_msg = self.bridge.cv2_to_imgmsg(annotated_frame, encoding="bgr8")
                 vis_msg.header = rgb_msg.header
                 self.vis_pub.publish(vis_msg)
-                self.get_logger().info(f"Published annotated image (frame {self.frame_count})", throttle_duration_sec=2.0)
             # Record end-to-end latency for successful frames.
             total_time = (perf_counter() - frame_start) * 1000
             self.timing_stats['total_frame'].append(total_time)
@@ -285,7 +260,7 @@ class VisionNode(Node):
 
     def _process_detections(self, res, cv_bgr, rgb_msg, height, width):
         """ 
-        Unified pipeline
+        Process YOLO detections: GPU-to-CPU transfer, mask processing, crop prep, and queueing for CLIP and publishing.
         """
 
         # ===== GPU-to-CPU transfer ===== #
@@ -303,7 +278,6 @@ class VisionNode(Node):
         else:
             masks_np = None
         gpu_transfer_time = (perf_counter() - gpu_transfer_start) * 1000
-        self.get_logger().debug(f"GPU-to-CPU transfer: {gpu_transfer_time:.2f}ms")
         # Per-frame containers: all detections and CLIP candidates for batch inference.
         frame_detections = []
         batch_queue = []
@@ -333,12 +307,11 @@ class VisionNode(Node):
                 batch_queue.append(det_entry)
         det_proc_time = (perf_counter() - det_process_start) * 1000
         self.timing_stats['detections_processing'].append(det_proc_time)
-        self.get_logger().debug(f"Detection processing ({len(frame_detections)} detections): {det_proc_time:.2f}ms")
-
         if capture_due:
             self._maybe_save_paper_images(frame_detections, cv_bgr, res)
 
         # ===== Push to Pipeline Queue ===== #
+
         # Package everything the background thread needs to finish the job
         payload = (
             rgb_msg.header, 
@@ -350,7 +323,6 @@ class VisionNode(Node):
             self.inference_queue.put(payload, block=False)
         except queue.Full:
             self.get_logger().warn("SigLIP pipeline full. Dropping frame to maintain latency.", throttle_duration_sec=1.0)
-
 
     def clip_worker_loop(self):
         while True:

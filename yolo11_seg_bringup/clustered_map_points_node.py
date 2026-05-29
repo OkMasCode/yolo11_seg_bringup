@@ -120,10 +120,7 @@ class ClusteredMapPointsNode(Node):
             class_color = self.cluster_to_color(cluster_id)
             points_marker.colors.append(class_color)
 
-            label_parts = [class_name, f'cluster:{cluster_id}']
-            if object_id:
-                label_parts.append(object_id)
-            label = ' | '.join(label_parts)
+            label = class_name
 
             text_marker = Marker()
             text_marker.header.frame_id = self.map_frame

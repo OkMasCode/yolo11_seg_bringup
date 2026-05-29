@@ -33,11 +33,11 @@ class ClusteredMapPreprocPublisherNode(Node):
         self.declare_parameter("visualization_topic", "/vision/clustered_map_vis")
         self.declare_parameter("frame_id", "map")
         self.declare_parameter("publish_rate_hz", 0.5)
-        self.declare_parameter("dist_thresh_multiplier", 0.4)
+        self.declare_parameter("dist_thresh_multiplier", 0.1)
         self.declare_parameter("wall_search_radius_px", 10) 
         self.declare_parameter("min_radius", 0.1)
         self.declare_parameter("max_radius", 2.5)
-        self.declare_parameter("radius_step", 0.1)
+        self.declare_parameter("radius_step", 0.05)
         self.declare_parameter("angle_step_deg", 5.0)
         self.declare_parameter("free_threshold", 0)
         self.declare_parameter("enable_object_removal", True)
@@ -100,17 +100,24 @@ class ClusteredMapPreprocPublisherNode(Node):
     def _waypoint_service_callback(self, request, response):
         """Called whenever the C++ BT Node requests a safe point."""
         room_id = request.room_id
+        # Log / print that the service was invoked
         self.get_logger().info(f"BT Node requested waypoint for Room {room_id}")
+        print(f"GetRoomWaypoint service called for Room {room_id}")
         # Use the erosion logic to get 1 safe point
         safe_points = self.generate_exploration_waypoints(target_room_id=room_id, num_waypoints=1)
         if not safe_points:
             self.get_logger().error(f"Failed to generate a safe point for Room {room_id}!")
             response.success = False
             return response
+        # Log the generated waypoint coordinates
+        wp_x = float(safe_points[0][0])
+        wp_y = float(safe_points[0][1])
+        self.get_logger().info(f"Generated waypoint for Room {room_id}: x={wp_x:.3f}, y={wp_y:.3f}")
+        print(f"Generated waypoint for Room {room_id}: x={wp_x:.3f}, y={wp_y:.3f}")
         # Pack the response
         response.success = True
-        response.waypoint.x = float(safe_points[0][0])
-        response.waypoint.y = float(safe_points[0][1])
+        response.waypoint.x = wp_x
+        response.waypoint.y = wp_y
         response.waypoint.z = 0.0
         return response
 
@@ -140,35 +147,28 @@ class ClusteredMapPreprocPublisherNode(Node):
             response.success = False
             return response
 
+        # Sort angles so the direction goal→robot is sampled first, expanding outward.
+        # This makes the first valid hit the most natural approach direction.
+        base_angle = np.arctan2(robot_y - goal_y, robot_x - goal_x)
+        raw_angles = np.deg2rad(np.arange(0.0, 360.0, angle_step_deg))
+        sorted_angles = sorted(
+            raw_angles,
+            key=lambda a: abs(((a - base_angle + np.pi) % (2 * np.pi)) - np.pi)
+        )
+
         best_pose = None
-        best_robot_distance = float("inf")
-        best_goal_distance = float("inf")
-
         for radius in np.arange(min_radius, max_radius + 1e-6, radius_step):
-            for angle_deg in np.arange(0.0, 360.0, angle_step_deg):
-                angle_rad = np.deg2rad(angle_deg)
-                candidate_x = goal_x + radius * float(np.cos(angle_rad))
-                candidate_y = goal_y + radius * float(np.sin(angle_rad))
-
-                if not self._point_in_room(candidate_x, candidate_y, object_room_id):
+            for angle_rad in sorted_angles:
+                cx = goal_x + radius * float(np.cos(angle_rad))
+                cy = goal_y + radius * float(np.sin(angle_rad))
+                if not self._point_in_room(cx, cy, object_room_id):
                     continue
-                if not self.isFree(self.latest_costmap_msg, candidate_x, candidate_y, free_threshold):
+                if not self.isFree(self.latest_costmap_msg, cx, cy, free_threshold):
                     continue
-
-                robot_distance = float(np.hypot(candidate_x - robot_x, candidate_y - robot_y))
-                goal_distance = float(np.hypot(candidate_x - goal_x, candidate_y - goal_y))
-
-                if (
-                    best_pose is None
-                    or robot_distance < best_robot_distance
-                    or (
-                        abs(robot_distance - best_robot_distance) < 0.01
-                        and goal_distance < best_goal_distance
-                    )
-                ):
-                    best_pose = (candidate_x, candidate_y)
-                    best_robot_distance = robot_distance
-                    best_goal_distance = goal_distance
+                best_pose = (cx, cy)
+                break
+            if best_pose is not None:
+                break
 
         if best_pose is None:
             self.get_logger().warn("No valid approach pose found inside the goal room.")
@@ -391,8 +391,10 @@ class ClusteredMapPreprocPublisherNode(Node):
 
     @staticmethod
     def _room_color(marker: int) -> tuple:
-        np.random.seed(marker)
-        return tuple(int(value) for value in np.random.randint(50, 255, size=3))
+        # Local RNG so room colors stay stable per marker WITHOUT reseeding the
+        # global numpy RNG (which generate_exploration_waypoints relies on).
+        rng = np.random.default_rng(marker)
+        return tuple(int(value) for value in rng.integers(50, 255, size=3))
 
     def _write_map_to_file(self, clustered_map: List[dict], file_path: str) -> None:
         try:
