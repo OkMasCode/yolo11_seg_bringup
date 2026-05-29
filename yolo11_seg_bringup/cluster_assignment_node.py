@@ -11,6 +11,7 @@ from cv_bridge import CvBridge
 from geometry_msgs.msg import Vector3
 from nav_msgs.msg import OccupancyGrid
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, QoSDurabilityPolicy, QoSReliabilityPolicy
 from sensor_msgs.msg import Image, PointCloud2
 from sensor_msgs_py import point_cloud2
 
@@ -69,6 +70,14 @@ class ClusteredMapPreprocPublisherNode(Node):
         # Publishers
         self.publisher = self.create_publisher(ClusteredMapObjectArray, self.output_topic, 10)
         self.vis_pub = self.create_publisher(Image, self.vis_topic, 10)
+        # Latched (TRANSIENT_LOCAL) so RViz's Map display — which uses transient-local
+        # durability by default — receives the last grid even if it subscribes late.
+        map_qos = QoSProfile(
+            depth=1,
+            durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+            reliability=QoSReliabilityPolicy.RELIABLE,
+        )
+        self.room_grid_pub = self.create_publisher(OccupancyGrid, "/vision/clustered_map_grid", map_qos)
         # Publishing loop (always runs, reads from JSON file)
         self.process_timer = self.create_timer(1.0 / self.publish_rate_hz, self._process_cycle)
         self.publish_timer = self.create_timer(1.0 / self.publish_rate_hz, self._publish_cycle)
@@ -300,6 +309,7 @@ class ClusteredMapPreprocPublisherNode(Node):
         cv2.watershed(img_color, markers)
         self.room_markers = markers
         self._publish_visualization(markers, width, height, map_info)
+        self._publish_room_grid(markers, map_info)
         # Cluster assignment requires semantic messages — skip if mapper is not running
         if self.latest_semantic_msg is None or not self.latest_semantic_msg.objects:
             return
@@ -388,6 +398,38 @@ class ClusteredMapPreprocPublisherNode(Node):
             else:
                 vis_img[markers == marker] = self._room_color(int(marker))
         self.vis_pub.publish(self.bridge.cv2_to_imgmsg(vis_img, encoding="bgr8"))
+
+    def _publish_room_grid(self, markers, map_info) -> None:
+        """Publish the watershed room segmentation as a nav_msgs/OccupancyGrid.
+
+        Each room gets a distinct cell value spread across 1..98 so RViz's Map
+        display (with the 'costmap' color scheme) renders each room a different
+        color. Walls/boundaries -> 100 (lethal), background -> -1 (unknown).
+        """
+        # Real rooms are every marker except -1 (watershed boundary) and 1 (background).
+        room_labels = sorted(int(m) for m in np.unique(markers) if m not in (-1, 1))
+
+        # Map each room label to an evenly spaced value in [1, 98] for distinct hues.
+        if room_labels:
+            n = len(room_labels)
+            label_to_value = {
+                lbl: int(1 + round(97 * i / max(n - 1, 1)))
+                for i, lbl in enumerate(room_labels)
+            }
+        else:
+            label_to_value = {}
+
+        data = np.full(markers.shape, -1, dtype=np.int8)   # background / unknown
+        data[markers == -1] = 100                          # walls / boundaries
+        for lbl, value in label_to_value.items():
+            data[markers == lbl] = value
+
+        grid = OccupancyGrid()
+        grid.header.stamp = self.get_clock().now().to_msg()
+        grid.header.frame_id = self.frame_id
+        grid.info = map_info
+        grid.data = data.flatten().tolist()
+        self.room_grid_pub.publish(grid)
 
     @staticmethod
     def _room_color(marker: int) -> tuple:

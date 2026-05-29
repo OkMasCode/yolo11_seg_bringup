@@ -146,92 +146,49 @@ class SIGLIPProcessor:
         
         return tensor_gpu # Returns a PyTorch CUDA Tensor
 
-    def encode_images_batch(self, images_bgr: list, return_timing: bool = False):
-        """Encodes a batch using PyTorch GPU preprocessing + TensorRT.
+    def encode_images_batch(self, images_bgr: list):
 
-        Set return_timing=True to also receive a per-step host-side timing dictionary.
-        """
-        total_start = perf_counter()
-        timing = {
-            "preprocess_ms": 0.0,
-            "set_shape_ms": 0.0,
-            "torch_sync_ms": 0.0,
-            "dtod_enqueue_ms": 0.0,
-            "inference_enqueue_ms": 0.0,
-            "inference_host_call_only_ms": 0.0,
-            "dtoh_enqueue_ms": 0.0,
-            "stream_sync_ms": 0.0,
-            "postprocess_ms": 0.0,
-            "total_ms": 0.0,
-            "batch_size": 0,
-        }
+        """Encodes a batch using PyTorch GPU preprocessing + TensorRT."""
 
         # 1. Get the preprocessed PyTorch tensor (already on GPU)
-        t0 = perf_counter()
         tensor_gpu = self._preprocess_images(images_bgr)
-        timing["preprocess_ms"] = (perf_counter() - t0) * 1000.0
         if tensor_gpu is None:
-            timing["total_ms"] = (perf_counter() - total_start) * 1000.0
-            self.last_batch_timing_ms = timing
-            if return_timing:
-                return [], timing
             return []
 
         batch_size = tensor_gpu.size(0)
         if batch_size > self.max_batch_size:
             tensor_gpu = tensor_gpu[:self.max_batch_size]
             batch_size = self.max_batch_size
-        timing["batch_size"] = int(batch_size)
 
         # 2. Update TRT Context shape
-        t1 = perf_counter()
         self.context.set_input_shape("pixel_values", (batch_size, 3, 384, 384))
-        timing["set_shape_ms"] = (perf_counter() - t1) * 1000.0
 
         # 3. Synchronize PyTorch to ensure math is finished before TRT starts
-        t2 = perf_counter()
         torch.cuda.current_stream().synchronize()
-        timing["torch_sync_ms"] = (perf_counter() - t2) * 1000.0
 
         # 4. Device-to-Device Copy (GPU to GPU, bypassing CPU completely)
-        t3 = perf_counter()
         cuda.memcpy_dtod_async(
             self.inputs['pixel_values']['device'],  # Destination TRT Buffer
             tensor_gpu.data_ptr(),                  # Source PyTorch Tensor Pointer
             tensor_gpu.numel() * tensor_gpu.element_size(), # Size in bytes
             self.stream
         )
-        timing["dtod_enqueue_ms"] = (perf_counter() - t3) * 1000.0
 
         # 5. Execute TRT Graph
-        t4 = perf_counter()
         self.context.execute_async_v3(stream_handle=self.stream.handle)
-        timing["inference_enqueue_ms"] = (perf_counter() - t4) * 1000.0
-        timing["inference_host_call_only_ms"] = timing["inference_enqueue_ms"]
 
         # 6. Async Device -> Host for the tiny output embeddings
-        t5 = perf_counter()
         cuda.memcpy_dtoh_async(
             self.outputs['image_embedding']['host'],
             self.outputs['image_embedding']['device'],
             self.stream
         )
-        timing["dtoh_enqueue_ms"] = (perf_counter() - t5) * 1000.0
-
-        t6 = perf_counter()
         self.stream.synchronize()
-        timing["stream_sync_ms"] = (perf_counter() - t6) * 1000.0
 
         # Reshape and return
-        t7 = perf_counter()
         embeddings = self.outputs['image_embedding']['host'].reshape(self.max_batch_size, -1)
         output_embeddings = [embeddings[i].copy() for i in range(batch_size)]
-        timing["postprocess_ms"] = (perf_counter() - t7) * 1000.0
-        timing["total_ms"] = (perf_counter() - total_start) * 1000.0
-        self.last_batch_timing_ms = timing
 
-        if return_timing:
-            return output_embeddings, timing
         return output_embeddings
 
     def encode_image(self, image_bgr):
