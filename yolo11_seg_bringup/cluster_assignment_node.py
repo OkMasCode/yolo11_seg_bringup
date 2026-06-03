@@ -235,7 +235,17 @@ class ClusteredMapPreprocPublisherNode(Node):
             centroid = self.generate_exploration_waypoints(target_room_id=lbl, num_waypoints=1)
             if not centroid:
                 self.get_logger().error(f"Failed to generate a safe point for Room {lbl}!")
-            centroid_by_label[int(lbl)] = {"x": float(centroid[0]), "y": float(centroid[1]), "z": float(centroid[2])}
+                # Provide a fallback zero-coordinate if generation fails
+                centroid_by_label[int(lbl)] = {"x": 0.0, "y": 0.0, "z": 0.0}
+            else:
+                # centroid is a list of tuples containing (x, y). 
+                # We access the first tuple at index 0, then the x [0] and y [1] values.
+                # Since 2D maps have no Z, we safely set it to 0.0
+                centroid_by_label[int(lbl)] = {
+                    "x": float(centroid[0][0]), 
+                    "y": float(centroid[0][1]), 
+                    "z": 0.0
+                }
         final_output = []
         for obj_id, name, coord, label, similarity in zip(obj_ids, names, coords, labels, similarities):
             final_output.append({
@@ -300,8 +310,10 @@ class ClusteredMapPreprocPublisherNode(Node):
             obj_msg.coords = self._vec3(c.get("x", 0.0), c.get("y", 0.0), c.get("z", 0.0))
             obj_msg.cluster_centroid = self._vec3(cent.get("x", 0.0), cent.get("y", 0.0), cent.get("z", 0.0))
             bbox_msg = ClusterBoundingBox2D()
-            bbox_msg.min_x, bbox_msg.min_y = float(bbox.get("min", {}).get("x", 0.0)), float(bbox.get("min", {}).get("y", 0.0))
-            bbox_msg.max_x, bbox_msg.max_y = float(bbox.get("max", {}).get("x", 0.0)), float(bbox.get("max", {}).get("y", 0.0))
+            #bbox_msg.min_x, bbox_msg.min_y = float(bbox.get("min", {}).get("x", 0.0)), float(bbox.get("min", {}).get("y", 0.0))
+            #bbox_msg.max_x, bbox_msg.max_y = float(bbox.get("max", {}).get("x", 0.0)), float(bbox.get("max", {}).get("y", 0.0))
+            bbox_msg.min_x, bbox_msg.min_y = 0.0, 0.0
+            bbox_msg.max_x, bbox_msg.max_y = 0.0, 0.0
             out_msg.objects.append(obj_msg)
         return out_msg
 

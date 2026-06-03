@@ -22,7 +22,7 @@ import queue # Built-in library for thread-safe data pipelines
 from ultralytics import YOLO
 
 from yolo11_seg_interfaces.msg import DetectedObjectV3, DetectedObjectV3Array
-from .utils.siglip2_processor_2 import SIGLIPProcessor
+from .utils.siglip2_processor import SIGLIPProcessor
 
 
 # -------------------- CLASS ------------------- #
@@ -49,7 +49,7 @@ class VisionNode(Node):
         self.depth_topic = self.get_parameter('depth_topic').value
         self.enable_vis = bool(self.get_parameter('enable_visualization').value)
         # YOLO parameters
-        self.declare_parameter('model_path', '/workspaces/yoloe-26m-seg.pt')
+        self.declare_parameter('model_path', '/workspaces/yoloe-26l-seg.pt')
         self.declare_parameter('imgsz', 640)
         self.declare_parameter('conf', 0.45)
         self.declare_parameter('iou', 0.35)
@@ -58,7 +58,7 @@ class VisionNode(Node):
         self.conf = float(self.get_parameter('conf').value)
         self.iou = float(self.get_parameter('iou').value)
         # CLIP parameters
-        self.declare_parameter('CLIP_model_name', '/google/siglip2-large-patch16-384') # Default to the Base model for better FPS on Jetson
+        self.declare_parameter('CLIP_model_name', 'google/siglip2-large-patch16-384') # Default to the Base model for better FPS on Jetson
         #self.declare_parameter('CLIP_model_path', '/home/workspace/siglip_vision_pooled_384_fp16.engine') 
         self.declare_parameter('robot_command_file', '/workspaces/ros2_ws/src/yolo11_seg_bringup/config/robot_command.json')
         self.declare_parameter('prompt_check_interval', 5.0)
@@ -89,8 +89,9 @@ class VisionNode(Node):
         self.detection_topic = '/vision/detections'
         self.text_emb_publish_topic = '/vision/text_embedding'
         self.frame_skip = 10
-        self.CLASS_NAMES = ["fridge", "microwave", "cup", "apple", "screwdriver", 
-                            "keyboard", "mouse", "tv", "bottle", "telephone", "laptop"]        
+        self.CLASS_NAMES = ["fridge", "microwave", "oven", "towel", "stove", 
+                            "sink", "toilet", "nightstand", "lamp", "couch", "fireplace", "pillow",
+                            "bed", "table", "chair", "tv", "kitchen island", "dresser", "coffee machine"]        
         goal_class = self._read_goal_from_command_file()
         # If a valid goal class is found in the command file, ensure it's included in CLASS_NAMES for detection.
         if goal_class:
@@ -371,16 +372,7 @@ class VisionNode(Node):
                             all_images = masked_images + unmasked_images
                         else:
                             all_images = masked_images
-                        all_embeddings, clip_step_timing = self.clip.encode_images_batch(all_images, return_timing=True)
-                        self._append_timing_stat('clip_preprocess', clip_step_timing.get('preprocess_ms', 0.0))
-                        self._append_timing_stat('clip_set_shape_and_host_copy', clip_step_timing.get('set_shape_and_host_copy_ms', 0.0))
-                        self._append_timing_stat('clip_htod_enqueue', clip_step_timing.get('htod_enqueue_ms', 0.0))
-                        self._append_timing_stat('clip_inference_enqueue', clip_step_timing.get('inference_enqueue_ms', 0.0))
-                        self._append_timing_stat('clip_inference_host_call_only', clip_step_timing.get('inference_host_call_only_ms', 0.0))
-                        self._append_timing_stat('clip_dtoh_enqueue', clip_step_timing.get('dtoh_enqueue_ms', 0.0))
-                        self._append_timing_stat('clip_stream_sync', clip_step_timing.get('stream_sync_ms', 0.0))
-                        self._append_timing_stat('clip_postprocess', clip_step_timing.get('postprocess_ms', 0.0))
-                        self._append_timing_stat('clip_total_internal', clip_step_timing.get('total_ms', 0.0))
+                        all_embeddings = self.clip.encode_images_batch(all_images)
                         if self.compute_unmasked_embeddings:
                             half_idx = len(masked_images)
                             masked_embeddings = all_embeddings[:half_idx]
@@ -402,8 +394,7 @@ class VisionNode(Node):
                         clip_time = (perf_counter() - clip_start) * 1000
                         self.timing_stats['clip_encoding'].append(clip_time)
                         self.get_logger().info(
-                            f"SigLIP encoding completed: processed={pair_count}/{len(batch_queue)} crops in {clip_time:.2f}ms "
-                            f"(inference_host_call_only={clip_step_timing.get('inference_host_call_only_ms', 0.0):.3f}ms)",
+                            f"SigLIP encoding completed: processed={pair_count}/{len(batch_queue)} crops in {clip_time:.2f}ms ",
                             throttle_duration_sec=2.0,
                         )
                     except Exception as e:
