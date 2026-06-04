@@ -9,7 +9,6 @@ from rclpy.node import Node
 from sensor_msgs.msg import Image
 from std_msgs.msg import Float32MultiArray
 from rclpy.qos import QoSProfile, HistoryPolicy, ReliabilityPolicy, DurabilityPolicy
-
 import torch
 import cv2
 import numpy as np
@@ -17,10 +16,8 @@ from cv_bridge import CvBridge
 import json
 import threading
 from time import perf_counter
-import queue # Built-in library for thread-safe data pipelines
-
+import queue 
 from ultralytics import YOLO
-
 from yolo11_seg_interfaces.msg import DetectedObjectV3, DetectedObjectV3Array
 from .utils.siglip2_processor import SIGLIPProcessor
 
@@ -59,7 +56,6 @@ class VisionNode(Node):
         self.iou = float(self.get_parameter('iou').value)
         # CLIP parameters
         self.declare_parameter('CLIP_model_name', 'google/siglip2-large-patch16-384') # Default to the Base model for better FPS on Jetson
-        #self.declare_parameter('CLIP_model_path', '/home/workspace/siglip_vision_pooled_384_fp16.engine') 
         self.declare_parameter('robot_command_file', '/workspaces/ros2_ws/src/yolo11_seg_bringup/config/robot_command.json')
         self.declare_parameter('prompt_check_interval', 5.0)
         self.declare_parameter('masked_score_weight', 0.85)
@@ -71,7 +67,6 @@ class VisionNode(Node):
         self.declare_parameter('annotated_font_size', 0.6)
         self.declare_parameter('annotated_line_width', 1)
         self.CLIP_model_name = self.get_parameter('CLIP_model_name').value
-        #self.CLIP_model_path = self.get_parameter('CLIP_model_path').value
         self.robot_command_file = self.get_parameter('robot_command_file').value
         self.prompt_check_interval = float(self.get_parameter('prompt_check_interval').value)
         self.masked_score_weight = float(self.get_parameter('masked_score_weight').value)
@@ -109,26 +104,15 @@ class VisionNode(Node):
                 "No valid goal found in robot_command.json. Using default CLASS_NAMES."
             )
         # Load YOLO model
-        self.get_logger().info(f"Loading YOLO model: {self.model_path}")
         self.model = YOLO(self.model_path, task='segment')
         self.model.set_classes(self.CLASS_NAMES)
-        self.get_logger().info(f"YOLO classes set to: {self.CLASS_NAMES}")
         # Load CLIP model
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.get_logger().info(f"Loading CLIP model on device: {self.device}\n")
         self.clip = SIGLIPProcessor(
             #engine_path=self.CLIP_model_path,
             model_name=self.CLIP_model_name,
             masked_score_weight=self.masked_score_weight,
             unmasked_score_weight=self.unmasked_score_weight,
-        )
-        self.get_logger().info(
-            "CLIP blend weights normalized to: "
-            f"masked={self.clip.masked_score_weight:.2f}, "
-            f"unmasked={self.clip.unmasked_score_weight:.2f}"
-        )
-        self.get_logger().info(
-            f"Unmasked embedding computation enabled: {self.compute_unmasked_embeddings}"
         )
         # CV bridge and camera intrinsics placeholders.
         self.bridge = CvBridge()
@@ -151,8 +135,6 @@ class VisionNode(Node):
             self.depth_callback,
             qos_profile=qos_sensor,
         )
-        self.get_logger().info(f"Subscribed to: {self.image_topic}")
-        self.get_logger().info(f"Subscribed to depth: {self.depth_topic}")
         # Publishers    
         self.detections_pub = self.create_publisher(DetectedObjectV3Array, self.detection_topic, 10)
         self.text_emb_pub = self.create_publisher(Float32MultiArray, self.text_emb_publish_topic, 10)
@@ -175,22 +157,11 @@ class VisionNode(Node):
                 f"class='{self.paper_capture_class}', interval={self.paper_capture_interval_sec:.1f}s, "
                 f"dir='{self.paper_images_output_dir}'"
             )
-        else:
-            self.get_logger().info("Paper image capture is disabled by parameter 'enable_paper_capture'.")
         # Timing instrumentation
         self.timing_stats = {
             'yolo_inference': [],
             'detections_processing': [],
             'clip_encoding': [],
-            'clip_preprocess': [],
-            'clip_set_shape_and_host_copy': [],
-            'clip_htod_enqueue': [],
-            'clip_inference_enqueue': [],
-            'clip_inference_host_call_only': [],
-            'clip_dtoh_enqueue': [],
-            'clip_stream_sync': [],
-            'clip_postprocess': [],
-            'clip_total_internal': [],
             'publishing': [],
             'total_frame': []
         }
@@ -198,7 +169,6 @@ class VisionNode(Node):
         # Initialize the prompt immediately on startup
         self._load_clip_prompt()
         self.command_timer = self.create_timer(self.prompt_check_interval, self._timer_publish_embedding)
-
         # Pipeline Parallelism Setup
         self.inference_queue = queue.Queue(maxsize=2)
         self.worker_thread = threading.Thread(target=self.clip_worker_loop, daemon=True)
@@ -213,21 +183,12 @@ class VisionNode(Node):
         RGB callback.
         """
         input_stamp = rgb_msg.header.stamp
-        self.get_logger().info(
-            f"[rgb_callback] input_rgb_stamp={input_stamp.sec}.{input_stamp.nanosec:09d} "
-            f"frame_id='{rgb_msg.header.frame_id}' size={rgb_msg.width}x{rgb_msg.height}",
-            throttle_duration_sec=2.0,
-        )
         self.process_frame(rgb_msg)
 
     def depth_callback(self, depth_msg: Image):
         """Cache the most recent aligned depth frame for paper-capture exports."""
         with self.depth_state_lock:
             self.latest_depth_msg = depth_msg
-        self.get_logger().debug(
-            f"[depth_callback] stamp={depth_msg.header.stamp.sec}.{depth_msg.header.stamp.nanosec:09d} "
-            f"frame_id='{depth_msg.header.frame_id}' encoding='{depth_msg.encoding}' size={depth_msg.width}x{depth_msg.height}"
-        )
    
     # --------------- Main Methods ------------- #
 
@@ -241,7 +202,6 @@ class VisionNode(Node):
             # Convert ROS Image to OpenCV BGR frame.
             cv_bgr = self.bridge.imgmsg_to_cv2(rgb_msg, desired_encoding='bgr8')
             height, width, channel = cv_bgr.shape
-            print(height, width, channel)
             # ======== YOLO inference ======== #
             yolo_start = perf_counter()
             results = self.model.track(
@@ -274,7 +234,6 @@ class VisionNode(Node):
                 vis_msg = self.bridge.cv2_to_imgmsg(annotated_frame, encoding="bgr8")
                 vis_msg.header = rgb_msg.header
                 self.vis_pub.publish(vis_msg)
-                self.get_logger().info(f"Published annotated image (frame {self.frame_count})", throttle_duration_sec=2.0)
             # Record end-to-end latency for successful frames.
             total_time = (perf_counter() - frame_start) * 1000
             self.timing_stats['total_frame'].append(total_time)
@@ -293,10 +252,12 @@ class VisionNode(Node):
 
         # Move detection tensors from GPU to CPU NumPy arrays for geometric processing.
         gpu_transfer_start = perf_counter()
-        xyxy = res.boxes.xyxy.cpu().numpy()
-        clss = res.boxes.cls.cpu().numpy().astype(int)
-        confs = res.boxes.conf.cpu().numpy() if res.boxes.conf is not None else np.zeros(len(clss), dtype=float)
-        ids = res.boxes.id.cpu().numpy().astype(int) if res.boxes.id is not None else np.arange(len(clss))
+        r = res.cpu() 
+        xyxy = r.boxes.xyxy.numpy()
+        clss = r.boxes.cls.numpy().astype(int)
+        confs = r.boxes.conf.numpy() if r.boxes.conf is not None else np.zeros(len(clss))
+        ids = r.boxes.id.numpy().astype(int) if r.boxes.id is not None else np.arange(len(clss))
+        masks_np = r.masks.data.numpy() if getattr(r, "masks", None) is not None else None
         names = np.array([res.names[c] for c in clss])
         # Transfer all masks at once
         if hasattr(res, 'masks') and res.masks is not None:
@@ -304,7 +265,6 @@ class VisionNode(Node):
         else:
             masks_np = None
         gpu_transfer_time = (perf_counter() - gpu_transfer_start) * 1000
-        self.get_logger().debug(f"GPU-to-CPU transfer: {gpu_transfer_time:.2f}ms")
         # Per-frame containers: all detections and CLIP candidates for batch inference.
         frame_detections = []
         batch_queue = []
@@ -334,7 +294,6 @@ class VisionNode(Node):
                 batch_queue.append(det_entry)
         det_proc_time = (perf_counter() - det_process_start) * 1000
         self.timing_stats['detections_processing'].append(det_proc_time)
-        self.get_logger().debug(f"Detection processing ({len(frame_detections)} detections): {det_proc_time:.2f}ms")
 
         if capture_due:
             self._maybe_save_paper_images(frame_detections, cv_bgr, res)
@@ -351,7 +310,6 @@ class VisionNode(Node):
             self.inference_queue.put(payload, block=False)
         except queue.Full:
             self.get_logger().warn("SigLIP pipeline full. Dropping frame to maintain latency.", throttle_duration_sec=1.0)
-
 
     def clip_worker_loop(self):
         while True:
@@ -393,10 +351,6 @@ class VisionNode(Node):
                                 batch_queue[i]["masked_crop"] = None
                         clip_time = (perf_counter() - clip_start) * 1000
                         self.timing_stats['clip_encoding'].append(clip_time)
-                        self.get_logger().info(
-                            f"SigLIP encoding completed: processed={pair_count}/{len(batch_queue)} crops in {clip_time:.2f}ms ",
-                            throttle_duration_sec=2.0,
-                        )
                     except Exception as e:
                         self.get_logger().error(f"Batch SigLIP inference failed: {e}")
 
@@ -407,7 +361,6 @@ class VisionNode(Node):
                 self.publish_custom_detections(frame_detections, header)
                 pub_time = (perf_counter() - pub_start) * 1000
                 self.timing_stats['publishing'].append(pub_time)
-                self.get_logger().debug(f"Publishing: {pub_time:.2f}ms")
 
             except Exception as e:
                 self.get_logger().error(f"Background SigLIP Error: {e}")
@@ -416,7 +369,6 @@ class VisionNode(Node):
                 self.inference_queue.task_done()
                 pub_time = (perf_counter() - pub_start) * 1000
                 self.timing_stats['publishing'].append(pub_time)
-                self.get_logger().debug(f"Publishing: {pub_time:.2f}ms")
 
     def process_single_detection(self, idx, bbox, class_id, class_name, instance_id, confidence, masks_np,
                                  cv_bgr,
@@ -444,8 +396,7 @@ class VisionNode(Node):
         # 1. Convert to uint8 immediately at the small resolution
         mask_uint8_small = (m > 0.5).astype(np.uint8) * 255
         
-        # 2. ERODE THE SMALL MASK (Lightning Fast)
-        # We drop iterations to 1 because eroding a small image has a much larger relative effect
+        # 2. ERODE THE SMALL MASK
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
         eroded_small = cv2.erode(mask_uint8_small, kernel, iterations=1)
         
@@ -519,10 +470,6 @@ class VisionNode(Node):
             if str(det.get("object_name", "")).strip().lower() == target_class.lower()
         ]
         if not matching:
-            self.get_logger().info(
-                f"Paper capture due: saved {saved}. No detection for class '{target_class}' in this frame.",
-                throttle_duration_sec=2.0,
-            )
             self.last_paper_capture_time = perf_counter()
             return
 
@@ -552,10 +499,6 @@ class VisionNode(Node):
             saved.append("masked_crop")
 
         self.last_paper_capture_time = perf_counter()
-        self.get_logger().info(
-            f"Saved paper images for class '{target_class}' (instance_id={selected.get('instance_id')}) "
-            f"to '{self.paper_images_output_dir}'. Files: {saved}"
-        )
 
     def _save_latest_depth_images(self):
         """Save latest aligned depth frame in raw and visualized forms for paper captures."""
@@ -633,7 +576,6 @@ class VisionNode(Node):
             gain = target / p95
             gain = float(np.clip(gain, 1.0, 20.0))
             bright = np.clip(depth_mm_u16.astype(np.float32) * gain, 0.0, 65535.0).astype(np.uint16)
-            self.get_logger().debug(f"Depth export brightness gain applied: {gain:.2f}")
             return bright
         except Exception as e:
             self.get_logger().warn(f"Failed brightening uint16 depth export: {e}")
@@ -718,10 +660,7 @@ class VisionNode(Node):
             with self.clip_state_lock:
                 self.current_clip_prompt = prompt_key
                 self.goal_text_embedding = new_embedding
-            self.get_logger().info(
-                f"Updated SigLIP prompt from robot_command clip_prompts: '{prompt_key}'",
-                throttle_duration_sec=2.0,
-            )
+
         except Exception as e:
             self.get_logger().error(f"Error loading robot_command siglip prompt: {e}")
 
@@ -792,11 +731,6 @@ class VisionNode(Node):
         array_msg = DetectedObjectV3Array()
         array_msg.header.stamp = header.stamp
         array_msg.header.frame_id = header.frame_id
-        self.get_logger().info(
-            f"[publish_detections] output_stamp={array_msg.header.stamp.sec}.{array_msg.header.stamp.nanosec:09d} "
-            f"frame_id='{array_msg.header.frame_id}' count={len(detections)}",
-            throttle_duration_sec=2.0,
-        )
         published_rows = []
         sim_comp_print = False
         for det in detections:

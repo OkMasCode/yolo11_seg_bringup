@@ -5,10 +5,13 @@ from typing import List
 import cv2
 import numpy as np
 import rclpy
+import tf2_ros
+from tf2_ros import TransformException
 from cv_bridge import CvBridge
 from geometry_msgs.msg import Vector3
 from nav_msgs.msg import OccupancyGrid
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, QoSDurabilityPolicy, QoSReliabilityPolicy
 from sensor_msgs.msg import Image, PointCloud2
 from sensor_msgs_py import point_cloud2
 
@@ -20,6 +23,7 @@ from yolo11_seg_interfaces.msg import (
 )
 
 from yolo11_seg_interfaces.srv import GetRoomWaypoint
+from yolo11_seg_interfaces.srv import GetApproachPose
 
 class ClusteredMapPreprocPublisherNode(Node):
     def __init__(self) -> None:
@@ -27,76 +31,214 @@ class ClusteredMapPreprocPublisherNode(Node):
         self.declare_parameter("output_clustered_map_file", "/workspaces/ros2_ws/src/yolo11_seg_bringup/config/clustered_map_v6.json")
         self.declare_parameter("output_topic", "/vision/clustered_map_v6")
         self.declare_parameter("input_topic", "/vision/semantic_map_v5")
-        self.declare_parameter("pointcloud_topic", "/vision/semantic_map_v5/points")
         self.declare_parameter("visualization_topic", "/vision/clustered_map_vis")
         self.declare_parameter("frame_id", "map")
         self.declare_parameter("publish_rate_hz", 0.5)
-        # --- TUNING PARAMETERS ---
-        self.declare_parameter("dist_thresh_multiplier", 0.4)
+        self.declare_parameter("dist_thresh_multiplier", 0.37)
         self.declare_parameter("wall_search_radius_px", 10) 
-        # Dilation kernel size. Since pointclouds have gaps between points, 
-        # we dilate the footprint by this many pixels to create a solid eraser stamp.
-        # 5 pixels * 0.05m = ~25cm dilation.
-        self.declare_parameter("pc_dilation_px", 8) 
+        self.declare_parameter("min_radius", 0.1)
+        self.declare_parameter("max_radius", 2.5)
+        self.declare_parameter("radius_step", 0.05)
+        self.declare_parameter("angle_step_deg", 5.0)
+        self.declare_parameter("free_threshold", 0)
         self.declare_parameter("enable_object_removal", True)
         self.output_clustered_map_file = str(self.get_parameter("output_clustered_map_file").value)
         self.output_topic = str(self.get_parameter("output_topic").value)
         self.input_topic = str(self.get_parameter("input_topic").value)
-        self.pc_topic = str(self.get_parameter("pointcloud_topic").value)
         self.vis_topic = str(self.get_parameter("visualization_topic").value)
         self.frame_id = str(self.get_parameter("frame_id").value)
         self.publish_rate_hz = float(self.get_parameter("publish_rate_hz").value)
         self.enable_object_removal = bool(self.get_parameter("enable_object_removal").value)
-
+        self.min_radius = float(self.get_parameter("min_radius").value)
+        self.max_radius = float(self.get_parameter("max_radius").value)
+        self.radius_step = float(self.get_parameter("radius_step").value)
+        self.angle_step_deg = float(self.get_parameter("angle_step_deg").value)
+        self.free_threshold = int(self.get_parameter("free_threshold").value)
         # State Variables
         self.latest_map_msg = None
+        self.latest_costmap_msg = None
         self.latest_semantic_msg = None
-        self.latest_pc_msg = None
+        self.local_semantic_map = SemanticObjectArray()
         self.room_markers = None
+        self.map_info = None
+        self.room_assignments: dict = {}  # object_id → room_id
         self.bridge = CvBridge()
         # Subscribers
         self.map_sub = self.create_subscription(OccupancyGrid, "/map", self._map_callback, 10)
+        self.costmap_sub = self.create_subscription(OccupancyGrid, "/costmap", self._costmap_callback, 10)
         self.semantic_sub = self.create_subscription(SemanticObjectArray, self.input_topic, self._semantic_callback, 10)
-        self.pc_sub = self.create_subscription(PointCloud2, self.pc_topic, self._pc_callback, 10)
         # Publishers
         self.publisher = self.create_publisher(ClusteredMapObjectArray, self.output_topic, 10)
         self.vis_pub = self.create_publisher(Image, self.vis_topic, 10)
-        # The Processing Loop
-        self.timer = self.create_timer(1.0 / self.publish_rate_hz, self._process_publish_cycle)
+        # Latched (TRANSIENT_LOCAL) so RViz's Map display — which uses transient-local
+        # durability by default — receives the last grid even if it subscribes late.
+        map_qos = QoSProfile(
+            depth=1,
+            durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+            reliability=QoSReliabilityPolicy.RELIABLE,
+        )
+        self.room_grid_pub = self.create_publisher(OccupancyGrid, "/vision/clustered_map_grid", map_qos)
+        # Publishing loop (always runs, reads from JSON file)
+        self.process_timer = self.create_timer(1.0 / self.publish_rate_hz, self._process_cycle)
+        self.publish_timer = self.create_timer(1.0 / self.publish_rate_hz, self._publish_cycle)
         # Create the ROS2 Service Server
         self.waypoint_service = self.create_service(
             GetRoomWaypoint, 
             '/vision/get_room_waypoint', 
             self._waypoint_service_callback
         )
+        self.approach_service = self.create_service(
+            GetApproachPose,
+            '/vision/get_approach_pose',
+            self._approach_service_callback
+        )
+        self.tf_buffer = tf2_ros.Buffer()
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
         self.get_logger().info("[DEBUG] Waypoint Service Server is ready.")
         self.get_logger().info(f"[DEBUG] PointCloud Semantic Masking Node started at {self.publish_rate_hz} Hz.")
 
     def _map_callback(self, msg: OccupancyGrid):
         self.latest_map_msg = msg
 
+    def _costmap_callback(self, msg: OccupancyGrid):
+        self.latest_costmap_msg = msg
+
     def _semantic_callback(self, msg: SemanticObjectArray):
         self.latest_semantic_msg = msg
-
-    def _pc_callback(self, msg: PointCloud2):
-        self.latest_pc_msg = msg
 
     def _waypoint_service_callback(self, request, response):
         """Called whenever the C++ BT Node requests a safe point."""
         room_id = request.room_id
+        # Log / print that the service was invoked
         self.get_logger().info(f"BT Node requested waypoint for Room {room_id}")
+        print(f"GetRoomWaypoint service called for Room {room_id}")
         # Use the erosion logic to get 1 safe point
         safe_points = self.generate_exploration_waypoints(target_room_id=room_id, num_waypoints=1)
         if not safe_points:
             self.get_logger().error(f"Failed to generate a safe point for Room {room_id}!")
             response.success = False
             return response
+        # Log the generated waypoint coordinates
+        wp_x = float(safe_points[0][0])
+        wp_y = float(safe_points[0][1])
+        self.get_logger().info(f"Generated waypoint for Room {room_id}: x={wp_x:.3f}, y={wp_y:.3f}")
+        print(f"Generated waypoint for Room {room_id}: x={wp_x:.3f}, y={wp_y:.3f}")
         # Pack the response
         response.success = True
-        response.waypoint.x = float(safe_points[0][0])
-        response.waypoint.y = float(safe_points[0][1])
+        response.waypoint.x = wp_x
+        response.waypoint.y = wp_y
         response.waypoint.z = 0.0
         return response
+
+    def _approach_service_callback(self, request, response):
+        if self.latest_map_msg is None or self.room_markers is None or self.map_info is None:
+            self.get_logger().error("Cannot compute approach pose: room segmentation or map is not ready.")
+            response.success = False
+            return response
+
+        goal_pose = request.goal_pose
+        start_pose = request.start_pose
+        object_room_id = int(request.room_id)
+        goal_x = float(goal_pose.pose.position.x)
+        goal_y = float(goal_pose.pose.position.y)
+        robot_x = float(start_pose.pose.position.x)
+        robot_y = float(start_pose.pose.position.y)
+        self.get_logger().info(f"BT Node requested approach pose for the goal in Room {object_room_id}")
+
+        min_radius = float(self.min_radius)
+        max_radius = float(self.max_radius)
+        radius_step = float(self.radius_step)
+        angle_step_deg = float(self.angle_step_deg)
+        free_threshold = int(self.free_threshold)
+
+        if min_radius < 0.0 or max_radius < min_radius or radius_step <= 0.0 or angle_step_deg <= 0.0:
+            self.get_logger().error("Invalid approach pose sampling parameters.")
+            response.success = False
+            return response
+
+        # Sort angles so the direction goal→robot is sampled first, expanding outward.
+        # This makes the first valid hit the most natural approach direction.
+        base_angle = np.arctan2(robot_y - goal_y, robot_x - goal_x)
+        raw_angles = np.deg2rad(np.arange(0.0, 360.0, angle_step_deg))
+        sorted_angles = sorted(
+            raw_angles,
+            key=lambda a: abs(((a - base_angle + np.pi) % (2 * np.pi)) - np.pi)
+        )
+
+        best_pose = None
+        for radius in np.arange(min_radius, max_radius + 1e-6, radius_step):
+            for angle_rad in sorted_angles:
+                cx = goal_x + radius * float(np.cos(angle_rad))
+                cy = goal_y + radius * float(np.sin(angle_rad))
+                if not self._point_in_room(cx, cy, object_room_id):
+                    continue
+                if not self.isFree(self.latest_costmap_msg, cx, cy, free_threshold):
+                    continue
+                best_pose = (cx, cy)
+                break
+            if best_pose is not None:
+                break
+
+        if best_pose is None:
+            self.get_logger().warn("No valid approach pose found inside the goal room.")
+            response.success = False
+            return response
+
+        approach_x, approach_y = best_pose
+        yaw = float(np.arctan2(goal_y - approach_y, goal_x - approach_x))
+
+        response.success = True
+        response.approach_pose.pose.position.x = float(approach_x)
+        response.approach_pose.pose.position.y = float(approach_y)
+        response.approach_pose.pose.position.z = 0.0
+        response.approach_pose.pose.orientation.x = 0.0
+        response.approach_pose.pose.orientation.y = 0.0
+        response.approach_pose.pose.orientation.z = float(np.sin(yaw * 0.5))
+        response.approach_pose.pose.orientation.w = float(np.cos(yaw * 0.5))
+        return response
+
+    def _room_id_at_world(self, wx: float, wy: float) -> int:
+        """Return the watershed room label at world coordinates, or 1 (background sentinel) if invalid."""
+        if self.room_markers is None or self.map_info is None:
+            return 1
+        res = float(self.map_info.resolution)
+        if res <= 0.0:
+            return 1
+        ox = float(self.map_info.origin.position.x)
+        oy = float(self.map_info.origin.position.y)
+        px = int((wx - ox) / res)
+        py = int((wy - oy) / res)
+        h, w = self.room_markers.shape
+        if px < 0 or py < 0 or px >= w or py >= h:
+            return 1
+        return int(self.room_markers[py, px])
+
+    def isFree(self, map_msg: OccupancyGrid, wx: float, wy: float, threshold: int = 0) -> bool:
+        """Return True if the occupancy grid cell at world (wx, wy) has value == threshold (0 = free)."""
+        info = map_msg.info
+        px = int((wx - info.origin.position.x) / info.resolution)
+        py = int((wy - info.origin.position.y) / info.resolution)
+        if px < 0 or py < 0 or px >= info.width or py >= info.height:
+            return False
+        return map_msg.data[py * info.width + px] == threshold
+
+    def _point_in_room(self, wx: float, wy: float, room_id: int) -> bool:
+        if self.room_markers is None or self.map_info is None:
+            return False
+
+        res = float(self.map_info.resolution)
+        if res <= 0.0:
+            return False
+
+        origin_x = float(self.map_info.origin.position.x)
+        origin_y = float(self.map_info.origin.position.y)
+        px = int((wx - origin_x) / res)
+        py = int((wy - origin_y) / res)
+
+        if px < 0 or py < 0 or py >= self.room_markers.shape[0] or px >= self.room_markers.shape[1]:
+            return False
+
+        return int(self.room_markers[py, px]) == int(room_id)
 
     def generate_exploration_waypoints(self, target_room_id: int, num_waypoints: int = 5) -> list:
         """
@@ -145,105 +287,69 @@ class ClusteredMapPreprocPublisherNode(Node):
             waypoints_metric.append((metric_x, metric_y))
         return waypoints_metric
 
-    def _process_publish_cycle(self):
-        # We need all three data streams to do this properly
-        if self.latest_map_msg is None or self.latest_semantic_msg is None or self.latest_pc_msg is None:
-            return 
-        if not self.latest_semantic_msg.objects:
-            return 
-        # Setup Base Map
+    def _process_cycle(self):
+        if self.latest_map_msg is None:
+            return
+        # Room segmentation only needs the map — compute it regardless of semantic messages
         map_info = self.latest_map_msg.info
+        self.map_info = map_info
         width, height = map_info.width, map_info.height
-        res = map_info.resolution
-        orig_x = map_info.origin.position.x
-        orig_y = map_info.origin.position.y
         grid = np.array(self.latest_map_msg.data, dtype=np.int8).reshape((height, width))
         free_space = np.zeros_like(grid, dtype=np.uint8)
-        free_space[grid == 0] = 255 
-        # Optional POINTCLOUD MASKING (High-Precision Eraser)
-        # Toggle with parameter: enable_object_removal
-        if self.enable_object_removal:
-            # We only extract 'x' and 'y' to save processing time
-            generator = point_cloud2.read_points(self.latest_pc_msg, field_names=("x", "y"), skip_nans=True)
-            # FIX: Force strict unpacking into a list of basic floats so numpy doesn't get confused
-            pts_list = [[float(pt[0]), float(pt[1])] for pt in generator]
-            if pts_list:
-                # Explicitly cast to a 32-bit float matrix. This guarantees a 2D shape (N, 2).
-                pts_arr = np.array(pts_list, dtype=np.float32)
-                # Vectorized coordinate conversion: Metric -> Pixel
-                pxs = ((pts_arr[:, 0] - orig_x) / res).astype(np.int32)
-                pys = ((pts_arr[:, 1] - orig_y) / res).astype(np.int32)
-                # Vectorized bounds checking to drop points outside the map
-                valid_mask = (pxs >= 0) & (pxs < width) & (pys >= 0) & (pys < height)
-                pxs = pxs[valid_mask]
-                pys = pys[valid_mask]
-                # Create a blank mask and stamp the points onto it
-                pc_mask = np.zeros_like(free_space, dtype=np.uint8)
-                pc_mask[pys, pxs] = 255
-                # Dilate the mask. Pointclouds have gaps. Dilation melts the points together
-                # into a solid blob to ensure the object is completely erased.
-                dilation_px = int(self.get_parameter("pc_dilation_px").value)
-                # Using an ellipse kernel prevents unnatural square corners
-                kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (dilation_px, dilation_px))
-                solid_mask = cv2.dilate(pc_mask, kernel, iterations=1)
-                # ERASE: Overwrite the map's free space wherever our solid mask is white
-                free_space[solid_mask == 255] = 255
-        # Distance Transform & Watershed on the CLEANED map
+        free_space[grid == 0] = 255
         dist_transform = cv2.distanceTransform(free_space, cv2.DIST_L2, 5)
         thresh_mult = self.get_parameter("dist_thresh_multiplier").value
         _, room_seeds = cv2.threshold(dist_transform, thresh_mult * dist_transform.max(), 255, 0)
         room_seeds = np.uint8(room_seeds)
         _, markers = cv2.connectedComponents(room_seeds)
-        markers = markers + 1 # Background is 1
+        markers = markers + 1
         unknown = cv2.subtract(free_space, room_seeds)
         markers[unknown == 255] = 0
         img_color = cv2.cvtColor(free_space, cv2.COLOR_GRAY2BGR)
         cv2.watershed(img_color, markers)
         self.room_markers = markers
         self._publish_visualization(markers, width, height, map_info)
-        # Object Assignment
+        self._publish_room_grid(markers, map_info)
+        # Cluster assignment requires semantic messages — skip if mapper is not running
+        if self.latest_semantic_msg is None or not self.latest_semantic_msg.objects:
+            return
         self._cluster_and_publish_objects(map_info)
 
     def _cluster_and_publish_objects(self, map_info):
-        """Looks up the room ID for each object and publishes the JSON/ROS Msg."""
-        res = map_info.resolution
-        orig_x = map_info.origin.position.x
-        orig_y = map_info.origin.position.y
-        height, width = self.room_markers.shape
-        search_radius = self.get_parameter("wall_search_radius_px").value
-        labels, coords, obj_ids, names, similarities = [], [], [], [], []
+        """Assigns room IDs to new objects via robot pose at detection time, then publishes all accumulated objects."""
+        # --- Process only NEW objects ---
+        existing_ids = {o.object_id for o in self.local_semantic_map.objects}
         for obj in self.latest_semantic_msg.objects:
-            x, y, z = obj.pose_map.x, obj.pose_map.y, obj.pose_map.z
-            px = int((x - orig_x) / res)
-            py = int((y - orig_y) / res)
-            if 0 <= px < width and 0 <= py < height:
-                room_id = self._get_nearest_valid_room(px, py, width, height, search_radius)
-                labels.append(room_id)
-            else:
-                labels.append(-1)
-            coords.append([x, y, z])
+            if obj.object_id in existing_ids:
+                continue
+            room_id = self._get_current_room_id(obj.timestamp)
+            self.room_assignments[obj.object_id] = room_id
+            self.local_semantic_map.objects.append(obj)
+
+        # --- Build output from ALL accumulated objects ---
+        if not self.local_semantic_map.objects:
+            return
+
+        labels, coords, obj_ids, names, similarities = [], [], [], [], []
+        for obj in self.local_semantic_map.objects:
             obj_ids.append(obj.object_id)
             names.append(obj.name)
+            coords.append([obj.pose_map.x, obj.pose_map.y, obj.pose_map.z])
+            labels.append(self.room_assignments.get(obj.object_id, -1))
             similarities.append(obj.similarity)
-        # Generate Clusters
-        X = np.array(coords)
+
         labels = np.array(labels)
         unique_labels = sorted(set(labels.tolist()))
         centroid_by_label = {}
         for lbl in unique_labels:
-            indices = np.where(labels == lbl)[0]
             centroid = self.generate_exploration_waypoints(target_room_id=lbl, num_waypoints=1)
             if not centroid:
                 self.get_logger().error(f"Failed to generate a safe point for Room {lbl}!")
-                # Provide a fallback zero-coordinate if generation fails
                 centroid_by_label[int(lbl)] = {"x": 0.0, "y": 0.0, "z": 0.0}
             else:
-                # centroid is a list of tuples containing (x, y). 
-                # We access the first tuple at index 0, then the x [0] and y [1] values.
-                # Since 2D maps have no Z, we safely set it to 0.0
                 centroid_by_label[int(lbl)] = {
-                    "x": float(centroid[0][0]), 
-                    "y": float(centroid[0][1]), 
+                    "x": float(centroid[0][0]),
+                    "y": float(centroid[0][1]),
                     "z": 0.0
                 }
         final_output = []
@@ -255,19 +361,33 @@ class ClusteredMapPreprocPublisherNode(Node):
             })
         if self.output_clustered_map_file:
             self._write_map_to_file(final_output, self.output_clustered_map_file)
-        out_msg = self._to_msg(final_output)
+
+    def _publish_cycle(self):
+        """Reads the clustered map JSON and publishes it. Runs independently of semantic messages."""
+        if not self.output_clustered_map_file:
+            return
+        path = Path(self.output_clustered_map_file)
+        if not path.exists():
+            return
+        try:
+            with path.open("r", encoding="utf-8") as f:
+                clustered_map = json.load(f)
+        except Exception as exc:
+            self.get_logger().error(f"Failed reading clustered map json: {exc}")
+            return
+        out_msg = self._to_msg(clustered_map)
         self.publisher.publish(out_msg)
 
-    def _get_nearest_valid_room(self, px: int, py: int, width: int, height: int, max_radius: int) -> int:
-        if self.room_markers[py, px] > 1: return self.room_markers[py, px]
-        for r in range(1, max_radius + 1):
-            for dx in range(-r, r + 1):
-                for dy in range(-r, r + 1):
-                    if abs(dx) == r or abs(dy) == r:
-                        nx, ny = px + dx, py + dy
-                        if 0 <= nx < width and 0 <= ny < height and self.room_markers[ny, nx] > 1:
-                            return self.room_markers[ny, nx]
-        return 1 
+    def _get_current_room_id(self, timestamp) -> int:
+        try:
+            t = self.tf_buffer.lookup_transform('map','base_link', timestamp)
+            robot_x = t.transform.translation.x
+            robot_y = t.transform.translation.y
+            robot_room_id = self._room_id_at_world(robot_x, robot_y)
+            return robot_room_id
+        except TransformException as e:
+            self.get_logger().warn(f'Could not get robot pose: {e}')
+            return -1   
 
     def _publish_visualization(self, markers, width, height, map_info):
         vis_img = np.zeros((height, width, 3), dtype=np.uint8)
@@ -279,10 +399,44 @@ class ClusteredMapPreprocPublisherNode(Node):
                 vis_img[markers == marker] = self._room_color(int(marker))
         self.vis_pub.publish(self.bridge.cv2_to_imgmsg(vis_img, encoding="bgr8"))
 
+    def _publish_room_grid(self, markers, map_info) -> None:
+        """Publish the watershed room segmentation as a nav_msgs/OccupancyGrid.
+
+        Each room gets a distinct cell value spread across 1..98 so RViz's Map
+        display (with the 'costmap' color scheme) renders each room a different
+        color. Walls/boundaries -> 100 (lethal), background -> -1 (unknown).
+        """
+        # Real rooms are every marker except -1 (watershed boundary) and 1 (background).
+        room_labels = sorted(int(m) for m in np.unique(markers) if m not in (-1, 1))
+
+        # Map each room label to an evenly spaced value in [1, 98] for distinct hues.
+        if room_labels:
+            n = len(room_labels)
+            label_to_value = {
+                lbl: int(1 + round(97 * i / max(n - 1, 1)))
+                for i, lbl in enumerate(room_labels)
+            }
+        else:
+            label_to_value = {}
+
+        data = np.full(markers.shape, -1, dtype=np.int8)   # background / unknown
+        data[markers == -1] = 100                          # walls / boundaries
+        for lbl, value in label_to_value.items():
+            data[markers == lbl] = value
+
+        grid = OccupancyGrid()
+        grid.header.stamp = self.get_clock().now().to_msg()
+        grid.header.frame_id = self.frame_id
+        grid.info = map_info
+        grid.data = data.flatten().tolist()
+        self.room_grid_pub.publish(grid)
+
     @staticmethod
     def _room_color(marker: int) -> tuple:
-        np.random.seed(marker)
-        return tuple(int(value) for value in np.random.randint(50, 255, size=3))
+        # Local RNG so room colors stay stable per marker WITHOUT reseeding the
+        # global numpy RNG (which generate_exploration_waypoints relies on).
+        rng = np.random.default_rng(marker)
+        return tuple(int(value) for value in rng.integers(50, 255, size=3))
 
     def _write_map_to_file(self, clustered_map: List[dict], file_path: str) -> None:
         try:
