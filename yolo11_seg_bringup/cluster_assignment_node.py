@@ -318,9 +318,15 @@ class ClusteredMapPreprocPublisherNode(Node):
     def _cluster_and_publish_objects(self, map_info):
         """Assigns room IDs to new objects via robot pose at detection time, then publishes all accumulated objects."""
         # --- Process only NEW objects ---
-        existing_ids = {o.object_id for o in self.local_semantic_map.objects}
+        existing_by_id = {o.object_id: o for o in self.local_semantic_map.objects}
         for obj in self.latest_semantic_msg.objects:
-            if obj.object_id in existing_ids:
+            if obj.object_id in existing_by_id:
+                # Already tracked: keep the original room assignment (robot's room at
+                # detection time) but refresh fields that keep evolving in the mapper,
+                # otherwise similarity/pose stay frozen at first-sight values.
+                cached = existing_by_id[obj.object_id]
+                cached.similarity = obj.similarity
+                cached.pose_map = obj.pose_map
                 continue
             room_id = self._get_current_room_id(obj.timestamp)
             self.room_assignments[obj.object_id] = room_id

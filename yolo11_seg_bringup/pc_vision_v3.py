@@ -86,8 +86,8 @@ class VisionNode(Node):
         self.detection_topic = '/vision/detections'
         self.text_emb_publish_topic = '/vision/text_embedding'
         self.frame_skip = 10
-        self.CLASS_NAMES = ["microwave", "keyboard", "mouse", "bottle", "mug", "tv", "fridge", "sunglasses", "telephone", "headphones", "kettle", "blue coffee machine"
-                            "apple", "laptop", "screwdriver", "coffee cup", "drill", "game controller", "coat hanger", "ping pong racket"]        
+        self.CLASS_NAMES = ["microwave", "keyboard", "mouse", "bottle", "cup", "tv", "fridge", "telephone", "kettle",
+                            "apple", "laptop", "drill"]        
         goal_class = self._read_goal_from_command_file()
         # If a valid goal class is found in the command file, ensure it's included in CLASS_NAMES for detection.
         if goal_class:
