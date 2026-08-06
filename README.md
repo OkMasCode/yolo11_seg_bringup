@@ -17,6 +17,14 @@ embeddings, room segmentation and the JSON files the rest of the stack reads.
 Three models run in this stack. They are separate, they run at different rates, and each one has a
 different deployment format. Getting these three artifacts in place is most of the setup work.
 
+![Vision node internals](images/vision_node.png)
+
+*Inside `pc_vision_node_v3`. The goal command enters twice and drives two different models: as a class
+label `T_goal` it extends the YOLOE vocabulary `C = C_base ∪ {T_goal}`, and as a text prompt it goes
+through the SigLIP-2 text encoder. The binary mask forks — the dilated branch builds the masked crop
+`I_m` that the SigLIP-2 vision encoder embeds, while the eroded mask `M_erod` is what gets published for
+the mapper to back-project. The two encoders meet only at the scoring engine.*
+
 ### 1.1 YOLOE — open-vocabulary instance segmentation
 
 | | |
@@ -193,6 +201,17 @@ nearest instance inside the chosen cluster, or highest SigLIP similarity above a
 ---
 
 ## 2. Pipeline
+
+![Full pipeline](images/full_pipeline.png)
+
+*The full stack. The LLM orchestrator turns the textual map and the user prompt into a structured JSON
+command; the vision node consumes it as a class list and a text embedding; the mapper node lifts the
+masks into a persistent 3D semantic map; the robot controller executes the strategy the same JSON
+carries. The dashed return path is what makes the loop closed — the strategy chosen by the LLM decides
+how the map is queried.*
+
+The diagram above is the algorithmic view. Below is the concrete ROS wiring, including the JSON files
+that carry state between runs and the room-segmentation stage the diagram leaves out:
 
 ```
                       ┌──────────────────────────────────────────┐
@@ -441,6 +460,7 @@ ros2 run yolo11_seg_bringup map_points_node
 ### `pc_vision_node_v3` — [pc_vision_v3.py](yolo11_seg_bringup/pc_vision_v3.py)
 
 YOLOE segmentation + BoT-SORT tracking + SigLIP embedding and goal scoring. Class name is `VisionNode`.
+See the [block diagram](#1-models) at the top of §1 for how the pieces connect.
 
 **Subscribes**
 
@@ -479,7 +499,8 @@ YOLOE segmentation + BoT-SORT tracking + SigLIP embedding and goal scoring. Clas
 
 `enable_paper_capture` dumps, every 5 s, the intermediate stages for the highest-confidence detection
 of `paper_capture_class`: raw frame, annotated frame, binary mask, eroded mask, masked crop, unmasked
-crop, and both depth renderings. This is what produced the PNGs in [images/](images/); it is a figure
+crop, and both depth renderings. This is what produced the stage-by-stage PNGs in [images/](images/)
+(everything except the two hand-drawn block diagrams); it is a figure
 generator for the thesis, not a runtime feature. It also forces crop preparation outside the normal
 1-in-10 SigLIP cadence.
 
@@ -686,7 +707,7 @@ yolo11_seg_bringup/
 │   ├── clustered_map_v6.json
 │   ├── robot_command.json
 │   └── scene_prompt.json
-├── images/                              # figures produced by enable_paper_capture
+├── images/                              # block diagrams + stage figures from enable_paper_capture
 ├── setup.py
 └── package.xml
 ```
